@@ -178,8 +178,8 @@ namespace io::dc {
     const std::string& distance_branch      = paths.reactor_branch_distance();
     const std::string& branch_GDML          = paths.reactor_branch_GDML();
 
-    TTreeReaderValue<double> visibleEnergy(reader, true_Energy_branch.c_str());
-    TTreeReaderValue<double> trueEnergy(reader, visual_Energy_branch.c_str());
+    TTreeReaderValue<double> visibleEnergy(reader, visual_Energy_branch.c_str());
+    TTreeReaderValue<double> trueEnergy(reader, true_Energy_branch.c_str());
     TTreeReaderValue<double> distance(reader, distance_branch.c_str());
     TTreeReaderValue<int>    volumeGDML(reader, branch_GDML.c_str());
 
@@ -228,6 +228,7 @@ namespace io::dc {
     // Open the ROOT file at the given path
     auto* file = TFile::Open(path.c_str(), "READ");
     // Check if the file was opened successfully
+    std::cout << "Reading file " << path << '\n';
     assert(file != nullptr);
 
     // Get the TTree object with the given name from the file
@@ -559,11 +560,11 @@ namespace io::dc {
     {
       auto lithium_background_samples = generate_lithium_background(gen, 650'000);
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths = m_InputOptions.double_chooz().input_paths(detector);
-        auto entries = get_background_entries(paths.background_path(lithium), paths.background_tree_name(lithium));
-        auto key_pair = std::make_tuple(detector, lithium);
-        m_BackgroundData[key_pair] = std::move(entries);
-        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]); // TODO Read from Double Chooz files
+        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        auto        entries            = get_background_entries(paths.background_path(lithium), paths.background_tree_name(lithium));
+        auto        key_pair           = std::make_tuple(detector, lithium);
+        m_BackgroundData[key_pair]     = std::move(entries);
+        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]);  // TODO Read from Double Chooz files
       }
       // for (const auto detector : {ND, FDI, FDII}) {
       //   auto key_pair = std::make_tuple(detector, lithium);
@@ -575,11 +576,11 @@ namespace io::dc {
     std::cout << "Generating " << std::setw(10) << 2'000'000 << " samples for fastN Background\n";
     {
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths = m_InputOptions.double_chooz().input_paths(detector);
-        auto entries = get_background_entries(paths.background_path(fastN), paths.background_tree_name(fastN));
-        auto key_pair = std::make_tuple(detector, fastN);
-        m_BackgroundData[key_pair] = std::move(entries);
-        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]); // TODO Read from Double Chooz files
+        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        auto        entries            = get_background_entries(paths.background_path(fastN), paths.background_tree_name(fastN));
+        auto        key_pair           = std::make_tuple(detector, fastN);
+        m_BackgroundData[key_pair]     = std::move(entries);
+        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair], 44);  // TODO Read from Double Chooz files
       }
       // for (const auto detector : {ND, FDI, FDII}) {
       //   auto key_pair = std::make_tuple(detector, fastN);
