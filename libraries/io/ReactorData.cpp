@@ -271,7 +271,7 @@ namespace io {
     for (unsigned int i = 0; i < n_entries; ++i) {
       m_Evis[i]     = entries[i].Evis;
       m_Etrue[i]    = entries[i].Etrue;
-      m_Scaling[i]  = 1.0;//convert_function(entries[i].GDML);
+      m_Scaling[i]  = convert_function(entries[i].GDML);
       m_Distance[i] = entries[i].Distance;
       m_LoverE[i]   = entries[i].Distance / entries[i].Etrue;
     }
