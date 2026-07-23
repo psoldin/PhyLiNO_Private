@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../Definitions.h"
-#include "../SpectrumBase.h"
+#include "Definitions.h"
+#include "SpectrumBase.h"
 #include "Options.h"
 
 namespace ana::dc {

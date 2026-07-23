@@ -20,7 +20,7 @@ namespace ana {
 
     // Initialize the functor object
     m_Functor = std::make_shared<ROOT::Math::Functor>(m_DCLikelihood.get(),
-                                                      &dc::Likelihood::calculate_likelihood,
+                                                      &Likelihood::calculate_likelihood,
                                                       params::number_of_parameters());
 
     // Set the function to be minimized

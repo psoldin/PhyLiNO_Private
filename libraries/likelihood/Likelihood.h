@@ -3,7 +3,7 @@
 #include "Options.h"
 #include "ParameterWrapper.h"
 
-namespace ana::dc {
+namespace ana {
 
   // TODO Documentation
   class Likelihood {
@@ -18,7 +18,7 @@ namespace ana::dc {
      */
     explicit Likelihood(std::shared_ptr<io::Options> options, int nParameter, transform_fn_t transform_fn = nullptr)
       : m_Options(std::move(options))
-      , m_Parameter(nParameter, m_Options, transform_fn) {}
+      , m_Parameter(nParameter, std::move(transform_fn)) {}
 
     virtual ~Likelihood() = default;
 
@@ -34,4 +34,4 @@ namespace ana::dc {
     ParameterWrapper m_Parameter;  ///< The parameter wrapper object used for likelihood calculation.
   };
 
-}  // namespace ana::dc
+}  // namespace ana

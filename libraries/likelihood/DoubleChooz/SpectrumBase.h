@@ -2,8 +2,8 @@
 
 // includes
 #include "Definitions.h"
-#include "ParameterWrapper.h"
-#include "../io/Options.h"
+#include "../ParameterWrapper.h"
+#include "Options.h"
 
 // STL includes
 #include <span>
@@ -15,7 +15,7 @@
  *
  * @tparam Derived The derived class type.
  */
-namespace ana::dc { // TODO move class to ana namespace
+namespace ana::dc {
 
   class SpectrumBase {
    public:

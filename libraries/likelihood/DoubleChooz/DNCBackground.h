@@ -2,9 +2,9 @@
 
 #include <DoubleChooz/Constants.h>
 
-#include "../Definitions.h"
+#include "Definitions.h"
 #include "../ParameterWrapper.h"
-#include "../SpectrumBase.h"
+#include "SpectrumBase.h"
 
 namespace ana::dc {
 

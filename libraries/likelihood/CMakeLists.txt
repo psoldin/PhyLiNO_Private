@@ -4,15 +4,13 @@ set(files
     ParameterWrapper.h
     ParameterWrapper.cpp
     Likelihood.h
-    DoubleChooz/Oscillator.cpp
-    Definitions.h
-    SpectrumBase.h
+    DoubleChooz/Definitions.h
+    DoubleChooz/SpectrumBase.h
     DoubleChooz/Oscillator.h
     DoubleChooz/Oscillator.cpp
     DoubleChooz/Calculate_Spectrum.h
     DoubleChooz/AccidentalBackground.cpp
     DoubleChooz/AccidentalBackground.h
-    SpectrumBase.h
     DoubleChooz/LithiumBackground.h
     DoubleChooz/LithiumBackground.cpp
     DoubleChooz/FastNBackground.cpp

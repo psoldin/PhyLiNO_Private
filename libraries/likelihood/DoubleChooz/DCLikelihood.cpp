@@ -216,7 +216,8 @@ namespace ana::dc {
   }
 
   DCLikelihood::DCLikelihood(std::shared_ptr<io::Options> options, int nParameter)
-    : Likelihood(std::move(options), nParameter, &correlate_parameters)
+    : Likelihood(options, nParameter,
+                 [opt = options](std::span<double> parameter) { correlate_parameters(*opt, parameter); })
     , m_Accidental(m_Options)
     , m_Lithium(m_Options)
     , m_FastN(m_Options)

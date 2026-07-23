@@ -6,7 +6,7 @@
 // includes
 #include "ShapeCorrection.h"
 #include "../ParameterWrapper.h"
-#include "../SpectrumBase.h"
+#include "SpectrumBase.h"
 
 // Eigen includes
 #include <Eigen/Core>

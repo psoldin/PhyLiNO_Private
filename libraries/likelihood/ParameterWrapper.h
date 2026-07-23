@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Options.h"
+#include <functional>
 
 // STL includes
 #include <span>
 #include <vector>
 
-namespace ana::dc {  // TODO move class to ana namespace
+namespace ana {
 
   /**
    * @brief Wrapper class for a parameter array.
@@ -16,7 +16,7 @@ namespace ana::dc {  // TODO move class to ana namespace
    */
   class ParameterWrapper {
    public:
-    using transform_fn_t = void (*)(const io::Options& options, std::span<double> parameter);
+    using transform_fn_t = std::function<void(std::span<double> parameter)>;
 
     /**
      * @brief Constructs a ParameterWrapper object.
@@ -24,7 +24,7 @@ namespace ana::dc {  // TODO move class to ana namespace
      * @param nParameter The number of parameters.
      * @param transform_fn A function pointer to transform the parameters (default is nullptr).
      */
-    ParameterWrapper(std::size_t nParameter, std::shared_ptr<io::Options> options, transform_fn_t transform_fn = nullptr);
+    explicit ParameterWrapper(std::size_t nParameter, transform_fn_t transform_fn = nullptr);
     /**
      * @brief Default destructor.
      */
@@ -144,7 +144,6 @@ namespace ana::dc {  // TODO move class to ana namespace
     std::vector<double>          m_PreviousParameters;  // Previous parameter set for comparison
     std::vector<char>            m_ParameterChanged;    // Array to store the changed parameters
     std::size_t                  m_NParameter;          // Number of parameters
-    std::shared_ptr<io::Options> m_Options;             // Options object
     const double*                m_RawParameter;        // Pointer to the raw parameter array
     transform_fn_t               m_TransformFn;         // Function to transform the parameters
 
@@ -156,4 +155,4 @@ namespace ana::dc {  // TODO move class to ana namespace
     void unify_parameters();
   };
 
-}  // namespace ana::dc
+}  // namespace ana

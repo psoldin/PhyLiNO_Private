@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../SpectrumBase.h"
+#include "SpectrumBase.h"
 #include "Calculate_Spectrum.h"
 #include "Parameter.h"
 

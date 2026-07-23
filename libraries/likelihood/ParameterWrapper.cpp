@@ -4,16 +4,15 @@
 
 #include "../utilities/FuzzyCompare.h"
 
-namespace ana::dc {
+namespace ana {
 
-  ParameterWrapper::ParameterWrapper(const std::size_t nParameter, std::shared_ptr<io::Options> options, transform_fn_t transform_fn)
+  ParameterWrapper::ParameterWrapper(const std::size_t nParameter, transform_fn_t transform_fn)
     : m_CurrentParameters(nParameter, 0.0)
     , m_PreviousParameters(nParameter, 0.0)
     , m_ParameterChanged(nParameter, true)
     , m_NParameter(nParameter)
-    , m_Options(std::move(options))
     , m_RawParameter(nullptr)
-    , m_TransformFn(transform_fn) {}
+    , m_TransformFn(std::move(transform_fn)) {}
 
   void ParameterWrapper::reset_parameter(const double* parameter) {
     // Set the raw parameter pointer to the new parameter array
@@ -26,7 +25,7 @@ namespace ana::dc {
     std::copy_n(parameter, m_NParameter, m_CurrentParameters.begin());
 
     if (m_TransformFn) {
-      m_TransformFn(*m_Options, m_CurrentParameters);
+      m_TransformFn(m_CurrentParameters);
     }
 
     // Update the parameter changed status for each parameter
@@ -57,4 +56,4 @@ namespace ana::dc {
     return !same;
   }
 
-}  // namespace ana::dc
+}  // namespace ana
