@@ -1,0 +1,15 @@
+{
+  "Experiment": "LinearRegression",
+  "LinearRegression": {
+    "TruthA": 2.0,
+    "TruthB": 1.0,
+    "NPoints": 20,
+    "Sigma": 0.1,
+    "XMin": 0.0,
+    "XMax": 10.0
+  },
+  "Parameter": [
+    { "Name": "a", "StartValue": 0.5, "StepWidth": 0.1, "Fixed": false, "Constrained": false },
+    { "Name": "b", "StartValue": 0.0, "StepWidth": 0.1, "Fixed": false, "Constrained": false }
+  ]
+}
