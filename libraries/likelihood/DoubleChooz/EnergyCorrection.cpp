@@ -180,7 +180,9 @@ namespace ana::dc {
 
       // The way the correction is implemented is that the bin edges are used to calculate the energy correction.
       // The bin content is then calculated by integrating the spline function over the new bin edges.
-      for (int i = 1; i < io::dc::Constants::number_of_energy_bins; ++i) {
+      // The analysis range covers number_of_energy_bins bins, which are delimited by
+      // number_of_energy_bins + 1 edges, so the upper edge index runs up to and including it.
+      for (int i = 1; i <= io::dc::Constants::number_of_energy_bins; ++i) {
         const double e_lower = energy_scale_correction(parA, parB, parC, binning[i - 1]);
         const double e_upper = energy_scale_correction(parA, parB, parC, binning[i]);
 

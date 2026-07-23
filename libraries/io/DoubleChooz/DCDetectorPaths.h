@@ -236,12 +236,18 @@ namespace io::dc {
     std::string m_Reactor_distance;
     std::string m_Reactor_GDML;
 
-    std::vector<std::string> m_CovarianceMatrixPath;
-    std::vector<std::string> m_CovarianceMatrixName;
+    /**
+     * The following containers are indexed by params::dc::SpectrumType, so they have to hold one
+     * entry per spectrum type even though only the background types are ever filled.
+     */
+    static constexpr std::size_t number_of_spectrum_types = static_cast<std::size_t>(params::dc::SpectrumType::dnc) + 1;
 
-    std::vector<std::string> m_BackgroundPath;
-    std::vector<std::string> m_BackgroundTree;
-    std::vector<std::string> m_BackgroundBranch;
+    std::vector<std::string> m_CovarianceMatrixPath = std::vector<std::string>(number_of_spectrum_types);
+    std::vector<std::string> m_CovarianceMatrixName = std::vector<std::string>(number_of_spectrum_types);
+
+    std::vector<std::string> m_BackgroundPath   = std::vector<std::string>(number_of_spectrum_types);
+    std::vector<std::string> m_BackgroundTree   = std::vector<std::string>(number_of_spectrum_types);
+    std::vector<std::string> m_BackgroundBranch = std::vector<std::string>(number_of_spectrum_types);
   };
 
 }  // namespace io::dc

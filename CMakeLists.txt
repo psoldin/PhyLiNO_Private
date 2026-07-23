@@ -13,7 +13,8 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 
 find_package(ROOT REQUIRED COMPONENTS Minuit2 Minuit)
 
-find_package(Boost COMPONENTS system filesystem iostreams program_options log REQUIRED)
+# Boost.System is header only since 1.69 and is no longer shipped as a separate component.
+find_package(Boost COMPONENTS filesystem iostreams program_options log timer REQUIRED)
 
 # Find OpenMP
 find_package(OpenMP)

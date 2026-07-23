@@ -1,8 +1,11 @@
 #pragma once
 
 // STL includes
+#include <array>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <iostream>
 
@@ -436,7 +439,7 @@ namespace params {
   constexpr int get_index(params::dc::DetectorType d) noexcept {
     using enum dc::DetectorType;
     bool is_split = is_reactor_split(d);                                                                // if the reactor data are split, the index is different
-    int  idx      = static_cast<bool>(d & FD) & (1 + static_cast<bool>(d & V2));                        // get base type
+    int  idx      = static_cast<bool>(d & FD) * (1 + static_cast<bool>(d & V2));                        // get base type: ND -> 0, FDI -> 1, FDII -> 2
     return !is_split * idx + is_split * (number_of_data_sets() + 2 * idx + static_cast<bool>(d & B2));  // total index
   }
 

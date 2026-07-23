@@ -17,13 +17,18 @@ namespace io::dc {
     using enum params::dc::SpectrumType;
     try {
       // Read the paths from the property tree for backgrounds
+      // The containers are indexed by the SpectrumType enum value, so the entries have to be
+      // assigned at that index instead of being appended.
       for (const auto background : {accidental, lithium, fastN}) {
         std::string name = params::dc::get_background_name(background);
-        m_BackgroundPath.push_back(tree.get<std::string>(name));
-        m_BackgroundTree.push_back(tree.get<std::string>(name + "_tree"));
-        m_BackgroundBranch.push_back(tree.get<std::string>(name + "_branch"));
-        m_CovarianceMatrixPath.push_back(tree.get<std::string>(name + "_cov"));
-        m_CovarianceMatrixName.push_back(tree.get<std::string>(name + "_cov_name"));
+
+        const auto idx = static_cast<std::size_t>(background);
+
+        m_BackgroundPath[idx]         = tree.get<std::string>(name);
+        m_BackgroundTree[idx]         = tree.get<std::string>(name + "_tree");
+        m_BackgroundBranch[idx]       = tree.get<std::string>(name + "_branch");
+        m_CovarianceMatrixPath[idx]   = tree.get<std::string>(name + "_cov");
+        m_CovarianceMatrixName[idx]   = tree.get<std::string>(name + "_cov_name");
       }
 
       // Double Neutron Capture data

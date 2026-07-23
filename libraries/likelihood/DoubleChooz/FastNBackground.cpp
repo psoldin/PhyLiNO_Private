@@ -19,7 +19,7 @@ namespace ana::dc {
     bool has_changed = false;
 
     for (auto detector : {ND, FDI, FDII}) {
-      has_changed |= parameter.check_parameter_changed(index(detector, FNSMShape01), index(detector, FNSMShape44) + 1);
+      has_changed |= parameter.check_parameter_changed(index(detector, FNSMShape01), index(detector, FNSMShape44));
       has_changed |= parameter.check_parameter_changed(index(detector, BkgRFNSM));
     }
 
@@ -67,22 +67,30 @@ namespace ana::dc {
 
       std::array<double, 44>& result = m_FastNSpectrum[detector];
 
+      // The fast neutron spectrum is clipped at zero after the shifts have been applied
       calculate_spectrum(rate,
                          background_template,
                          shape_parameter,
                          covMatrix,
-                         result);
+                         result,
+                         /* clip_result = */ true);
     }
   }
 
   void FastNBackground::fill_data(params::dc::DetectorType type) {
-    auto acc_data = m_Options->double_chooz().dataBase().background_data(type, params::dc::SpectrumType::fastN);
+    const auto& db = m_Options->double_chooz().dataBase();
 
+    auto fastN_data = db.background_data(type, params::dc::SpectrumType::fastN);
+
+    // Unlike the other backgrounds the fast neutron spectrum extends up to 50 MeV, so the full
+    // binning with all 44 bins is used here.
     const auto& binning = io::dc::Constants::EnergyBinXaxis;
 
-    auto h = std::make_unique<TH1D>("h", "", binning.size() - 1, binning.data());
+    const int nBins = static_cast<int>(binning.size()) - 1;
 
-    for (auto E : acc_data) {
+    auto h = std::make_unique<TH1D>("h", "", nBins, binning.data());
+
+    for (auto E : fastN_data) {
       h->Fill(E);
     }
 
@@ -92,21 +100,17 @@ namespace ana::dc {
       background_template[i] = h->GetBinContent(i + 1);
     }
 
-    using enum params::dc::DetectorType;
-
     const double sum = std::accumulate(background_template.begin(), background_template.end(), 0.0);
 
-    for (auto detector : {ND, FDI, FDII}) {
-      const double lifeTime = m_Options->double_chooz().dataBase().on_lifetime(detector);
+    const double lifeTime = db.on_lifetime(type);
 
-      std::array<double, 44> background_spectrum;
+    std::array<double, 44> background_spectrum{};
 
-      for (int i = 0; i < 44; ++i) {
-        background_spectrum[i] = (lifeTime / sum) * background_template[i];
-      }
-
-      m_BackgroundTemplate[detector] = background_spectrum;
+    for (int i = 0; i < 44; ++i) {
+      background_spectrum[i] = (lifeTime / sum) * background_template[i];
     }
+
+    m_BackgroundTemplate[type] = background_spectrum;
   }
 
 }  // namespace ana::dc

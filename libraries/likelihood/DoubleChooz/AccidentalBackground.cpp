@@ -69,11 +69,18 @@ namespace ana::dc {
   }
 
   void AccidentalBackground::fill_data(params::dc::DetectorType type) {
-    auto acc_data = m_Options->double_chooz().dataBase().background_data(type, params::dc::SpectrumType::accidental);
+    const auto& db = m_Options->double_chooz().dataBase();
+
+    auto acc_data = db.background_data(type, params::dc::SpectrumType::accidental);
+
+    // The accidental background is only defined within the analysis range, so the histogram uses
+    // the corresponding number of bins. Everything above ends up in the overflow bin and is
+    // therefore not part of the template.
+    constexpr int nBins = io::dc::Constants::number_of_energy_bins;
 
     const auto& binning = io::dc::Constants::EnergyBinXaxis;
 
-    auto h = std::make_unique<TH1D>("h", "", binning.size() - 1, binning.data());
+    auto h = std::make_unique<TH1D>("h", "", nBins, binning.data());
 
     for (auto E : acc_data) {
       h->Fill(E);
@@ -81,25 +88,22 @@ namespace ana::dc {
 
     std::array<double, 44> background_template{};
 
-    for (int i = 0; i < 44; ++i) {
+    for (int i = 0; i < nBins; ++i) {
       background_template[i] = h->GetBinContent(i + 1);
     }
 
-    using enum params::dc::DetectorType;
-
     const double sum = std::accumulate(background_template.begin(), background_template.end(), 0.0);
 
-    for (auto detector : {ND, FDI, FDII}) {
-      const double lifeTime = m_Options->double_chooz().dataBase().on_lifetime(detector);
+    const double lifeTime = db.on_lifetime(type);
 
-      std::array<double, 44> background_spectrum;
+    std::array<double, 44> background_spectrum{};
 
-      for (int i = 0; i < 44; ++i) {
-        background_spectrum[i] = (lifeTime / sum) * background_template[i];
-      }
-
-      m_BackgroundTemplate[detector] = background_spectrum;
+    for (int i = 0; i < 44; ++i) {
+      background_spectrum[i] = (lifeTime / sum) * background_template[i];
     }
+
+    m_BackgroundTemplate[type] = background_spectrum;
+    m_AccSpectrum[type]        = std::array<double, 44>{};
   }
 
   void AccidentalBackground::recalculate_spectra(const ParameterWrapper& parameter) {

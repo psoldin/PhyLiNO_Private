@@ -60,52 +60,54 @@ namespace ana::dc {
 
       auto& result = m_LiSpectrum[detector];
 
+      // The lithium spectrum is clipped at zero after the shifts have been applied
       calculate_spectrum(rate,
                          background_template,
                          shape_parameter,
                          covMatrix,
-                         result);
+                         result,
+                         /* clip_result = */ true);
     }
   }
 
   void LithiumBackground::fill_data(params::dc::DetectorType type) {
-    const auto acc_data = m_Options->double_chooz().dataBase().background_data(type, params::dc::SpectrumType::lithium);
+    const auto& db = m_Options->double_chooz().dataBase();
+
+    const auto li_data = db.background_data(type, params::dc::SpectrumType::lithium);
+
+    // The lithium background is only defined within the analysis range, so the histogram uses the
+    // corresponding number of bins. Everything above ends up in the overflow bin and is therefore
+    // not part of the template.
+    constexpr int nBins = io::dc::Constants::number_of_energy_bins;
 
     const auto& binning = io::dc::Constants::EnergyBinXaxis;
 
-    auto h = std::make_unique<TH1D>("h", "", binning.size() - 1, binning.data());
+    auto h = std::make_unique<TH1D>("h", "", nBins, binning.data());
 
-    for (auto E : acc_data) {
+    for (auto E : li_data) {
       h->Fill(E);
     }
 
     std::array<double, 44> background_template{};
 
-    for (int i = 0; i < 44; ++i) {
+    for (int i = 0; i < nBins; ++i) {
       background_template[i] = h->GetBinContent(i + 1);
     }
 
-    using enum params::dc::DetectorType;
-
     const double sum = std::accumulate(background_template.begin(), background_template.end(), 0.0);
 
-    std::array<double, 44> null_template{};
-    std::ranges::fill(null_template, 0.0);
+    const double lifeTime = db.on_lifetime(type);
 
-    for (auto detector : {ND, FDI, FDII}) {
-      const double lifeTime = m_Options->double_chooz().dataBase().on_lifetime(detector);
+    const double scaling_factor = lifeTime / sum;
 
-      std::array<double, 44> background_spectrum;
+    std::array<double, 44> background_spectrum{};
 
-      const double scaling_factor = lifeTime / sum;
-
-      for (int i = 0; i < 44; ++i) {
-        background_spectrum[i] = scaling_factor * background_template[i];
-      }
-
-      m_BackgroundTemplate[detector] = background_spectrum;
-      m_LiSpectrum[detector]         = null_template;
-      m_CovMatrix[detector]          = m_Options->double_chooz().dataBase().covariance_matrix(detector, params::dc::SpectrumType::lithium);
+    for (int i = 0; i < 44; ++i) {
+      background_spectrum[i] = scaling_factor * background_template[i];
     }
+
+    m_BackgroundTemplate[type] = background_spectrum;
+    m_LiSpectrum[type]         = std::array<double, 44>{};
+    m_CovMatrix[type]          = db.covariance_matrix(type, params::dc::SpectrumType::lithium);
   }
 }  // namespace ana::dc

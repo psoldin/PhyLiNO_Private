@@ -10,3 +10,4 @@ cmake-build-default/
 compile_commands.json
 .cache/
 .vscode/
+Output*.json

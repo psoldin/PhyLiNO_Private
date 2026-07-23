@@ -14,6 +14,18 @@
 namespace ana::dc {
 
   /**
+   * @brief Applies the inter detector correlations to a raw parameter set in place.
+   *
+   * The minimizer works on uncorrelated parameters. Before the parameters are used to build the
+   * spectra they are transformed into correlated ones using the spectral matrices of the
+   * respective correlation matrices.
+   *
+   * @param options The options object holding the correlation matrices.
+   * @param parameters The parameter set that is modified in place.
+   */
+  void correlate_parameters(const io::Options& options, std::span<double> parameters);
+
+  /**
    * @class DCLikelihood
    * @brief A class that represents the likelihood calculation for the Double Chooz experiment.
    *
@@ -92,6 +104,18 @@ namespace ana::dc {
 
     void check_and_recalculate(const double* parameter) noexcept;
 
+    /**
+     * @brief Ratio of off-off to on lifetime used to scale the background into the reactor-off period.
+     *
+     * FD-I and FD-II share the same physical detector, so the FD-II scaling includes the FD-I
+     * off-off lifetime. The same scaling has to be used when generating the Asimov off-off data
+     * and when evaluating the off-off likelihood, otherwise the fit is biased.
+     *
+     * @param detector The detector type, has to be ND or FDII.
+     * @return The lifetime ratio.
+     */
+    [[nodiscard]] double off_off_scaling(params::dc::DetectorType detector) const noexcept;
+
    private:
     /**
      * @brief Calculates the default likelihood for the given parameter.
@@ -138,6 +162,18 @@ namespace ana::dc {
 
     double calculate_pulls(const ParameterWrapper& parameter) const noexcept;
 
+    /**
+     * @brief Evaluates the pull terms of the parameters that are correlated among detectors.
+     *
+     * These are the energy scale parameters and the MC normalisations. Both are evaluated with the
+     * inverse of their correlation matrix, so the covariance between the detectors is taken into
+     * account instead of treating the parameters as independent.
+     *
+     * @param parameter The correlated parameter set.
+     * @return The summed correlated pull contribution.
+     */
+    [[nodiscard]] double calculate_correlated_pulls(const ParameterWrapper& parameter) const noexcept;
+
     AccidentalBackground m_Accidental;  ///< The accidental background object.
     LithiumBackground    m_Lithium;     ///< The lithium background object.
     FastNBackground      m_FastN;       ///< The fast neutron background object.
@@ -148,6 +184,9 @@ namespace ana::dc {
 
     std::vector<std::tuple<int, double, double>>    m_Pulls;
     std::vector<std::tuple<double, double, double>> m_ShapeCV;
+
+    std::array<double, 7> m_EnergyCV{};  ///< Central values of the correlated energy scale pull.
+    std::array<double, 3> m_MCNormCV{};  ///< Central values of the correlated MC normalisation pull.
 
     std::unordered_map<params::dc::DetectorType, std::array<double, 44>> m_MeasurementData;  ///< The measurement data for each detector type.
     std::unordered_map<params::dc::DetectorType, std::array<double, 44>> m_OffOffData;       ///< The off-off data for each detector type.

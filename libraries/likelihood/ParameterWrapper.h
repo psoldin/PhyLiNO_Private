@@ -15,9 +15,9 @@ namespace ana::dc {  // TODO move class to ana namespace
    * It wraps a raw double pointer and provides various member functions for accessing the parameters.
    */
   class ParameterWrapper {
+   public:
     using transform_fn_t = void (*)(const io::Options& options, std::span<double> parameter);
 
-   public:
     /**
      * @brief Constructs a ParameterWrapper object.
      *

@@ -111,18 +111,30 @@ namespace ana::dc {
       m_MeasurementData[detector] = array;
 
       if (detector == ND || detector == FDII) {
-        // Get the on and off lifetimes
-        const double on_lifetime  = m_Options->double_chooz().dataBase().on_lifetime(detector);
-        const double off_lifetime = m_Options->double_chooz().dataBase().off_lifetime(detector);
-
         std::array<double, 44> off_off_data{};
 
-        const array_t off_off_bkg = (off_lifetime / on_lifetime) * bkg;
+        const array_t off_off_bkg = off_off_scaling(detector) * bkg;
 
         std::ranges::copy(off_off_bkg, off_off_data.begin());
         m_OffOffData[detector] = off_off_data;
       }
     }
+  }
+
+  double DCLikelihood::off_off_scaling(params::dc::DetectorType detector) const noexcept {
+    const auto& db = m_Options->double_chooz().dataBase();
+
+    const double on_lifetime = db.on_lifetime(detector);
+
+    double off_lifetime = db.off_lifetime(detector);
+
+    // FD-I and FD-II are the same physical detector, so the FD-I off-off lifetime also applies to
+    // the FD-II background prediction.
+    if (detector == params::dc::DetectorType::FDII) {
+      off_lifetime += db.off_lifetime(params::dc::DetectorType::FDI);
+    }
+
+    return off_lifetime / on_lifetime;
   }
 
   void correlate_parameters(const io::Options& options, std::span<double> parameters) {
@@ -132,6 +144,18 @@ namespace ana::dc {
 
     // FDI and FDII lithium background rates are fully correlated
     parameters[index(FDI, BkgRLi)] = parameters[index(FDII, BkgRLi)];
+
+    // The fast neutron shape is fully correlated among all detectors. FD-II carries the free
+    // parameters, ND and FD-I simply copy them.
+    {
+      constexpr int nShape = (FNSMShape44 - FNSMShape01) + 1;
+
+      const auto source = parameters.subspan(index(FDII, FNSMShape01), nShape);
+
+      for (const auto detector : {ND, FDI}) {
+        std::ranges::copy(source, parameters.begin() + index(detector, FNSMShape01));
+      }
+    }
 
     const auto& dco = options.double_chooz().dataBase();
 
@@ -192,7 +216,7 @@ namespace ana::dc {
   }
 
   DCLikelihood::DCLikelihood(std::shared_ptr<io::Options> options, int nParameter)
-    : Likelihood(std::move(options), nParameter)
+    : Likelihood(std::move(options), nParameter, &correlate_parameters)
     , m_Accidental(m_Options)
     , m_Lithium(m_Options)
     , m_FastN(m_Options)
@@ -207,23 +231,118 @@ namespace ana::dc {
     const auto& input_parameters = m_Options->inputOptions().input_parameters();
 
     const auto& names       = input_parameters.names();
-    const auto& fixed       = input_parameters.fixed();
     const auto& parameters  = input_parameters.parameters();
     const auto& constrained = input_parameters.constrained();
 
-    for (std::size_t i = 0, end = m_Components.size(); i < end; ++i) {
-      if (constrained[i]) {
+    using enum params::dc::DetectorType;
+    using enum params::dc::Detector;
+    using namespace params;
+
+    // The energy scale, MC normalisation and reactor shape parameters are constrained among the
+    // detectors and are handled by the correlated pull terms further below. Giving them an
+    // additional uncorrelated pull here would count their constraint twice.
+    auto has_correlated_pull = [](std::size_t i) {
+      if (i == static_cast<std::size_t>(EnergyA)) {
+        return true;
+      }
+
+      for (const auto detector : {ND, FDI, FDII}) {
+        if (i == static_cast<std::size_t>(index(detector, EnergyB))
+            || i == static_cast<std::size_t>(index(detector, EnergyC))
+            || i == static_cast<std::size_t>(index(detector, MCNorm))) {
+          return true;
+        }
+
+        const auto first = static_cast<std::size_t>(index(detector, NuShape01));
+        const auto last  = static_cast<std::size_t>(index(detector, NuShape43));
+
+        if (i >= first && i <= last) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    // Every other parameter that is flagged as constrained in the configuration gets an
+    // uncorrelated Gaussian pull term.
+    for (std::size_t i = 0, end = constrained.size(); i < end; ++i) {
+      if (constrained[i] && !has_correlated_pull(i)) {
         std::cout << "Setup pull for parameter " << std::setw(8) << i << ":\t" << names[i] << '\n';
         m_Pulls.emplace_back(i, parameters[i].value(), parameters[i].uncertainty());
       }
     }
+
+    for (int i = 0, end = (NuShape43 - NuShape01) + 1; i < end; ++i) {
+      m_ShapeCV.emplace_back(parameters[index(ND, NuShape01 + i)].value(),
+                             parameters[index(FDI, NuShape01 + i)].value(),
+                             parameters[index(FDII, NuShape01 + i)].value());
+    }
+
+    // Central values of the correlated energy scale pull.
+    // The order has to match the one used in correlate_parameters and the energy correlation matrix.
+    const std::array<int, 7> energy_indices = {EnergyA,
+                                               index(FDI, EnergyB),
+                                               index(ND, EnergyB),
+                                               index(FDII, EnergyB),
+                                               index(FDI, EnergyC),
+                                               index(ND, EnergyC),
+                                               index(FDII, EnergyC)};
+
+    for (std::size_t i = 0; i < energy_indices.size(); ++i) {
+      m_EnergyCV[i] = parameters[energy_indices[i]].value();
+    }
+
+    // Central values of the correlated MC normalisation pull, same ordering rules apply.
+    const std::array<int, 3> mcNorm_indices = {index(FDI, MCNorm),
+                                               index(ND, MCNorm),
+                                               index(FDII, MCNorm)};
+
+    for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
+      m_MCNormCV[i] = parameters[mcNorm_indices[i]].value();
+    }
+  }
+
+  double DCLikelihood::calculate_correlated_pulls(const ParameterWrapper& parameter) const noexcept {
     using enum params::dc::DetectorType;
     using enum params::dc::Detector;
-    for (int i = 0, end = (NuShape43 - NuShape01) + 1; i < end; ++i) {
-      m_ShapeCV.emplace_back(parameters[params::index(ND, i)].value(),
-                             parameters[params::index(FDI, i)].value(),
-                             parameters[params::index(FDII, i)].value());
+    using namespace params;
+
+    const auto& dco = m_Options->double_chooz().dataBase();
+
+    double result = 0.0;
+
+    {  // Energy scale pull
+      const std::array<int, 7> energy_indices = {EnergyA,
+                                                 index(FDI, EnergyB),
+                                                 index(ND, EnergyB),
+                                                 index(FDII, EnergyB),
+                                                 index(FDI, EnergyC),
+                                                 index(ND, EnergyC),
+                                                 index(FDII, EnergyC)};
+
+      TVectorD difference(7);
+      for (std::size_t i = 0; i < energy_indices.size(); ++i) {
+        difference[i] = parameter[energy_indices[i]] - m_EnergyCV[i];
+      }
+
+      result += dco.energy_inverse_correlation_matrix().Similarity(difference);
     }
+
+    {  // MC normalisation pull
+      const std::array<int, 3> mcNorm_indices = {index(FDI, MCNorm),
+                                                 index(ND, MCNorm),
+                                                 index(FDII, MCNorm)};
+
+      TVectorD difference(3);
+      for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
+        difference[i] = parameter[mcNorm_indices[i]] - m_MCNormCV[i];
+      }
+
+      result += dco.mcNorm_inverse_correlation_matrix().Similarity(difference);
+    }
+
+    return result;
   }
 
   double DCLikelihood::calculate_pulls(const ParameterWrapper& parameter) const noexcept {
@@ -257,6 +376,10 @@ namespace ana::dc {
       result += nd_result + fd1_result + fd2_result;
     }
 
+    // Penalise unphysical negative values of sin^2(theta13) so that the minimizer is pushed back
+    // into the physical region instead of wandering off.
+    result += std::abs(std::min(parameter[params::SinSqT13], 0.0));
+
     return result;
   }
 
@@ -283,21 +406,28 @@ namespace ana::dc {
     // Get the off-off data
     map_t off_off_data(get_off_off_data(detector).data(), nBins);
 
-    // Get the on and off lifetimes
-    const double on_lifetime  = m_Options->double_chooz().dataBase().on_lifetime(detector);
-    const double off_lifetime = m_Options->double_chooz().dataBase().off_lifetime(detector);
-
     // Rescale the background to the off time
-    auto off_off_bkg = (off_lifetime / on_lifetime) * bkg;
+    const Eigen::Array<double, 44, 1> off_off_bkg = off_off_scaling(detector) * bkg;
 
-    // Exclude the bins up to 3 MeV due to residual neutrinos
+    // Exclude the low energy bins due to residual neutrinos.
+    //
+    // The cut is expressed as "the last (number_of_analysis_edges - idx) bins", where idx is the
+    // first bin edge at or above 3 MeV and number_of_analysis_edges is the number of edges of the
+    // analysis range only, i.e. without the six extended bins that reach up to 50 MeV. Counting
+    // from the back over the full 44 bin spectrum therefore drops everything below roughly 4.25 MeV
+    // rather than below 3 MeV. This is what the reference implementation does and it is kept here
+    // so both give identical likelihood values.
     constexpr std::size_t idx = std::distance(io::dc::Constants::EnergyBinXaxis.cbegin(),
                                               std::ranges::lower_bound(io::dc::Constants::EnergyBinXaxis, 3.0));
 
-    const Eigen::Array<double, 44, 1> off_off_llh = -2.0 * (off_off_data * off_off_bkg.log() - off_off_bkg);
+    constexpr std::size_t number_of_analysis_edges = io::dc::Constants::number_of_energy_bins + 1;
+
+    static_assert(number_of_analysis_edges > idx);
+
+    const Eigen::Array<double, 44, 1> off_off_llh = off_off_data * off_off_bkg.log() - off_off_bkg;
 
     // Calculate Poisson Likelihood
-    return -2.0 * off_off_llh.tail(nBins - idx).sum();
+    return -2.0 * off_off_llh.tail(number_of_analysis_edges - idx).sum();
   }
 
   double DCLikelihood::calculate_mcNorm(const ParameterWrapper& parameter, params::dc::DetectorType type) const noexcept {
@@ -347,14 +477,14 @@ namespace ana::dc {
       // Calculate Poisson Likelihood
       likelihood += -2.0 * (data * prediction.log() - prediction).sum();
 
-      // Calculate the off-off component of the likelihood
-      // if (detector == ND || detector == FDII) {
-      //   likelihood += calculate_off_off_likelihood(bkg, detector);
-      //   std::cout << params::dc::get_detector_name(detector) << "_off_off" << '\t' << likelihood << '\n';
-      // }
+      // Calculate the off-off component of the likelihood.
+      // Only ND and FD-II have reactor-off data taking periods.
+      if (detector == ND || detector == FDII) {
+        likelihood += calculate_off_off_likelihood(bkg, detector);
+      }
     }
 
-    likelihood += calculate_pulls(parameter);
+    likelihood += calculate_pulls(parameter) + calculate_correlated_pulls(parameter);
 
     // Return the likelihood parameter if it is finite, otherwise return a large number. This is to prevent the minimizer from crashing.
     return std::isfinite(likelihood) ? likelihood : 1.0e25;

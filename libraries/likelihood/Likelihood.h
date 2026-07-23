@@ -8,9 +8,17 @@ namespace ana::dc {
   // TODO Documentation
   class Likelihood {
    public:
-    explicit Likelihood(std::shared_ptr<io::Options> options, int nParameter)
+    using transform_fn_t = ParameterWrapper::transform_fn_t;
+
+    /**
+     * @param options The options object used for likelihood calculation.
+     * @param nParameter The number of fit parameters.
+     * @param transform_fn Applied to every incoming parameter set before it is used, e.g. to
+     *                     correlate parameters among each other. May be nullptr.
+     */
+    explicit Likelihood(std::shared_ptr<io::Options> options, int nParameter, transform_fn_t transform_fn = nullptr)
       : m_Options(std::move(options))
-      , m_Parameter(nParameter, m_Options) {}
+      , m_Parameter(nParameter, m_Options, transform_fn) {}
 
     virtual ~Likelihood() = default;
 

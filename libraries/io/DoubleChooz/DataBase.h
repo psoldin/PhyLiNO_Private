@@ -67,11 +67,30 @@ namespace io::dc {
 
     [[nodiscard]] std::shared_ptr<Eigen::MatrixXd> covariance_matrix(params::dc::DetectorType detectorType, params::dc::SpectrumType spectrumType) const;
 
+    /**
+     * Spectral matrix V * sqrt(Lambda) of the 7x7 energy scale correlation matrix.
+     * Used to transform the uncorrelated fit parameters into correlated ones.
+     * Parameter order: EnergyA, EnergyB(FDI, ND, FDII), EnergyC(FDI, ND, FDII).
+     */
     [[nodiscard]] const TMatrixD& energy_correlation_matrix() const { return m_EnergyCorrelationMatrix; }
 
+    /**
+     * Spectral matrix V * sqrt(Lambda) of the 3x3 MC normalisation correlation matrix.
+     * Parameter order: FDI, ND, FDII.
+     */
     [[nodiscard]] const TMatrixD& mcNorm_correlation_matrix() const { return m_MCNormCorrelationMatrix; }
 
+    /**
+     * Spectral matrix V * sqrt(Lambda) of the 3x3 inter detector reactor shape correlation matrix.
+     * Parameter order: FDI, ND, FDII.
+     */
     [[nodiscard]] const TMatrixD& interDetector_correlation_matrix() const { return m_InterDetectorCorrelationMatrix; }
+
+    /** Inverse of the 7x7 energy scale correlation matrix, used for the correlated energy pull. */
+    [[nodiscard]] const TMatrixD& energy_inverse_correlation_matrix() const { return m_EnergyInverseMatrix; }
+
+    /** Inverse of the 3x3 MC normalisation correlation matrix, used for the correlated MCNorm pull. */
+    [[nodiscard]] const TMatrixD& mcNorm_inverse_correlation_matrix() const { return m_MCNormInverseMatrix; }
 
     [[nodiscard]] double off_lifetime(params::dc::DetectorType type) const noexcept { return m_OffLifeTime.at(type); }
 
@@ -100,7 +119,7 @@ namespace io::dc {
     }
 
    private:
-    void construct_energy_correlation_matrix();
+    void construct_correlation_matrices();
 
     const io::InputOptions& m_InputOptions;
 
@@ -166,6 +185,8 @@ namespace io::dc {
     TMatrixD                                                  m_EnergyCorrelationMatrix;         // TODO Replace with Eigen Matrix
     TMatrixD                                                  m_MCNormCorrelationMatrix;         // TODO Replace with Eigen Matrix
     TMatrixD                                                  m_InterDetectorCorrelationMatrix;  // TODO Replace with Eigen Matrix
+    TMatrixD                                                  m_EnergyInverseMatrix;             // TODO Replace with Eigen Matrix
+    TMatrixD                                                  m_MCNormInverseMatrix;             // TODO Replace with Eigen Matrix
   };
 
 }  // namespace io::dc

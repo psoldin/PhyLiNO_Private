@@ -21,6 +21,7 @@
 #include <TTreeReader.h>
 #include <TTreeReaderValue.h>
 #include <TVector.h>
+#include <TVectorD.h>
 
 namespace io::dc {
 
@@ -94,6 +95,45 @@ namespace io::dc {
     }
 
     return fracCovMatrix;
+  }
+
+  /**
+   * @brief Reads a square fractional covariance matrix from a ROOT file.
+   *
+   * @param filePath Path of the ROOT file.
+   * @param objectName Name of the TMatrixD inside the file.
+   * @param nBins Rank of the matrix that is read.
+   * @return The covariance matrix.
+   */
+  std::shared_ptr<Eigen::MatrixXd> read_cov_matrix(const std::string& filePath, const std::string& objectName, int nBins) {
+    auto file = std::unique_ptr<TFile>(TFile::Open(filePath.c_str(), "READ"));
+
+    if (file == nullptr || file->IsZombie()) {
+      throw std::invalid_argument("Could not open covariance matrix file " + filePath);
+    }
+
+    auto* ROOT_matrix = dynamic_cast<TMatrixD*>(file->Get(objectName.c_str()));
+
+    if (ROOT_matrix == nullptr) {
+      throw std::invalid_argument("Could not find matrix \"" + objectName + "\" in file " + filePath);
+    }
+
+    if (ROOT_matrix->GetNrows() < nBins || ROOT_matrix->GetNcols() < nBins) {
+      throw std::invalid_argument("Matrix \"" + objectName + "\" in file " + filePath + " is smaller than the expected "
+                                  + std::to_string(nBins) + " bins");
+    }
+
+    auto covMatrix = std::make_shared<Eigen::MatrixXd>(nBins, nBins);
+
+    for (int i = 0; i < nBins; ++i) {
+      for (int j = 0; j < nBins; ++j) {
+        (*covMatrix)(i, j) = (*ROOT_matrix)(i, j);
+      }
+    }
+
+    file->Close();
+
+    return covMatrix;
   }
 
   /**
@@ -269,17 +309,126 @@ namespace io::dc {
     return entries;
   }
 
-  void DataBase::construct_energy_correlation_matrix() {
-    TMatrixD    corrMatrix(7, 7);
-    TVectorD    eigenValues(7);
-    TMatrixD    eigenVectors(corrMatrix.EigenVectors(eigenValues));
-    TMatrixDSym eigenValueMatrix(7);
+  /**
+   * @brief Builds a symmetric correlation matrix from a list of off-diagonal entries.
+   *
+   * The diagonal is set to unity, every listed pair is written symmetrically and all
+   * remaining entries stay zero.
+   *
+   * @param dimension Rank of the matrix.
+   * @param entries Off-diagonal correlations as (row, column, value).
+   * @return The symmetric correlation matrix.
+   */
+  TMatrixDSym build_correlation_matrix(int dimension, std::span<const std::tuple<int, int, double>> entries) {
+    TMatrixDSym matrix(dimension);
+    matrix.UnitMatrix();
 
-    for (int i = 0; i < 7; ++i) {
-      eigenValueMatrix(i, i) = std::sqrt(eigenValues(i));
+    for (const auto& [i, j, value] : entries) {
+      matrix(i, j) = value;
+      matrix(j, i) = value;
     }
 
-    m_EnergyCorrelationMatrix.Mult(eigenVectors, eigenValueMatrix);
+    return matrix;
+  }
+
+  /**
+   * @brief Decomposes a correlation matrix into its spectral matrix and its inverse.
+   *
+   * The spectral matrix V * sqrt(Lambda) turns uncorrelated fit parameters into correlated
+   * ones, the inverse matrix is used to evaluate the corresponding correlated pull term.
+   *
+   * @param correlation The symmetric correlation matrix.
+   * @return Pair of (spectral matrix, inverse correlation matrix).
+   */
+  std::pair<TMatrixD, TMatrixD> decompose_correlation_matrix(const TMatrixDSym& correlation) {
+    const int dimension = correlation.GetNrows();
+
+    TMatrixDSym working(correlation);
+
+    TVectorD eigenValues(dimension);
+    TMatrixD eigenVectors(working.EigenVectors(eigenValues));
+
+    TMatrixDSym eigenValueMatrix(dimension);
+    for (int i = 0; i < dimension; ++i) {
+      if (eigenValues(i) < 0.0) {
+        std::cout << "Warning: correlation matrix is not positive definite, eigenvalue "
+                  << i << " = " << eigenValues(i) << " is clipped to zero\n";
+      }
+      eigenValueMatrix(i, i) = std::sqrt(std::max(eigenValues(i), 0.0));
+    }
+
+    TMatrixD spectral(dimension, dimension);
+    spectral.Mult(eigenVectors, eigenValueMatrix);
+
+    TMatrixD inverse(correlation);
+    inverse.Invert();
+
+    return {spectral, inverse};
+  }
+
+  /**
+   * @brief Assigns a matrix to a target, resizing the target first.
+   *
+   * TMatrixD::operator= requires both operands to have the same shape and does not resize, so the
+   * default constructed 0x0 members have to be resized before they can be filled.
+   */
+  void assign_matrix(TMatrixD& target, const TMatrixD& source) {
+    target.ResizeTo(source.GetNrows(), source.GetNcols());
+    target = source;
+  }
+
+  void DataBase::construct_correlation_matrices() {
+    using entry_t = std::tuple<int, int, double>;
+
+    // ---- Energy scale correlations ----
+    // Parameter order: EnergyA, EnergyB_FDI, EnergyB_ND, EnergyB_FDII, EnergyC_FDI, EnergyC_ND, EnergyC_FDII
+    // Values from DocDB 6780-v41 p.14, updated by DocDB 7593-v4 p.27
+    constexpr std::array<entry_t, 9> energy_entries = {
+        entry_t{0, 1, -0.19},  // EnergyA   <-> EnergyB_FDI
+        entry_t{0, 2, -0.33},  // EnergyA   <-> EnergyB_ND
+        entry_t{0, 3, -0.36},  // EnergyA   <-> EnergyB_FDII
+        entry_t{1, 2, 0.06},   // EnergyB_FDI  <-> EnergyB_ND
+        entry_t{1, 3, 0.07},   // EnergyB_FDI  <-> EnergyB_FDII
+        entry_t{1, 4, -0.87},  // EnergyB_FDI  <-> EnergyC_FDI
+        entry_t{2, 3, 0.12},   // EnergyB_ND   <-> EnergyB_FDII
+        entry_t{2, 5, -0.79},  // EnergyB_ND   <-> EnergyC_ND
+        entry_t{3, 6, -0.83}   // EnergyB_FDII <-> EnergyC_FDII
+    };
+
+    const auto [energy_spectral, energy_inverse] =
+        decompose_correlation_matrix(build_correlation_matrix(7, energy_entries));
+
+    assign_matrix(m_EnergyCorrelationMatrix, energy_spectral);
+    assign_matrix(m_EnergyInverseMatrix, energy_inverse);
+
+    // ---- MC normalisation correlations ----
+    // Parameter order: FDI, ND, FDII
+    constexpr std::array<entry_t, 3> mcNorm_entries = {
+        entry_t{0, 1, 0.838},  // FDI <-> ND
+        entry_t{0, 2, 0.827},  // FDI <-> FDII
+        entry_t{1, 2, 0.863}   // ND  <-> FDII
+    };
+
+    const auto [mcNorm_spectral, mcNorm_inverse] =
+        decompose_correlation_matrix(build_correlation_matrix(3, mcNorm_entries));
+
+    assign_matrix(m_MCNormCorrelationMatrix, mcNorm_spectral);
+    assign_matrix(m_MCNormInverseMatrix, mcNorm_inverse);
+
+    // ---- Inter detector reactor shape correlations ----
+    // Parameter order: FDI, ND, FDII.
+    // These are the values for the default scenario (Bugey4 anchor used, FD-I included,
+    // no free Bugey4 pull). Without the Bugey4 anchor the values are 0.931, 0.932 and 0.9975.
+    constexpr std::array<entry_t, 3> reactor_entries = {
+        entry_t{0, 1, 0.825},  // FDI <-> ND
+        entry_t{0, 2, 0.829},  // FDI <-> FDII
+        entry_t{1, 2, 0.993}   // ND  <-> FDII
+    };
+
+    const auto [reactor_spectral, reactor_inverse] =
+        decompose_correlation_matrix(build_correlation_matrix(3, reactor_entries));
+
+    assign_matrix(m_InterDetectorCorrelationMatrix, reactor_spectral);
   }
 
   std::vector<double> generate_lithium_background(std::default_random_engine& gen, std::size_t num_samples) {
@@ -481,6 +630,8 @@ namespace io::dc {
     : m_InputOptions(inputOptions) {
     using enum params::dc::DetectorType;
 
+    construct_correlation_matrices();
+
     std::default_random_engine gen(std::chrono::system_clock::now().time_since_epoch().count());
 
     try {
@@ -541,14 +692,16 @@ namespace io::dc {
 
     using enum params::dc::SpectrumType;
 
-    std::cout << "Generating " << std::setw(10) << 40'000 << " samples for Accidental Background\n";
+    std::cout << "Reading Accidental Background\n";
     {
+      // The accidental covariance matrix is not read from a file but derived from the accidental
+      // data itself, which is what the reference implementation does as well.
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths = m_InputOptions.double_chooz().input_paths(detector);
-        auto entries = get_background_entries(paths.background_path(accidental), paths.background_tree_name(accidental));
-        auto key_pair = std::make_tuple(detector, accidental);
-        m_BackgroundData[key_pair] = std::move(entries);
-        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]); // TODO Read from Double Chooz files
+        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        auto        entries            = get_background_entries(paths.background_path(accidental), paths.background_tree_name(accidental));
+        auto        key_pair           = std::make_tuple(detector, accidental);
+        m_BackgroundData[key_pair]     = std::move(entries);
+        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]);
       }
       // for (const auto detector : {ND, FDI, FDII}) {
       //   m_BackgroundData[std::make_tuple(detector, accidental)] = generate_accidental_background(gen, 40'000);
@@ -556,15 +709,16 @@ namespace io::dc {
       // }
     }
 
-    std::cout << "Generating " << std::setw(10) << 650'000 << " samples for Lithium Background\n";
+    std::cout << "Reading Lithium Background\n";
     {
-      auto lithium_background_samples = generate_lithium_background(gen, 650'000);
       for (const auto detector : {ND, FDI, FDII}) {
         const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
         auto        entries            = get_background_entries(paths.background_path(lithium), paths.background_tree_name(lithium));
         auto        key_pair           = std::make_tuple(detector, lithium);
         m_BackgroundData[key_pair]     = std::move(entries);
-        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair]);  // TODO Read from Double Chooz files
+        m_CovarianceMatrices[key_pair] = read_cov_matrix(paths.covarianceMatrix_path(lithium),
+                                                         paths.covarianceMatrix_name(lithium),
+                                                         Constants::number_of_energy_bins);
       }
       // for (const auto detector : {ND, FDI, FDII}) {
       //   auto key_pair = std::make_tuple(detector, lithium);
@@ -573,14 +727,20 @@ namespace io::dc {
       // }
     }
 
-    std::cout << "Generating " << std::setw(10) << 2'000'000 << " samples for fastN Background\n";
+    std::cout << "Reading fastN Background\n";
     {
+      // The fast neutron spectrum extends beyond the analysis range, so its covariance matrix
+      // covers all 44 bins instead of the usual number_of_energy_bins.
+      constexpr int nFastNBins = 44;
+
       for (const auto detector : {ND, FDI, FDII}) {
         const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
         auto        entries            = get_background_entries(paths.background_path(fastN), paths.background_tree_name(fastN));
         auto        key_pair           = std::make_tuple(detector, fastN);
         m_BackgroundData[key_pair]     = std::move(entries);
-        m_CovarianceMatrices[key_pair] = get_bkg_cov_matrix(m_BackgroundData[key_pair], 44);  // TODO Read from Double Chooz files
+        m_CovarianceMatrices[key_pair] = read_cov_matrix(paths.covarianceMatrix_path(fastN),
+                                                         paths.covarianceMatrix_name(fastN),
+                                                         nFastNBins);
       }
       // for (const auto detector : {ND, FDI, FDII}) {
       //   auto key_pair = std::make_tuple(detector, fastN);

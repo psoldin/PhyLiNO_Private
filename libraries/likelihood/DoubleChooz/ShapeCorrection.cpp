@@ -7,6 +7,58 @@
 
 namespace ana::dc {
 
+  /**
+   * @brief Maps an equidistant spline bin onto the official Double Chooz analysis bin.
+   *
+   * The reactor spectrum is calculated on an equidistant 0.25 MeV grid, while the reactor
+   * covariance matrix is given in the official, non equidistant analysis binning. Above 8 MeV
+   * several equidistant bins fall into the same official bin, so the covariance matrix entry has
+   * to be looked up through this mapping.
+   *
+   * @param idx The equidistant bin index.
+   * @return The official analysis bin index.
+   */
+  [[nodiscard]] inline int equidistant_bin_to_official_bin(int idx) noexcept {
+    switch (idx) {
+      case 0:
+        return 0;
+      case 29:
+      case 30:
+        return 28;
+      case 31:
+      case 32:
+        return 29;
+      case 33:
+      case 34:
+        return 30;
+      case 35:
+      case 36:
+        return 31;
+      case 37:
+      case 38:
+      case 39:
+      case 40:
+        return 32;
+      case 41:
+      case 42:
+      case 43:
+      case 44:
+        return 33;
+      case 45:
+      case 46:
+      case 47:
+      case 48:
+        return 34;
+      case 49:
+      case 50:
+      case 51:
+      case 52:
+        return 35;
+      default:
+        return idx - 1;
+    }
+  }
+
   [[nodiscard]] bool parameter_changed(const ParameterWrapper& parameter) noexcept {
     using enum params::dc::DetectorType;
     using namespace params;
@@ -71,11 +123,23 @@ namespace ana::dc {
 
       std::array<double, 80>& result = m_Cache[detector];
 
-      calculate_spectrum(rate,
-                         oscillated_spectrum,
-                         shape_parameter,
-                         covMatrix,
-                         result);
+      // The covariance matrix is de-fractionalised with the spectrum starting at bin zero, ...
+      const Eigen::VectorXd shifts = calculate_shifts(rate,
+                                                      oscillated_spectrum,
+                                                      shape_parameter,
+                                                      covMatrix,
+                                                      &equidistant_bin_to_official_bin,
+                                                      0);
+
+      // ... but the resulting shifts are applied starting at the first bin, because the
+      // normalisation shifts do not cover the whole spline support.
+      constexpr int shift_offset = 1;
+
+      std::ranges::copy(oscillated_spectrum, result.begin());
+
+      for (Eigen::Index i = 0; i < shifts.size(); ++i) {
+        result[shift_offset + i] += shifts[i];
+      }
     }
   }
 
