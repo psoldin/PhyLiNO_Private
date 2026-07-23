@@ -1,5 +1,4 @@
 set(files
-        profile_likelihood_scan.h
         perform_fit.h
         write_results.h
         write_results.cpp

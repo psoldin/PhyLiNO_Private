@@ -15,7 +15,7 @@ namespace ana::dc {
 
   class EnergyCorrection : public SpectrumBase {
   public:
-    explicit EnergyCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<ShapeCorrection> shape_correction);
+    explicit EnergyCorrection(std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<ShapeCorrection> shape_correction);
 
     ~EnergyCorrection() override = default;
 

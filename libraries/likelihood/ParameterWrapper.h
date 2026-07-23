@@ -147,13 +147,6 @@ namespace ana {
     std::size_t                  m_NParameter;          // Number of parameters
     const double*                m_RawParameter;        // Pointer to the raw parameter array
     transform_fn_t               m_TransformFn;         // Function to transform the parameters
-
-    /**
-     * @brief Unifies the parameters.
-     *
-     * This function unifies the parameters
-     */
-    void unify_parameters();
   };
 
 }  // namespace ana

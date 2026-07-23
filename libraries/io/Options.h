@@ -18,10 +18,6 @@ namespace io {
     Options(int argc, char** argv, InputOptions::experiment_options_t experiment_options)
       : m_InputOptions(argc, argv, std::move(experiment_options)) {}
 
-    /** Default constructor */
-    Options()
-      : Options(1, nullptr, {}) {}
-
     /** Default destructor */
     ~Options() = default;
 

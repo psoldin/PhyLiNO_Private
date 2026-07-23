@@ -73,7 +73,7 @@ namespace ana {
     }
 
     for (std::size_t i = 0; i < parameters.size(); ++i) {
-      if (m_Module->keep_parameter_free(*m_Options, i))
+      if (m_Module->keep_parameter_free(i))
         continue;
 
       if (fixed[i]) {

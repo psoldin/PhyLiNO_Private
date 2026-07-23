@@ -8,9 +8,17 @@
 #include <nlohmann/json.hpp>
 
 // STL includes
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <chrono>
 #include <fstream>
+#include <iostream>
+#include <ranges>
+#include <span>
+#include <sstream>
 #include <string_view>
+#include <vector>
 
 namespace result::dc {
 

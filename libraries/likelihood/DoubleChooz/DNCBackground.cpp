@@ -15,8 +15,8 @@ namespace ana::dc {
     return has_changed;
   }
 
-  DNCBackground::DNCBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
-    : SpectrumBase(std::move(options), std::move(dc_options)) {
+  DNCBackground::DNCBackground(std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(dc_options)) {
     using enum params::dc::DetectorType;
       std::array<double, 44> null_shape{};
       std::ranges::fill(null_shape, 0.0);

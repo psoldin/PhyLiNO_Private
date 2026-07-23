@@ -7,7 +7,7 @@ namespace ana::dc {
 
   class FastNBackground : public SpectrumBase {
    public:
-    explicit FastNBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options);
+    explicit FastNBackground(std::shared_ptr<const io::dc::DCOptions> dc_options);
 
     ~FastNBackground() override = default;
 

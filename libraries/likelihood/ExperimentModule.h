@@ -39,8 +39,7 @@ namespace ana {
      * Keep parameter i free even if the config marks it as fixed. Default: never.
      * (Double Chooz uses this for the sterile oscillation parameters.)
      */
-    [[nodiscard]] virtual bool keep_parameter_free(const io::Options& options, std::size_t i) const {
-      static_cast<void>(options);
+    [[nodiscard]] virtual bool keep_parameter_free(std::size_t i) const {
       static_cast<void>(i);
       return false;
     }

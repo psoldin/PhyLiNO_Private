@@ -3,7 +3,6 @@
 // includes
 #include "Definitions.h"
 #include "../ParameterWrapper.h"
-#include "Options.h"
 #include "DoubleChooz/DCOptions.h"
 
 // STL includes
@@ -28,22 +27,14 @@ namespace ana::dc {
      * It is intended to be inherited by specific spectrum classes that implement the actual calculations.
      * The class takes an options object as a parameter in its constructor.
      */
-    SpectrumBase(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
-      : m_Options(std::move(options))
-      , m_DCOptions(std::move(dc_options)) {
+    explicit SpectrumBase(std::shared_ptr<const io::dc::DCOptions> dc_options)
+      : m_DCOptions(std::move(dc_options)) {
     }
 
     /**
      * @brief Destructor for the BackgroundBase class.
      */
     virtual ~SpectrumBase() = default;
-
-    /**
-     * @brief Get the options object.
-     *
-     * @return const std::shared_ptr<io::Options>& The options object.
-     */
-    [[nodiscard]] const std::shared_ptr<io::Options>& options() const noexcept { return m_Options; }
 
     /**
      * @brief Get the Double Chooz options object.
@@ -76,7 +67,6 @@ namespace ana::dc {
     [[nodiscard]] virtual std::span<const double> get_spectrum(params::dc::DetectorType type) const = 0;
 
    protected:
-    std::shared_ptr<io::Options>              m_Options;
     std::shared_ptr<const io::dc::DCOptions>  m_DCOptions;
   };
 

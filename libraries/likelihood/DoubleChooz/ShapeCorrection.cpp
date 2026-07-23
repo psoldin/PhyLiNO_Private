@@ -78,8 +78,8 @@ namespace ana::dc {
     return parameter_changed;
   }
 
-  ShapeCorrection::ShapeCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<Oscillator> oscillator)
-    : SpectrumBase(std::move(options), std::move(dc_options))
+  ShapeCorrection::ShapeCorrection(std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<Oscillator> oscillator)
+    : SpectrumBase(std::move(dc_options))
     , m_Oscillator(std::move(oscillator)) {
     using enum params::dc::DetectorType;
 

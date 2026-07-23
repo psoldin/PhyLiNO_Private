@@ -20,6 +20,7 @@ set(files
     SpectrumBase.h
     Calculate_Spectrum.h
     RangeOscillator.h
+    OscillationData.h
     Oscillator.h
     Oscillator.cpp
     ThreeFlavorOscillation.h
@@ -48,8 +49,8 @@ add_library(doublechooz SHARED ${files})
 
 target_include_directories(doublechooz PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(doublechooz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../results)
-target_include_directories(doublechooz PRIVATE ${Boost_INCLUDE_DIR})
-target_include_directories(doublechooz PRIVATE ${ROOT_INCLUDE_DIR})
+target_include_directories(doublechooz PUBLIC ${Boost_INCLUDE_DIR})
+target_include_directories(doublechooz PUBLIC ${ROOT_INCLUDE_DIR})
 
 target_link_libraries(doublechooz PUBLIC io likelihood utilities ${Boost_LIBRARIES}
                       ROOT::Core ROOT::Tree ROOT::TreePlayer)

@@ -16,7 +16,7 @@ namespace ana::dc {
    */
   class AccidentalBackground : public SpectrumBase {
    public:
-    explicit AccidentalBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options);
+    explicit AccidentalBackground(std::shared_ptr<const io::dc::DCOptions> dc_options);
 
     /**
      * @brief Default destructor for the AccidentalBackground class.

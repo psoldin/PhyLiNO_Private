@@ -223,11 +223,11 @@ namespace ana::dc {
                  [dc_options](std::span<double> parameter) { correlate_parameters(*dc_options, parameter); })
     , m_DCInputOptions(std::move(dc_input_options))
     , m_DCOptions(dc_options)
-    , m_Accidental(options, dc_options)
-    , m_Lithium(options, dc_options)
-    , m_FastN(options, dc_options)
-    , m_DNC(options, dc_options)
-    , m_Reactor(options, dc_options) {
+    , m_Accidental(dc_options)
+    , m_Lithium(dc_options)
+    , m_FastN(dc_options)
+    , m_DNC(dc_options)
+    , m_Reactor(dc_options) {
     m_Components = {&m_Accidental, &m_Lithium, &m_FastN, &m_DNC, &m_Reactor};
     initialize_measurement_data();
     setup_pulls();

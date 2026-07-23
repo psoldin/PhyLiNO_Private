@@ -6,7 +6,7 @@ namespace ana::dc {
 
   class ShapeCorrection : public SpectrumBase {
    public:
-    explicit ShapeCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<Oscillator> oscillator);
+    explicit ShapeCorrection(std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<Oscillator> oscillator);
 
     ~ShapeCorrection() override = default;
 

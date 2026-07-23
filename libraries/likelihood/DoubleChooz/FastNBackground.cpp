@@ -26,8 +26,8 @@ namespace ana::dc {
     return has_changed;
   }
 
-  FastNBackground::FastNBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
-    : SpectrumBase(std::move(options), std::move(dc_options)) {
+  FastNBackground::FastNBackground(std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(dc_options)) {
     using enum params::dc::DetectorType;
 
     const auto& db = this->dc_options().dataBase();

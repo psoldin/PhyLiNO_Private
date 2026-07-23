@@ -9,7 +9,7 @@ set(files
 add_library(linearregression SHARED ${files})
 
 target_include_directories(linearregression PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(linearregression PRIVATE ${Boost_INCLUDE_DIR})
+target_include_directories(linearregression PUBLIC ${Boost_INCLUDE_DIR})
 target_include_directories(linearregression PRIVATE ${ROOT_INCLUDE_DIR})
 
 target_link_libraries(linearregression PUBLIC io likelihood utilities ${Boost_LIBRARIES})

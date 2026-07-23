@@ -2,11 +2,11 @@
 
 namespace ana::dc {
 
-  ReactorSpectrum::ReactorSpectrum(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
-    : SpectrumBase(std::move(options), std::move(dc_options)) {
-    m_Oscillator       = std::make_shared<Oscillator>(m_Options, m_DCOptions);
-    m_ShapeCorrection  = std::make_shared<ShapeCorrection>(m_Options, m_DCOptions, m_Oscillator);
-    m_EnergyCorrection = std::make_shared<EnergyCorrection>(m_Options, m_DCOptions, m_ShapeCorrection);
+  ReactorSpectrum::ReactorSpectrum(std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(dc_options)) {
+    m_Oscillator       = std::make_shared<Oscillator>(m_DCOptions);
+    m_ShapeCorrection  = std::make_shared<ShapeCorrection>(m_DCOptions, m_Oscillator);
+    m_EnergyCorrection = std::make_shared<EnergyCorrection>(m_DCOptions, m_ShapeCorrection);
   }
 
   bool ReactorSpectrum::check_and_recalculate(const ParameterWrapper &parameter) {

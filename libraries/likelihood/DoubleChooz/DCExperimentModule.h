@@ -29,8 +29,7 @@ namespace ana::dc {
 
     void write_results(Fit& fit, std::string_view name) override;
 
-    [[nodiscard]] bool keep_parameter_free(const io::Options& options, std::size_t i) const override {
-      static_cast<void>(options);
+    [[nodiscard]] bool keep_parameter_free(std::size_t i) const override {
       // With the sterile hypothesis enabled the sterile oscillation parameters stay free even if
       // the config marks them as fixed.
       return m_InputOptions->use_sterile() && (i == params::DeltaM41 || i == params::SinSqT14);
