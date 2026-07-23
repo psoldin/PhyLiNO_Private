@@ -27,6 +27,8 @@ namespace ana::dc {
 
     [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options) override;
 
+    void write_results(Fit& fit, std::string_view name) override;
+
     [[nodiscard]] bool keep_parameter_free(const io::Options& options, std::size_t i) const override {
       static_cast<void>(options);
       // With the sterile hypothesis enabled the sterile oscillation parameters stay free even if

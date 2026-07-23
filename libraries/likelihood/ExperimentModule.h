@@ -6,8 +6,11 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace ana {
+
+  class Fit;
 
   /**
    * @brief Interface every experiment implements to plug into the framework.
@@ -41,6 +44,9 @@ namespace ana {
       static_cast<void>(i);
       return false;
     }
+
+    /** Write the experiment-specific results of a finished fit to "<name>.json". */
+    virtual void write_results(Fit& fit, std::string_view name) = 0;
   };
 
   using module_map_t = std::map<std::string, std::shared_ptr<ExperimentModule>>;

@@ -3,6 +3,7 @@ set(files
         perform_fit.h
         write_results.h
         write_results.cpp
+        DoubleChooz/DCWriteResults.h
 )
 
 add_library(results SHARED ${files})

@@ -90,7 +90,6 @@ namespace io {
       it->second->read(vm, m_ConfigTree);
 
     } catch (std::exception& e) {
-      std::cout << e.what() << '\n';
       throw;
     }
   }

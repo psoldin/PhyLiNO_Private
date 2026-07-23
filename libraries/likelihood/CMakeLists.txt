@@ -40,6 +40,9 @@ target_include_directories(likelihood PUBLIC utilities io)
 target_include_directories(likelihood PRIVATE ${Boost_INCLUDE_DIR})
 target_include_directories(likelihood PRIVATE ${ROOT_INCLUDE_DIR})
 
+target_include_directories(likelihood PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../results)
+
 target_link_libraries(likelihood PUBLIC utilities ${Boost_LIBRARIES} io utilities ROOT::Core ROOT::Tree ROOT::TreePlayer)
+target_link_libraries(likelihood PUBLIC nlohmann_json::nlohmann_json)
 
 set_target_properties(likelihood PROPERTIES LINKER_LANGUAGE CXX)
