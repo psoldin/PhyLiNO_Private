@@ -2,23 +2,11 @@ set(files
         InputOptions.h
         InputOptions.cpp
         InputOptionBase.h
-        DoubleChooz/DCInputOptions.h
-        DoubleChooz/DCInputOptions.cpp
+        InputParameter.h
         Options.h
         Options.cpp
-        DoubleChooz/DCDetectorPaths.cpp
-        DoubleChooz/DCDetectorPaths.h
         TreeEntry.h
-        Parameter.h
-        DoubleChooz/DataBase.h
-        DoubleChooz/DataBase.cpp
-        ReactorData.h
-        ReactorData.cpp
         ParameterValue.h
-        DoubleChooz/Constants.h
-        DoubleChooz/DCOptions.h
-        DoubleChooz/StartingParameter.cpp
-        DoubleChooz/StartingParameter.h
 )
 
 add_library(io SHARED ${files})

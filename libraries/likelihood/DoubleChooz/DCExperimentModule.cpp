@@ -4,6 +4,8 @@
 
 #include "DoubleChooz/DCWriteResults.h"
 
+#include <stdexcept>
+
 namespace ana::dc {
 
   std::shared_ptr<Likelihood> DCExperimentModule::create_likelihood(std::shared_ptr<io::Options> options) {
@@ -17,6 +19,9 @@ namespace ana::dc {
   }
 
   void DCExperimentModule::write_results(Fit& fit, std::string_view name) {
+    if (m_Likelihood == nullptr) {
+      throw std::logic_error("DCExperimentModule::write_results called before create_likelihood");
+    }
     result::dc::write_double_chooz_results(fit, *m_Likelihood, *m_InputOptions, name);
   }
 
