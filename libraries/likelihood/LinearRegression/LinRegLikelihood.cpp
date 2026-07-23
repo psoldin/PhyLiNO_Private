@@ -6,16 +6,19 @@ namespace ana::linreg {
 
   LinRegLikelihood::LinRegLikelihood(std::shared_ptr<io::Options> options, const io::linreg::LinRegInputOptions& input_options)
     : Likelihood(std::move(options), 2)
-    , m_X(input_options.n_points())
-    , m_Y(input_options.n_points())
+    , m_X()
+    , m_Y()
     , m_Sigma(input_options.sigma()) {
-    if (m_X.size() < 2) {
+    if (input_options.n_points() < 2) {
       throw std::invalid_argument("LinearRegression: NPoints has to be at least 2");
     }
 
     if (m_Sigma <= 0.0) {
       throw std::invalid_argument("LinearRegression: Sigma has to be positive");
     }
+
+    m_X.resize(input_options.n_points());
+    m_Y.resize(input_options.n_points());
 
     const double dx = (input_options.x_max() - input_options.x_min()) / static_cast<double>(m_X.size() - 1);
 
