@@ -1,32 +1,32 @@
 // STL includes
 #include <iostream>
-#include <ranges>
 
 // includes
+#include "DoubleChooz/DCExperimentModule.h"
+#include "ExperimentModule.h"
 #include "Fit.h"
 #include "Options.h"
-
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
-
-#include "DoubleChooz/DCLikelihood.h"
-
 #include "write_results.h"
 
-#include <TFile.h>
-#include <TH1D.h>
-#include <TH2D.h>
 #include <TROOT.h>
-
-#include <numeric>
 
 int main(int argc, char** argv) {
   ROOT::EnableThreadSafety();
 
   try {
-    auto options = std::make_shared<io::Options>(argc, argv);
+    // Register all available experiments. Only the one selected via the "Experiment" config key
+    // is initialized and used for the fit.
+    ana::module_map_t modules;
+    {
+      auto dc_module             = std::make_shared<ana::dc::DCExperimentModule>();
+      modules[dc_module->name()] = dc_module;
+    }
 
-    ana::Fit fit(options);
+    auto options = std::make_shared<io::Options>(argc, argv, ana::collect_input_options(modules));
+
+    const auto module = modules.at(options->inputOptions().experiment());
+
+    ana::Fit fit(options, module);
 
     fit.minimize();
     result::write_results(fit, "Output");

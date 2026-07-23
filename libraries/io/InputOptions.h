@@ -2,9 +2,10 @@
 
 // STL includes
 #include <map>
+#include <memory>
+#include <string>
 
 // includes
-#include "DoubleChooz/DCInputOptions.h"
 #include "InputOptionBase.h"
 #include "InputParameter.h"
 
@@ -19,13 +20,16 @@ namespace io {
    */
   class InputOptions {
    public:
+    using experiment_options_t = std::map<std::string, std::shared_ptr<InputOptionBase>>;
+
     /**
      * @brief Constructor that initializes the input options.
      *
      * @param argc The number of command line arguments.
      * @param argv The array of command line arguments.
+     * @param experiment_options Option parsers of all registered experiments.
      */
-    InputOptions(int argc, char** argv);
+    InputOptions(int argc, char** argv, experiment_options_t experiment_options);
 
     /** Default destructor */
     ~InputOptions() = default;
@@ -46,7 +50,8 @@ namespace io {
 
     [[nodiscard]] const auto& input_parameters() const noexcept { return *m_InputParameter; }
 
-    [[nodiscard]] const auto& double_chooz() const noexcept { return *m_DCInputOptions; }
+    /** Name of the experiment selected via the "Experiment" config key. */
+    [[nodiscard]] const std::string& experiment() const noexcept { return m_Experiment; }
 
     [[nodiscard]] bool use_multi_threading() const noexcept { return m_MultiThreadingCores > 1; }
 
@@ -68,6 +73,7 @@ namespace io {
 
     std::shared_ptr<InputParameter> m_InputParameter; /**< The input parameter object. */
 
-    std::shared_ptr<io::dc::DCInputOptions> m_DCInputOptions; /**< The Double Chooz input options. */
+    std::string          m_Experiment;        /**< The selected experiment. */
+    experiment_options_t m_ExperimentOptions; /**< Option parsers of all registered experiments. */
   };
 }  // namespace io

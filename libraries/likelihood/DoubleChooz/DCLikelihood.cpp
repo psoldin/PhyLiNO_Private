@@ -43,7 +43,7 @@ namespace ana::dc {
   }
 
   void DCLikelihood::initialize_measurement_data() {
-    if (m_Options->inputOptions().double_chooz().use_data()) {
+    if (m_DCInputOptions->use_data()) {
       read_measurement_data();
     } else {
       generate_measurement_data();
@@ -215,14 +215,13 @@ namespace ana::dc {
     }
   }
 
-  DCLikelihood::DCLikelihood(std::shared_ptr<io::Options> options, int nParameter)
-    : DCLikelihood(options, nParameter, std::make_shared<const io::dc::DCOptions>(options->inputOptions())) {}
-
-  DCLikelihood::DCLikelihood(std::shared_ptr<io::Options>              options,
-                             int                                       nParameter,
-                             std::shared_ptr<const io::dc::DCOptions>  dc_options)
+  DCLikelihood::DCLikelihood(std::shared_ptr<io::Options>                  options,
+                             int                                           nParameter,
+                             std::shared_ptr<const io::dc::DCOptions>      dc_options,
+                             std::shared_ptr<const io::dc::DCInputOptions> dc_input_options)
     : Likelihood(options, nParameter,
                  [dc_options](std::span<double> parameter) { correlate_parameters(*dc_options, parameter); })
+    , m_DCInputOptions(std::move(dc_input_options))
     , m_DCOptions(dc_options)
     , m_Accidental(options, dc_options)
     , m_Lithium(options, dc_options)
@@ -400,7 +399,7 @@ namespace ana::dc {
 
   double DCLikelihood::calculate_likelihood(const double* parameter) {
     check_and_recalculate(parameter);
-    if (m_Options->inputOptions().double_chooz().reactor_split()) {
+    if (m_DCInputOptions->reactor_split()) {
       return calculate_reactor_split_likelihood(m_Parameter);
     }
     return calculate_default_likelihood(m_Parameter);

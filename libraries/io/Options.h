@@ -15,12 +15,12 @@ namespace io {
      * @param argc Command line argc
      * @param argv Command line argv
      */
-    Options(int argc, char** argv)
-      : m_InputOptions(argc, argv) {}
+    Options(int argc, char** argv, InputOptions::experiment_options_t experiment_options)
+      : m_InputOptions(argc, argv, std::move(experiment_options)) {}
 
     /** Default constructor */
     Options()
-      : Options(1, nullptr) {}
+      : Options(1, nullptr, {}) {}
 
     /** Default destructor */
     ~Options() = default;

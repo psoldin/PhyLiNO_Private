@@ -3,6 +3,7 @@
 #include "../InputOptions.h"
 #include "../Parameter.h"
 #include "../ReactorData.h"
+#include "DCInputOptions.h"
 
 #include <span>
 #include <string>
@@ -27,8 +28,9 @@ namespace io::dc {
     /**
      * Constructor
      * @param inputs InputOptions
+     * @param dc_inputs Double Chooz input options
      */
-    explicit DataBase(const io::InputOptions& inputs);
+    explicit DataBase(const io::InputOptions& inputs, const io::dc::DCInputOptions& dc_inputs);
 
     /** Default destructor */
     ~DataBase() = default;
@@ -121,7 +123,8 @@ namespace io::dc {
    private:
     void construct_correlation_matrices();
 
-    const io::InputOptions& m_InputOptions;
+    const io::InputOptions&       m_InputOptions;
+    const io::dc::DCInputOptions& m_DCInputOptions;
 
     /**
      * @brief A class representing a pair of keys used in the database.

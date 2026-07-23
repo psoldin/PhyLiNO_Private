@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Fit.h"
+#include "DoubleChooz/DCExperimentModule.h"
 
 #include <nlohmann/json.hpp>
 
 // STL includes
+#include <cassert>
 #include <string_view>
 
 namespace result {
@@ -13,6 +15,11 @@ namespace result {
 
     inline nlohmann::json get_json_file(ana::Fit& fit) {
       using namespace nlohmann;
+
+      const auto module = std::dynamic_pointer_cast<ana::dc::DCExperimentModule>(fit.module());
+      assert(module != nullptr);
+      const auto llh    = module->likelihood();
+      const auto dc_llh = llh;
 
       const auto options = fit.options();
       assert(options != nullptr);
@@ -33,7 +40,7 @@ namespace result {
 
       json j;
 
-      const auto& dcInfo = options->inputOptions().double_chooz();
+      const auto& dcInfo = module->dc_input_options();
 
       j["valid"]        = min->IsValidError();
       j["nFree"]        = min->NFree();
@@ -54,8 +61,6 @@ namespace result {
       }
 
       std::vector<json> parametersJson;
-
-      auto llh = fit.doublechooz_likelihood();
 
       auto& parameter = llh->parameter();
 
@@ -84,8 +89,6 @@ namespace result {
       } else {
         detector_types = {ND, FDI, FDII};
       }
-
-      auto dc_llh = fit.doublechooz_likelihood();
 
       auto& acc_bkg = dc_llh->accidental_background();
       auto& li_bkg  = dc_llh->lithium_background();
@@ -235,7 +238,7 @@ namespace result {
   }  // namespace dc
 
   inline void write_results(ana::Fit& fit, std::string_view name) {
-    if (fit.use_double_chooz()) {
+    if (fit.module()->name() == "DoubleChooz") {
       dc::write_double_chooz_results(fit, name);
     } else {
       throw std::invalid_argument("Only Double Chooz results are supported at the moment.");

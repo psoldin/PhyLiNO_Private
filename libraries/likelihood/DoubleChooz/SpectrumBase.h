@@ -53,13 +53,6 @@ namespace ana::dc {
     [[nodiscard]] const io::dc::DCOptions& dc_options() const noexcept { return *m_DCOptions; }
 
     /**
-     * @brief Get the shared pointer to the Double Chooz options object.
-     *
-     * @return const std::shared_ptr<const io::dc::DCOptions>& The Double Chooz options object.
-     */
-    [[nodiscard]] const std::shared_ptr<const io::dc::DCOptions>& dc_options_ptr() const noexcept { return m_DCOptions; }
-
-    /**
      * @brief Check and recalculate the spectrum.
      *
      * This function is called to check if the spectrum needs to be recalculated and then recalculates it if necessary.

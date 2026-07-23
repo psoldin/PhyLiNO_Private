@@ -626,8 +626,9 @@ namespace io::dc {
     return fractionalCovariance;
   }
 
-  DataBase::DataBase(const io::InputOptions& inputOptions)
-    : m_InputOptions(inputOptions) {
+  DataBase::DataBase(const io::InputOptions& inputOptions, const io::dc::DCInputOptions& dcInputOptions)
+    : m_InputOptions(inputOptions)
+    , m_DCInputOptions(dcInputOptions) {
     using enum params::dc::DetectorType;
 
     construct_correlation_matrices();
@@ -638,7 +639,7 @@ namespace io::dc {
       for (auto detector : {ND, FDI, FDII}) {
         // In the usual case, the input paths are read from the configuration file.
         // Here they are generated on the fly.
-        // const auto& paths = m_InputOptions.double_chooz().input_paths(detector);
+        // const auto& paths = m_DCInputOptions.input_paths(detector);
 
         std::size_t num_samples;
         double      ratio, p1, p2;
@@ -670,13 +671,13 @@ namespace io::dc {
         }
 
         // std::cout << "Generating " << std::setw(10) << num_samples << " samples for reactor data set for " << name << '\n';
-        auto reactor_tree_entries = read_reactor_root_file(m_InputOptions.double_chooz().input_paths(detector));
+        auto reactor_tree_entries = read_reactor_root_file(m_DCInputOptions.input_paths(detector));
 
         m_ReactorData[detector] = std::make_shared<ReactorData>(reactor_tree_entries, detector);
 
       }
       // FDI, FDII, ND
-      auto m = read_reactor_cov(m_InputOptions.double_chooz().input_paths(ND).reactor_covariance_matrix_path()); //generate_reactor_covariance_matrix(m_ReactorData[detector]->evis());
+      auto m = read_reactor_cov(m_DCInputOptions.input_paths(ND).reactor_covariance_matrix_path()); //generate_reactor_covariance_matrix(m_ReactorData[detector]->evis());
 
       std::vector detectors = {FDI, FDII, ND};
 
@@ -697,7 +698,7 @@ namespace io::dc {
       // The accidental covariance matrix is not read from a file but derived from the accidental
       // data itself, which is what the reference implementation does as well.
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        const auto& paths              = m_DCInputOptions.input_paths(detector);
         auto        entries            = get_background_entries(paths.background_path(accidental), paths.background_tree_name(accidental));
         auto        key_pair           = std::make_tuple(detector, accidental);
         m_BackgroundData[key_pair]     = std::move(entries);
@@ -712,7 +713,7 @@ namespace io::dc {
     std::cout << "Reading Lithium Background\n";
     {
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        const auto& paths              = m_DCInputOptions.input_paths(detector);
         auto        entries            = get_background_entries(paths.background_path(lithium), paths.background_tree_name(lithium));
         auto        key_pair           = std::make_tuple(detector, lithium);
         m_BackgroundData[key_pair]     = std::move(entries);
@@ -734,7 +735,7 @@ namespace io::dc {
       constexpr int nFastNBins = 44;
 
       for (const auto detector : {ND, FDI, FDII}) {
-        const auto& paths              = m_InputOptions.double_chooz().input_paths(detector);
+        const auto& paths              = m_DCInputOptions.input_paths(detector);
         auto        entries            = get_background_entries(paths.background_path(fastN), paths.background_tree_name(fastN));
         auto        key_pair           = std::make_tuple(detector, fastN);
         m_BackgroundData[key_pair]     = std::move(entries);

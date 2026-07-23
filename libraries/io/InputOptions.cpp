@@ -12,14 +12,13 @@
 
 namespace io {
 
-  InputOptions::InputOptions(int argc, char** argv)
+  InputOptions::InputOptions(int argc, char** argv, experiment_options_t experiment_options)
     : m_Seed(std::chrono::system_clock::now().time_since_epoch().count())
     , m_Silent(false)
-    , m_MultiThreadingCores(-1) {
+    , m_MultiThreadingCores(-1)
+    , m_ExperimentOptions(std::move(experiment_options)) {
     std::string inputFile;
     try {
-
-      m_DCInputOptions = std::make_shared<dc::DCInputOptions>();
 
       namespace po = boost::program_options;
       namespace pt = boost::property_tree;
@@ -37,7 +36,10 @@ namespace io {
       ;
 
       po::options_description cmdline_options;
-      cmdline_options.add(generic_options).add(m_DCInputOptions->options());
+      cmdline_options.add(generic_options);
+      for (const auto& [name, option] : m_ExperimentOptions) {
+        cmdline_options.add(option->options());
+      }
 
       po::variables_map vm;
       store(po::parse_command_line(argc, argv, cmdline_options), vm);
@@ -52,8 +54,7 @@ namespace io {
 
       notify(vm);
 
-      using option_ptr_t = std::shared_ptr<InputOptionBase>;
-      namespace pt       = boost::property_tree;
+      namespace pt = boost::property_tree;
 
       if (!boost::filesystem::exists(m_ConfigFile)) {
         throw std::invalid_argument("Error: Config File " + m_ConfigFile + " not found");
@@ -64,20 +65,33 @@ namespace io {
 
       m_InputParameter = std::make_shared<InputParameter>(m_ConfigTree.get_child("Parameter"));
 
-      // Add the experiment specific options here
-      std::map<std::string, option_ptr_t> options = {{"DoubleChooz", m_DCInputOptions}};
+      const auto experiment = m_ConfigTree.get_optional<std::string>("Experiment");
 
-      for (const auto& [name, option] : options) {
-        if (option == nullptr) {
-          std::cout << "Option " << name << " is not initialized\n";
-          continue;
+      const auto registered_names = [this] {
+        std::string names;
+        for (const auto& [name, option] : m_ExperimentOptions) {
+          names += (names.empty() ? "" : ", ") + name;
         }
+        return names;
+      };
 
-        option->read(vm, m_ConfigTree);
+      if (!experiment) {
+        throw std::invalid_argument("Config file is missing the top-level \"Experiment\" key. Registered experiments: " + registered_names());
       }
+
+      m_Experiment = *experiment;
+
+      const auto it = m_ExperimentOptions.find(m_Experiment);
+      if (it == m_ExperimentOptions.end()) {
+        throw std::invalid_argument("Unknown experiment \"" + m_Experiment + "\". Registered experiments: " + registered_names());
+      }
+
+      std::cout << "Selected experiment: " << m_Experiment << '\n';
+      it->second->read(vm, m_ConfigTree);
 
     } catch (std::exception& e) {
       std::cout << e.what() << '\n';
+      throw;
     }
   }
 }  // namespace io

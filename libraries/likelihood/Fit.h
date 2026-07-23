@@ -1,30 +1,29 @@
 #pragma once
 
+#include "ExperimentModule.h"
 #include "Likelihood.h"
 #include "Options.h"
 
 // STL includes
 #include <chrono>
 #include <memory>
-#include <vector>
 
 // ROOT includes
 #include <Math/Factory.h>
 #include <Math/Functor.h>
 #include <Math/Minimizer.h>
 
-#include "DoubleChooz/DCLikelihood.h"
-
 namespace ana {
-  // TODO: Implementation & Documentation missing
 
   class Fit {
    public:
-    explicit Fit(std::shared_ptr<io::Options> options);
+    Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module);
 
     ~Fit() = default;
 
-    [[nodiscard]] std::shared_ptr<dc::DCLikelihood> doublechooz_likelihood() const;
+    [[nodiscard]] const std::shared_ptr<Likelihood>& likelihood() const noexcept { return m_Likelihood; }
+
+    [[nodiscard]] const std::shared_ptr<ExperimentModule>& module() const noexcept { return m_Module; }
 
     bool minimize();
 
@@ -36,10 +35,9 @@ namespace ana {
 
     auto get_minimizer() const { return m_Minimizer; }
 
-    bool use_double_chooz() const { return true; }  // TODO This should be initialized in the Constructor
-
    private:
-    std::shared_ptr<io::Options> m_Options;
+    std::shared_ptr<io::Options>      m_Options;
+    std::shared_ptr<ExperimentModule> m_Module;
 
     std::chrono::duration<double, std::ratio<1>> m_FitDuration;
 
@@ -50,7 +48,7 @@ namespace ana {
 
     std::shared_ptr<ROOT::Math::Functor> m_Functor;
 
-    std::shared_ptr<dc::DCLikelihood> m_DCLikelihood;
+    std::shared_ptr<Likelihood> m_Likelihood;
 
     void setup_minimizer();
   };

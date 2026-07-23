@@ -1,9 +1,12 @@
 set(files
     Fit.h
     Fit.cpp
+    ExperimentModule.h
     ParameterWrapper.h
     ParameterWrapper.cpp
     Likelihood.h
+    DoubleChooz/DCExperimentModule.h
+    DoubleChooz/DCExperimentModule.cpp
     DoubleChooz/Definitions.h
     DoubleChooz/SpectrumBase.h
     DoubleChooz/Oscillator.h

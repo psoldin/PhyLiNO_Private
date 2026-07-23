@@ -1,9 +1,18 @@
 #include "Fit.h"
 
+// STL includes
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
 namespace ana {
 
-  Fit::Fit(std::shared_ptr<io::Options> options)
+  Fit::Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module)
     : m_Options(std::move(options))
+    , m_Module(std::move(module))
     , m_FitDuration(0)
     , m_Converged(false)
     , m_FitPerformed(false) {
@@ -11,17 +20,24 @@ namespace ana {
     static std::mutex mutex;
     std::unique_lock  lock{mutex};
 
-    // Initialize Likelihood
-    // TODO Make this dynamic
-    m_DCLikelihood = std::make_shared<dc::DCLikelihood>(m_Options, params::number_of_parameters());
+    const int         n_parameter = m_Module->number_of_parameters();
+    const std::size_t n_config    = m_Options->inputOptions().input_parameters().size();
+
+    if (static_cast<std::size_t>(n_parameter) != n_config) {
+      throw std::invalid_argument("Experiment " + m_Module->name() + " expects " + std::to_string(n_parameter) +
+                                  " parameters, but the config file provides " + std::to_string(n_config));
+    }
+
+    // Initialize the likelihood of the selected experiment
+    m_Likelihood = m_Module->create_likelihood(m_Options);
 
     // Initialize the minimizer object
     m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
 
     // Initialize the functor object
-    m_Functor = std::make_shared<ROOT::Math::Functor>(m_DCLikelihood.get(),
+    m_Functor = std::make_shared<ROOT::Math::Functor>(m_Likelihood.get(),
                                                       &Likelihood::calculate_likelihood,
-                                                      params::number_of_parameters());
+                                                      n_parameter);
 
     // Set the function to be minimized
     m_Minimizer->SetFunction(*m_Functor);
@@ -34,9 +50,6 @@ namespace ana {
   }
 
   void Fit::setup_minimizer() {
-    using namespace params;
-    using namespace params::dc;
-
     const bool silent = m_Options->inputOptions().silent();
 
     const auto& input_parameters = m_Options->inputOptions().input_parameters();
@@ -55,14 +68,12 @@ namespace ana {
       m_Minimizer->SetVariable(i, names[i], parameters[i].value(), parameters[i].uncertainty());
     }
 
-    const bool use_sterile = m_Options->inputOptions().double_chooz().use_sterile();
-
     if (!silent) {
       std::cout << "-----\n";
     }
 
     for (std::size_t i = 0; i < parameters.size(); ++i) {
-      if (use_sterile && (i == DeltaM41 || i == SinSqT14))
+      if (m_Module->keep_parameter_free(*m_Options, i))
         continue;
 
       if (fixed[i]) {
@@ -72,10 +83,6 @@ namespace ana {
         m_Minimizer->FixVariable(i);
       }
     }
-  }
-
-  std::shared_ptr<dc::DCLikelihood> Fit::doublechooz_likelihood() const {
-    return m_DCLikelihood;
   }
 
   bool Fit::minimize() {
