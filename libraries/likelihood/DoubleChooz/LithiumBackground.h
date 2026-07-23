@@ -8,7 +8,7 @@ namespace ana::dc {
 
   class LithiumBackground : public SpectrumBase {
    public:
-    explicit LithiumBackground(std::shared_ptr<io::Options> options);
+    explicit LithiumBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options);
 
     ~LithiumBackground() override = default;
 

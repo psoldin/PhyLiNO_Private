@@ -122,7 +122,7 @@ namespace ana::dc {
   }
 
   double DCLikelihood::off_off_scaling(params::dc::DetectorType detector) const noexcept {
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = m_DCOptions->dataBase();
 
     const double on_lifetime = db.on_lifetime(detector);
 
@@ -137,7 +137,7 @@ namespace ana::dc {
     return off_lifetime / on_lifetime;
   }
 
-  void correlate_parameters(const io::Options& options, std::span<double> parameters) {
+  void correlate_parameters(const io::dc::DCOptions& options, std::span<double> parameters) {
     using enum params::dc::DetectorType;
     using enum params::dc::Detector;
     using namespace params;
@@ -157,7 +157,7 @@ namespace ana::dc {
       }
     }
 
-    const auto& dco = options.double_chooz().dataBase();
+    const auto& dco = options.dataBase();
 
     {  // Correlate Energy Parameters
       // EnergyA is fully correlated among all detectors
@@ -216,13 +216,19 @@ namespace ana::dc {
   }
 
   DCLikelihood::DCLikelihood(std::shared_ptr<io::Options> options, int nParameter)
+    : DCLikelihood(options, nParameter, std::make_shared<const io::dc::DCOptions>(options->inputOptions())) {}
+
+  DCLikelihood::DCLikelihood(std::shared_ptr<io::Options>              options,
+                             int                                       nParameter,
+                             std::shared_ptr<const io::dc::DCOptions>  dc_options)
     : Likelihood(options, nParameter,
-                 [opt = options](std::span<double> parameter) { correlate_parameters(*opt, parameter); })
-    , m_Accidental(m_Options)
-    , m_Lithium(m_Options)
-    , m_FastN(m_Options)
-    , m_DNC(m_Options)
-    , m_Reactor(m_Options) {
+                 [dc_options](std::span<double> parameter) { correlate_parameters(*dc_options, parameter); })
+    , m_DCOptions(dc_options)
+    , m_Accidental(options, dc_options)
+    , m_Lithium(options, dc_options)
+    , m_FastN(options, dc_options)
+    , m_DNC(options, dc_options)
+    , m_Reactor(options, dc_options) {
     m_Components = {&m_Accidental, &m_Lithium, &m_FastN, &m_DNC, &m_Reactor};
     initialize_measurement_data();
     setup_pulls();
@@ -309,7 +315,7 @@ namespace ana::dc {
     using enum params::dc::Detector;
     using namespace params;
 
-    const auto& dco = m_Options->double_chooz().dataBase();
+    const auto& dco = m_DCOptions->dataBase();
 
     double result = 0.0;
 
@@ -434,7 +440,7 @@ namespace ana::dc {
   double DCLikelihood::calculate_mcNorm(const ParameterWrapper& parameter, params::dc::DetectorType type) const noexcept {
     using namespace params::dc;
 
-    const auto [value, error] = m_Options->double_chooz().dataBase().mcNorm_central_values(type);
+    const auto [value, error] = m_DCOptions->dataBase().mcNorm_central_values(type);
 
     const double norm = parameter[params::index(type, Detector::MCNorm)];
 

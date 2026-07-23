@@ -18,7 +18,7 @@ namespace ana::dc {
      *
      * @param options The options for the Oscillator.
      */
-    explicit Oscillator(std::shared_ptr<io::Options> options);
+    explicit Oscillator(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options);
 
     /**
      * @brief Destructor for the Oscillator object.

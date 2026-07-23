@@ -20,12 +20,12 @@ namespace ana::dc {
     return indices;
   }
 
-  Oscillator::Oscillator(std::shared_ptr<io::Options> options)
-    : SpectrumBase(std::move(options)) {
+  Oscillator::Oscillator(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(options), std::move(dc_options)) {
     using enum params::dc::DetectorType;
 
     for (const auto detector : {ND, FDI, FDII}) {
-      const auto& reactorData = m_Options->double_chooz().dataBase().reactor_data(detector);
+      const auto& reactorData = this->dc_options().dataBase().reactor_data(detector);
       add_reactor_data(reactorData, detector);
     }
   }

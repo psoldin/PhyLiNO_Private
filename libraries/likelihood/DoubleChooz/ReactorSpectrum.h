@@ -8,7 +8,7 @@ namespace ana::dc {
 
   class ReactorSpectrum : public SpectrumBase {
   public:
-    explicit ReactorSpectrum(std::shared_ptr<io::Options> options);
+    explicit ReactorSpectrum(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options);
 
     bool check_and_recalculate(const ParameterWrapper& parameter) override;
 

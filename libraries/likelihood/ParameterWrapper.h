@@ -3,6 +3,7 @@
 #include <functional>
 
 // STL includes
+#include <cstddef>
 #include <span>
 #include <vector>
 
@@ -22,7 +23,7 @@ namespace ana {
      * @brief Constructs a ParameterWrapper object.
      *
      * @param nParameter The number of parameters.
-     * @param transform_fn A function pointer to transform the parameters (default is nullptr).
+     * @param transform_fn Function applied to every incoming parameter set (may be empty).
      */
     explicit ParameterWrapper(std::size_t nParameter, transform_fn_t transform_fn = nullptr);
     /**

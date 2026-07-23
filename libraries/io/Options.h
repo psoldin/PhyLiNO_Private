@@ -1,8 +1,6 @@
 #pragma once
 
-#include "DoubleChooz/DataBase.h"
 #include "InputOptions.h"
-#include "DoubleChooz/DCOptions.h"
 
 namespace io {
 
@@ -18,8 +16,7 @@ namespace io {
      * @param argv Command line argv
      */
     Options(int argc, char** argv)
-      : m_InputOptions(argc, argv)
-      , m_DCOptions(m_InputOptions) {}
+      : m_InputOptions(argc, argv) {}
 
     /** Default constructor */
     Options()
@@ -29,12 +26,6 @@ namespace io {
     ~Options() = default;
 
     /**
-     * Accessor for the Double Chooz specific options
-     * @return DCOptions
-     */
-    [[nodiscard]] const dc::DCOptions& double_chooz() const noexcept { return m_DCOptions; }
-
-    /**
      * Accessor for the Input Options handed over at program start
      * @return InputOptions
      */
@@ -42,7 +33,6 @@ namespace io {
 
    private:
     InputOptions m_InputOptions;
-    dc::DCOptions m_DCOptions;
   };
 
 }  // namespace io

@@ -4,6 +4,7 @@
 #include "Options.h"
 #include "ParameterWrapper.h"
 #include "TVectorD.h"
+#include "DoubleChooz/DCOptions.h"
 
 #include "AccidentalBackground.h"
 #include "DNCBackground.h"
@@ -20,10 +21,10 @@ namespace ana::dc {
    * spectra they are transformed into correlated ones using the spectral matrices of the
    * respective correlation matrices.
    *
-   * @param options The options object holding the correlation matrices.
+   * @param options The Double Chooz options object holding the correlation matrices.
    * @param parameters The parameter set that is modified in place.
    */
-  void correlate_parameters(const io::Options& options, std::span<double> parameters);
+  void correlate_parameters(const io::dc::DCOptions& options, std::span<double> parameters);
 
   /**
    * @class DCLikelihood
@@ -173,6 +174,20 @@ namespace ana::dc {
      * @return The summed correlated pull contribution.
      */
     [[nodiscard]] double calculate_correlated_pulls(const ParameterWrapper& parameter) const noexcept;
+
+    /**
+     * @brief Delegate constructor that owns the DCOptions object.
+     *
+     * The public two-argument constructor creates the DCOptions object and forwards it here so
+     * that it can be threaded through all the spectrum components as well as stored as a member.
+     *
+     * @param options A shared pointer to an io::Options object that contains the configuration options.
+     * @param nParameter The number of parameters.
+     * @param dc_options The Double Chooz options object.
+     */
+    DCLikelihood(std::shared_ptr<io::Options> options, int nParameter, std::shared_ptr<const io::dc::DCOptions> dc_options);
+
+    std::shared_ptr<const io::dc::DCOptions> m_DCOptions;  ///< The Double Chooz options object. Must stay the first data member so it initializes before the components.
 
     AccidentalBackground m_Accidental;  ///< The accidental background object.
     LithiumBackground    m_Lithium;     ///< The lithium background object.

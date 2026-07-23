@@ -95,8 +95,8 @@ namespace ana::dc {
     Eigen::Spline<double, 1, 3> spline_;
   };
 
-  EnergyCorrection::EnergyCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<ShapeCorrection> shape_correction)
-    : SpectrumBase(std::move(options))
+  EnergyCorrection::EnergyCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<ShapeCorrection> shape_correction)
+    : SpectrumBase(std::move(options), std::move(dc_options))
     , m_ShapeCorrection(std::move(shape_correction)) {
     auto xpos_values = range(0.25, 20.25, 0.25);
     m_XPos           = Eigen::Array<double, 80, 1>(xpos_values.data());
@@ -143,7 +143,7 @@ namespace ana::dc {
     using namespace params::dc;
     using enum DetectorType;
 
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = dc_options().dataBase();
 
     using span_t = std::span<const double>;
 

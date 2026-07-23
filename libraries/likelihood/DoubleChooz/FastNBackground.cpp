@@ -26,11 +26,11 @@ namespace ana::dc {
     return has_changed;
   }
 
-  FastNBackground::FastNBackground(std::shared_ptr<io::Options> options)
-    : SpectrumBase(std::move(options)) {
+  FastNBackground::FastNBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(options), std::move(dc_options)) {
     using enum params::dc::DetectorType;
 
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = this->dc_options().dataBase();
 
     for (const auto detector : {ND, FDI, FDII}) {
       auto cov              = db.covariance_matrix(detector, params::dc::SpectrumType::fastN);
@@ -78,7 +78,7 @@ namespace ana::dc {
   }
 
   void FastNBackground::fill_data(params::dc::DetectorType type) {
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = dc_options().dataBase();
 
     auto fastN_data = db.background_data(type, params::dc::SpectrumType::fastN);
 

@@ -4,6 +4,7 @@
 #include "Definitions.h"
 #include "../ParameterWrapper.h"
 #include "Options.h"
+#include "DoubleChooz/DCOptions.h"
 
 // STL includes
 #include <span>
@@ -27,8 +28,9 @@ namespace ana::dc {
      * It is intended to be inherited by specific spectrum classes that implement the actual calculations.
      * The class takes an options object as a parameter in its constructor.
      */
-    explicit SpectrumBase(std::shared_ptr<io::Options> options)
-      : m_Options(std::move(options)) {
+    SpectrumBase(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
+      : m_Options(std::move(options))
+      , m_DCOptions(std::move(dc_options)) {
     }
 
     /**
@@ -42,6 +44,20 @@ namespace ana::dc {
      * @return const std::shared_ptr<io::Options>& The options object.
      */
     [[nodiscard]] const std::shared_ptr<io::Options>& options() const noexcept { return m_Options; }
+
+    /**
+     * @brief Get the Double Chooz options object.
+     *
+     * @return const io::dc::DCOptions& The Double Chooz options object.
+     */
+    [[nodiscard]] const io::dc::DCOptions& dc_options() const noexcept { return *m_DCOptions; }
+
+    /**
+     * @brief Get the shared pointer to the Double Chooz options object.
+     *
+     * @return const std::shared_ptr<const io::dc::DCOptions>& The Double Chooz options object.
+     */
+    [[nodiscard]] const std::shared_ptr<const io::dc::DCOptions>& dc_options_ptr() const noexcept { return m_DCOptions; }
 
     /**
      * @brief Check and recalculate the spectrum.
@@ -67,7 +83,8 @@ namespace ana::dc {
     [[nodiscard]] virtual std::span<const double> get_spectrum(params::dc::DetectorType type) const = 0;
 
    protected:
-    std::shared_ptr<io::Options> m_Options;
+    std::shared_ptr<io::Options>              m_Options;
+    std::shared_ptr<const io::dc::DCOptions>  m_DCOptions;
   };
 
 }  // namespace ana::dc

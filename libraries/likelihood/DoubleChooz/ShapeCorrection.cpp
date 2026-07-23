@@ -78,12 +78,12 @@ namespace ana::dc {
     return parameter_changed;
   }
 
-  ShapeCorrection::ShapeCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<Oscillator> oscillator)
-    : SpectrumBase(std::move(options))
+  ShapeCorrection::ShapeCorrection(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options, std::shared_ptr<Oscillator> oscillator)
+    : SpectrumBase(std::move(options), std::move(dc_options))
     , m_Oscillator(std::move(oscillator)) {
     using enum params::dc::DetectorType;
 
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = this->dc_options().dataBase();
 
     for (auto detector : {ND, FDI, FDII}) {
       const auto& cov       = db.covariance_matrix(detector, params::dc::SpectrumType::reactor);

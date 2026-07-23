@@ -24,8 +24,8 @@ namespace ana::dc {
     return recalculate;
   }
 
-  LithiumBackground::LithiumBackground(std::shared_ptr<io::Options> options)
-    : SpectrumBase(std::move(options)) {
+  LithiumBackground::LithiumBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(options), std::move(dc_options)) {
     using enum params::dc::DetectorType;
     for (const auto detector : {ND, FDI, FDII}) {
       fill_data(detector);
@@ -71,7 +71,7 @@ namespace ana::dc {
   }
 
   void LithiumBackground::fill_data(params::dc::DetectorType type) {
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = dc_options().dataBase();
 
     const auto li_data = db.background_data(type, params::dc::SpectrumType::lithium);
 

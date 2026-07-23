@@ -55,11 +55,11 @@ namespace ana::dc {
     return recalculate;
   }
 
-  AccidentalBackground::AccidentalBackground(std::shared_ptr<io::Options> options)
-    : SpectrumBase(std::move(options)) {
+  AccidentalBackground::AccidentalBackground(std::shared_ptr<io::Options> options, std::shared_ptr<const io::dc::DCOptions> dc_options)
+    : SpectrumBase(std::move(options), std::move(dc_options)) {
     using enum params::dc::DetectorType;
 
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = this->dc_options().dataBase();
 
     for (auto detector : {ND, FDI, FDII}) {
       auto cov              = db.covariance_matrix(detector, params::dc::SpectrumType::accidental);
@@ -69,7 +69,7 @@ namespace ana::dc {
   }
 
   void AccidentalBackground::fill_data(params::dc::DetectorType type) {
-    const auto& db = m_Options->double_chooz().dataBase();
+    const auto& db = dc_options().dataBase();
 
     auto acc_data = db.background_data(type, params::dc::SpectrumType::accidental);
 
