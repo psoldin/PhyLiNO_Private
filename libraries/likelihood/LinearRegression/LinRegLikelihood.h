@@ -1,9 +1,11 @@
 #pragma once
 
 #include "../Likelihood.h"
-#include "LinRegInputOptions.h"
+
+#include "LinearRegression/LinRegInputOptions.h"
 
 // STL includes
+#include <span>
 #include <vector>
 
 namespace ana::linreg {
@@ -13,8 +15,8 @@ namespace ana::linreg {
    *
    * The data points are generated on construction from the truth values in the config file
    * ("LinearRegression" section) without noise, so the fit has to recover the truth exactly and
-   * the chi-square at the minimum has to vanish. Parameter 0 is the slope a, parameter 1 the
-   * offset b.
+   * the chi-square at the minimum has to vanish. See params::linreg::Parameter for the parameter
+   * order (slope, offset).
    */
   class LinRegLikelihood : public Likelihood {
    public:
@@ -23,6 +25,12 @@ namespace ana::linreg {
     ~LinRegLikelihood() override = default;
 
     [[nodiscard]] double calculate_likelihood(const double* parameter) override;
+
+    /** The Asimov x positions the likelihood was built from. */
+    [[nodiscard]] std::span<const double> x() const noexcept { return m_X; }
+
+    /** The Asimov measurement values the likelihood was built from. */
+    [[nodiscard]] std::span<const double> y() const noexcept { return m_Y; }
 
    private:
     std::vector<double> m_X;     /**< x positions of the generated data points. */

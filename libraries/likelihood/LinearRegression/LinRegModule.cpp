@@ -2,28 +2,17 @@
 
 #include "../Fit.h"
 
-#include <nlohmann/json.hpp>
+#include "LinearRegression/LinRegWriteResults.h"
 
-// STL includes
-#include <fstream>
-#include <string>
+#include <stdexcept>
 
 namespace ana::linreg {
 
   void LinRegModule::write_results(Fit& fit, std::string_view name) {
-    const auto min = fit.get_minimizer();
-
-    nlohmann::json j;
-    j["converged"] = fit.converged();
-    j["chi2"]      = min->MinValue();
-    j["EDM"]       = min->Edm();
-    j["a"]         = min->X()[0];
-    j["a_error"]   = min->Errors()[0];
-    j["b"]         = min->X()[1];
-    j["b_error"]   = min->Errors()[1];
-
-    std::ofstream file(std::string(name) + ".json");
-    file << j.dump(2) << '\n';
+    if (m_Likelihood == nullptr) {
+      throw std::logic_error("LinRegModule::write_results called before create_likelihood");
+    }
+    result::linreg::write_linear_regression_results(fit, *m_Likelihood, *m_InputOptions, name);
   }
 
 }  // namespace ana::linreg

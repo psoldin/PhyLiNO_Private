@@ -1,5 +1,9 @@
+# The linear-regression example experiment. Like Double Chooz, the sources are split across the
+# io, likelihood and results trees and built into one target.
 set(files
-    LinRegInputOptions.h
+    ../../io/LinearRegression/LinRegInputOptions.h
+    ../../io/LinearRegression/LinRegParameter.h
+    ../../results/LinearRegression/LinRegWriteResults.h
     LinRegLikelihood.h
     LinRegLikelihood.cpp
     LinRegModule.h
@@ -9,6 +13,7 @@ set(files
 add_library(linearregression SHARED ${files})
 
 target_include_directories(linearregression PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(linearregression PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../results)
 target_include_directories(linearregression PUBLIC ${Boost_INCLUDE_DIR})
 target_include_directories(linearregression PRIVATE ${ROOT_INCLUDE_DIR})
 

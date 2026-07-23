@@ -1,11 +1,13 @@
 #include "LinRegLikelihood.h"
 
+#include "LinearRegression/LinRegParameter.h"
+
 #include <stdexcept>
 
 namespace ana::linreg {
 
   LinRegLikelihood::LinRegLikelihood(std::shared_ptr<io::Options> options, const io::linreg::LinRegInputOptions& input_options)
-    : Likelihood(std::move(options), 2)
+    : Likelihood(std::move(options), params::linreg::number_of_parameters())
     , m_X()
     , m_Y()
     , m_Sigma(input_options.sigma()) {
@@ -32,12 +34,12 @@ namespace ana::linreg {
   double LinRegLikelihood::calculate_likelihood(const double* parameter) {
     m_Parameter.reset_parameter(parameter);
 
-    const double a = m_Parameter[0];
-    const double b = m_Parameter[1];
+    const double slope  = m_Parameter[params::linreg::slope];
+    const double offset = m_Parameter[params::linreg::offset];
 
     double chi2 = 0.0;
     for (std::size_t i = 0; i < m_X.size(); ++i) {
-      const double residual = (m_Y[i] - (a * m_X[i] + b)) / m_Sigma;
+      const double residual = (m_Y[i] - (slope * m_X[i] + offset)) / m_Sigma;
       chi2 += residual * residual;
     }
     return chi2;
