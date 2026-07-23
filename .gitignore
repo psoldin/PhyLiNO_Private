@@ -11,3 +11,7 @@ compile_commands.json
 .cache/
 .vscode/
 Output*.json
+
+# Personal working notes, kept out of the repository
+NOTES.md
+CLAUDE.md
