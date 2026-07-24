@@ -20,6 +20,16 @@ namespace io::ic {
           "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson' or 'SAY')");
     }
 
+    const std::string backend_str = ic.get<std::string>("Backend", "cpu");
+    if (backend_str == "cpu") {
+      m_UseMetalBackend = false;
+    } else if (backend_str == "metal") {
+      m_UseMetalBackend = true;
+    } else {
+      throw std::runtime_error(
+          "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu' or 'metal')");
+    }
+
     m_Livetime = ic.get<double>("Livetime", m_Livetime);
 
     m_ERefGeV             = ic.get<double>("ERefGeV", m_ERefGeV);

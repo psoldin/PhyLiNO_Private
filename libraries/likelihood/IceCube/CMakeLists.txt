@@ -24,9 +24,23 @@ set(files
     ICLikelihood.cpp
     ICModule.h
     ICModule.cpp
+    ICMetalPowerlaw.h
 )
 
+# Metal GPU backend for the powerlaw flux: the real Obj-C++/Metal implementation
+# on Apple, a no-op stub (available()==false) everywhere else.
+if(APPLE)
+    list(APPEND files ICMetalPowerlaw.mm)
+    set_source_files_properties(ICMetalPowerlaw.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+else()
+    list(APPEND files ICMetalPowerlaw_stub.cpp)
+endif()
+
 add_library(icecube SHARED ${files})
+
+if(APPLE)
+    target_link_libraries(icecube PRIVATE "-framework Metal" "-framework Foundation")
+endif()
 
 target_include_directories(icecube PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(icecube PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../results)

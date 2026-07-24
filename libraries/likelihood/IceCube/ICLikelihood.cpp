@@ -19,7 +19,9 @@ namespace ana::ic {
     , m_Astro(m_DataBase->sample(),
               input_options.e_ref_gev(),
               input_options.astro_reference_index(),
-              input_options.astro_per_type_norm())
+              input_options.astro_per_type_norm(),
+              input_options.use_metal_backend(),
+              input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     , m_Atmo(m_DataBase->sample(),
              input_options.conv_delta_gamma_e_ref(),
              input_options.prompt_delta_gamma_e_ref())

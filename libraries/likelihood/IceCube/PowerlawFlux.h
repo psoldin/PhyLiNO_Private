@@ -3,8 +3,10 @@
 #include "../../io/IceCube/ICConstants.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
+#include "ICMetalPowerlaw.h"
 
 #include <array>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -27,7 +29,9 @@ namespace ana::ic {
     PowerlawFlux(const io::ic::ICSample& sample,
                  double                  e_ref_gev,
                  double                  reference_index,
-                 bool                    per_type_norm);
+                 bool                    per_type_norm,
+                 bool                    use_metal      = false,
+                 bool                    need_per_event = false);
     ~PowerlawFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -50,8 +54,13 @@ namespace ana::ic {
     double                  m_ERef;
     double                  m_ReferenceIndex;
     bool                    m_PerTypeNorm;
+    bool                    m_NeedPerEvent;
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
+
+    // Non-null when the Metal backend is selected AND a device is present;
+    // otherwise the CPU path in recalculate() is used.
+    std::unique_ptr<ICMetalPowerlaw> m_Metal;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
   };
