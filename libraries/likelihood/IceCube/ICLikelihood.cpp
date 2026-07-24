@@ -11,21 +11,37 @@
 
 namespace ana::ic {
 
+  namespace {
+
+    // One shared Metal backend for all flux components; nullptr => CPU path.
+    std::shared_ptr<MetalBackend> make_metal_backend(const bool use_metal) {
+      if (!use_metal)
+        return nullptr;
+      if (!MetalBackend::available()) {
+        std::cout << "ICLikelihood: Metal backend requested but no device available; using CPU\n";
+        return nullptr;
+      }
+      return std::make_shared<MetalBackend>();
+    }
+
+  }  // namespace
+
   ICLikelihood::ICLikelihood(std::shared_ptr<io::Options>              options,
                              std::shared_ptr<const io::ic::ICDataBase> data_base,
                              const io::ic::ICInputOptions&             input_options)
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
+    , m_MetalBackend(make_metal_backend(input_options.use_metal_backend()))
     , m_Astro(m_DataBase->sample(),
               input_options.e_ref_gev(),
               input_options.astro_reference_index(),
               input_options.astro_per_type_norm(),
-              input_options.use_metal_backend(),
+              m_MetalBackend,
               input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     , m_Atmo(m_DataBase->sample(),
              input_options.conv_delta_gamma_e_ref(),
              input_options.prompt_delta_gamma_e_ref(),
-             input_options.use_metal_backend(),
+             m_MetalBackend,
              input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     , m_UseSAY(input_options.likelihood_type() == io::ic::LikelihoodType::SAY) {
     if (input_options.use_oscillation())

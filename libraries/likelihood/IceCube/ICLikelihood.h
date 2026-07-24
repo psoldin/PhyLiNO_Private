@@ -5,6 +5,7 @@
 #include "../../io/IceCube/ICInputOptions.h"
 #include "../Likelihood.h"
 #include "AtmosphericFlux.h"
+#include "MetalBackend.h"
 #include "PowerlawFlux.h"
 
 #include <array>
@@ -45,6 +46,11 @@ namespace ana::ic {
 
     // Declared first so it (and its ICSample) outlives the flux components below.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
+
+    // One Metal backend shared by every flux component (null on the CPU path),
+    // so per-event columns like e_true / bin_offsets are uploaded only once.
+    // Declared before the flux members so it outlives them.
+    std::shared_ptr<MetalBackend> m_MetalBackend;
 
     PowerlawFlux    m_Astro;
     AtmosphericFlux m_Atmo;

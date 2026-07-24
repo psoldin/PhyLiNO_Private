@@ -3,7 +3,7 @@
 #include "../../io/IceCube/ICConstants.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
-#include "ICMetalPowerlaw.h"
+#include "MetalBackend.h"
 
 #include <array>
 #include <memory>
@@ -22,16 +22,18 @@ namespace ana::ic {
    * per_type_norm=false halves the per-particle-type normalization).
    *
    * astro_baseline_i is the precomputed per-event "powerlaw" weight from the MC.
-   * Recalculates when AstroNorm or SpectralIndex changed.
+   * Recalculates when AstroNorm or SpectralIndex changed. When a MetalBackend is
+   * supplied the per-event loop runs on the GPU; otherwise the CPU OMP+SIMD path
+   * is used (and serves as the validation oracle).
    */
   class PowerlawFlux {
    public:
-    PowerlawFlux(const io::ic::ICSample& sample,
-                 double                  e_ref_gev,
-                 double                  reference_index,
-                 bool                    per_type_norm,
-                 bool                    use_metal      = false,
-                 bool                    need_per_event = false);
+    PowerlawFlux(const io::ic::ICSample&        sample,
+                 double                         e_ref_gev,
+                 double                         reference_index,
+                 bool                           per_type_norm,
+                 std::shared_ptr<MetalBackend>  metal          = nullptr,
+                 bool                           need_per_event = false);
     ~PowerlawFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -58,9 +60,14 @@ namespace ana::ic {
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when the Metal backend is selected AND a device is present;
-    // otherwise the CPU path in recalculate() is used.
-    std::unique_ptr<ICMetalPowerlaw> m_Metal;
+    // Non-null when the Metal backend is selected; shared with the other flux
+    // components (so e_true / bin_offsets are uploaded once).
+    std::shared_ptr<MetalBackend> m_Metal;
+    int                           m_hETrue    = -1;
+    int                           m_hBaseline = -1;
+    int                           m_hOffsets  = -1;
+    int                           m_hHist     = -1;
+    int                           m_hPerEvent = -1;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
   };

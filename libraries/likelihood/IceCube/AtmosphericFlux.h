@@ -1,9 +1,10 @@
 #pragma once
 
 #include "../../io/IceCube/ICConstants.h"
+#include "../../io/IceCube/ICParameter.h"  // params::ic::nBarrParams
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
-#include "ICMetalAtmo.h"
+#include "MetalBackend.h"
 
 #include <array>
 #include <memory>
@@ -29,15 +30,17 @@ namespace ana::ic {
    *            * PromptNorm
    *            * (E_true_i / prompt_e_ref)^(-DeltaGamma)
    *
-   * The histogram holds conv_i + prompt_i summed per analysis bin.
+   * The histogram holds conv_i + prompt_i summed per analysis bin. When a
+   * MetalBackend is supplied the per-event loop runs on the GPU; otherwise the
+   * CPU OMP+SIMD path is used (and serves as the validation oracle).
    */
   class AtmosphericFlux {
    public:
-    AtmosphericFlux(const io::ic::ICSample& sample,
-                    double                  conv_delta_gamma_e_ref,
-                    double                  prompt_delta_gamma_e_ref,
-                    bool                    use_metal      = false,
-                    bool                    need_per_event = false);
+    AtmosphericFlux(const io::ic::ICSample&       sample,
+                    double                        conv_delta_gamma_e_ref,
+                    double                        prompt_delta_gamma_e_ref,
+                    std::shared_ptr<MetalBackend> metal          = nullptr,
+                    bool                          need_per_event = false);
     ~AtmosphericFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -63,10 +66,21 @@ namespace ana::ic {
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when the Metal backend is selected AND a device is present.
-    std::unique_ptr<ICMetalAtmo> m_Metal;
+    // Non-null when the Metal backend is selected; shared with the other flux
+    // components (so e_true / bin_offsets are uploaded once).
+    std::shared_ptr<MetalBackend>                    m_Metal;
+    int                                              m_hETrue      = -1;
+    int                                              m_hConvBase   = -1;
+    int                                              m_hConvAlt    = -1;
+    int                                              m_hPromptBase = -1;
+    int                                              m_hPromptAlt  = -1;
+    std::array<int, params::ic::nBarrParams>         m_hBarr{};
+    int                                              m_hOffsets    = -1;
+    int                                              m_hHist       = -1;
+    int                                              m_hPerEvent   = -1;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
+    void recalculate_metal(const ParameterWrapper& parameter) noexcept;
   };
 
 }  // namespace ana::ic
