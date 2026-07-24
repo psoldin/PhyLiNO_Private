@@ -4,4 +4,5 @@ add_subdirectory(likelihood)
 add_subdirectory(results)
 add_subdirectory(likelihood/DoubleChooz)
 add_subdirectory(likelihood/LinearRegression)
+add_subdirectory(likelihood/IceCube)
 

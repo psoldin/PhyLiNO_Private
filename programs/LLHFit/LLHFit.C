@@ -4,6 +4,7 @@
 // includes
 #include "DoubleChooz/DCExperimentModule.h"
 #include "ExperimentModule.h"
+#include "IceCube/ICModule.h"
 #include "LinearRegression/LinRegModule.h"
 #include "Fit.h"
 #include "Options.h"
@@ -25,6 +26,10 @@ int main(int argc, char** argv) {
     {
       auto linreg_module             = std::make_shared<ana::linreg::LinRegModule>();
       modules[linreg_module->name()] = linreg_module;
+    }
+    {
+      auto ic_module             = std::make_shared<ana::ic::ICExperimentModule>();
+      modules[ic_module->name()] = ic_module;
     }
 
     auto options = std::make_shared<io::Options>(argc, argv, ana::collect_input_options(modules));

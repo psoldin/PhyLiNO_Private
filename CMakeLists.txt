@@ -18,6 +18,8 @@ find_package(Boost COMPONENTS filesystem iostreams program_options log timer REQ
 
 # Find OpenMP
 find_package(OpenMP)
+find_package(Arrow REQUIRED CONFIG)
+find_package(Parquet REQUIRED CONFIG)
 
 include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
