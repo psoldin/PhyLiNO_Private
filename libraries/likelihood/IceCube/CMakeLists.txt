@@ -25,15 +25,17 @@ set(files
     ICModule.h
     ICModule.cpp
     ICMetalPowerlaw.h
+    ICMetalAtmo.h
 )
 
-# Metal GPU backend for the powerlaw flux: the real Obj-C++/Metal implementation
-# on Apple, a no-op stub (available()==false) everywhere else.
+# Metal GPU backends for the flux histograms: the real Obj-C++/Metal
+# implementations on Apple, no-op stubs (available()==false) everywhere else.
 if(APPLE)
-    list(APPEND files ICMetalPowerlaw.mm)
-    set_source_files_properties(ICMetalPowerlaw.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    list(APPEND files ICMetalPowerlaw.mm ICMetalAtmo.mm)
+    set_source_files_properties(ICMetalPowerlaw.mm ICMetalAtmo.mm
+                                PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-    list(APPEND files ICMetalPowerlaw_stub.cpp)
+    list(APPEND files ICMetalPowerlaw_stub.cpp ICMetalAtmo_stub.cpp)
 endif()
 
 add_library(icecube SHARED ${files})

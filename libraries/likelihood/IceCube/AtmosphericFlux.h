@@ -3,8 +3,10 @@
 #include "../../io/IceCube/ICConstants.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
+#include "ICMetalAtmo.h"
 
 #include <array>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -33,7 +35,9 @@ namespace ana::ic {
    public:
     AtmosphericFlux(const io::ic::ICSample& sample,
                     double                  conv_delta_gamma_e_ref,
-                    double                  prompt_delta_gamma_e_ref);
+                    double                  prompt_delta_gamma_e_ref,
+                    bool                    use_metal      = false,
+                    bool                    need_per_event = false);
     ~AtmosphericFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -55,8 +59,12 @@ namespace ana::ic {
     const io::ic::ICSample& m_Sample;
     double                  m_ConvDeltaGammaERef;
     double                  m_PromptDeltaGammaERef;
+    bool                    m_NeedPerEvent;
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
+
+    // Non-null when the Metal backend is selected AND a device is present.
+    std::unique_ptr<ICMetalAtmo> m_Metal;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
   };

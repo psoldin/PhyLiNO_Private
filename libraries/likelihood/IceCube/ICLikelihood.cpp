@@ -24,7 +24,9 @@ namespace ana::ic {
               input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     , m_Atmo(m_DataBase->sample(),
              input_options.conv_delta_gamma_e_ref(),
-             input_options.prompt_delta_gamma_e_ref())
+             input_options.prompt_delta_gamma_e_ref(),
+             input_options.use_metal_backend(),
+             input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     , m_UseSAY(input_options.likelihood_type() == io::ic::LikelihoodType::SAY) {
     if (input_options.use_oscillation())
       std::cout << "ICLikelihood: OscillationsHook configured but not yet implemented; "

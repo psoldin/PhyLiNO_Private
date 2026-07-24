@@ -3,17 +3,30 @@
 #include "../../io/IceCube/ICParameter.h"
 
 #include <cmath>
+#include <iostream>
 
 namespace ana::ic {
 
   AtmosphericFlux::AtmosphericFlux(const io::ic::ICSample& sample,
                                    const double            conv_delta_gamma_e_ref,
-                                   const double            prompt_delta_gamma_e_ref)
+                                   const double            prompt_delta_gamma_e_ref,
+                                   const bool              use_metal,
+                                   const bool              need_per_event)
     : m_Sample(sample)
     , m_ConvDeltaGammaERef(conv_delta_gamma_e_ref)
-    , m_PromptDeltaGammaERef(prompt_delta_gamma_e_ref) {
+    , m_PromptDeltaGammaERef(prompt_delta_gamma_e_ref)
+    , m_NeedPerEvent(need_per_event) {
     m_Histogram.fill(0.0);
     m_PerEventWeight.assign(sample.size(), 0.0);
+
+    if (use_metal) {
+      if (ICMetalAtmo::available()) {
+        m_Metal = std::make_unique<ICMetalAtmo>(sample, conv_delta_gamma_e_ref, prompt_delta_gamma_e_ref);
+        std::cout << "AtmosphericFlux: using Metal GPU backend\n";
+      } else {
+        std::cout << "AtmosphericFlux: Metal backend requested but no device available; using CPU\n";
+      }
+    }
   }
 
   void AtmosphericFlux::recalculate(const ParameterWrapper& parameter) noexcept {
@@ -27,6 +40,19 @@ namespace ana::ic {
     double barr[nBarrParams];
     for (int k = 0; k < nBarrParams; ++k)
       barr[k] = parameter[BarrH + k];
+
+    if (m_Metal) {
+      m_Metal->recalculate(cr, dg, conv_norm, prompt_norm, barr, m_NeedPerEvent);
+      const float* hist = m_Metal->histogram();
+      for (int bin = 0; bin < io::ic::Constants::nBins; ++bin)
+        m_Histogram[bin] = static_cast<double>(hist[bin]);
+      if (m_NeedPerEvent) {
+        const float* pe = m_Metal->per_event_weight();
+        for (std::size_t i = 0, n = m_PerEventWeight.size(); i < n; ++i)
+          m_PerEventWeight[i] = static_cast<double>(pe[i]);
+      }
+      return;
+    }
 
     const auto& off    = m_Sample.bin_offsets;
     const auto& e_true = m_Sample.e_true;
