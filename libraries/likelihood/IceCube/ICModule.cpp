@@ -13,7 +13,7 @@ namespace ana::ic {
     // ICDataBase is cached on the module so repeated Fit constructions (e.g. the
     // 2D scan) reuse the same immutable sample instead of re-reading the file.
     if (m_DataBase == nullptr) {
-      m_DataBase = std::make_shared<const io::ic::ICDataBase>(*m_InputOptions);
+      m_DataBase = std::make_shared<const io::ic::ICDataBase>(m_InputOptions->samples());
     }
 
     m_Likelihood = std::make_shared<ICLikelihood>(std::move(options),

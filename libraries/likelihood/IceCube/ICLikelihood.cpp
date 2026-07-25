@@ -45,13 +45,15 @@ namespace ana::ic {
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(make_gpu_backend(input_options.backend_kind()))
-    , m_Astro(m_DataBase->sample(),
+    // TODO(Task 7): composite over all samples
+    , m_Astro(m_DataBase->sample(0),
               input_options.e_ref_gev(),
               input_options.astro_reference_index(),
               input_options.astro_per_type_norm(),
               m_GpuBackend,
               input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
-    , m_Atmo(m_DataBase->sample(),
+    // TODO(Task 7): composite over all samples
+    , m_Atmo(m_DataBase->sample(0),
              input_options.conv_delta_gamma_e_ref(),
              input_options.prompt_delta_gamma_e_ref(),
              m_GpuBackend,
@@ -110,7 +112,8 @@ namespace ana::ic {
     // (w1+w2)^2 != w1^2 + w2^2.
     const std::span<const double> astro = m_Astro.per_event_weight();
     const std::span<const double> atmo  = m_Atmo.per_event_weight();
-    const auto&                   off   = m_DataBase->sample().bin_offsets;
+    // TODO(Task 7): composite over all samples
+    const auto&                   off   = m_DataBase->sample(0).bin_offsets;
 
 #pragma omp parallel for
     for (int b = 0; b < io::ic::Constants::nBins; ++b) {

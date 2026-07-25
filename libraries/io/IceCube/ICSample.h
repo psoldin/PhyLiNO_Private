@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ICConstants.h"
 #include "ICParameter.h"  // params::ic::nBarrParams
 
 #include <algorithm>
@@ -50,7 +49,7 @@ namespace io::ic {
     // After sorting, events of analysis bin b occupy the contiguous range
     // [bin_offsets[b], bin_offsets[b+1]) in every per-event column, so flux
     // loops run bin-major with a scalar accumulator and parallelise over bins.
-    std::vector<std::size_t> bin_offsets;  // size Constants::nBins + 1
+    std::vector<std::size_t> bin_offsets;  // size total_bins + 1
 
     [[nodiscard]] std::size_t size()  const noexcept { return e_true.size(); }
     [[nodiscard]] bool        empty() const noexcept { return e_true.empty(); }
@@ -59,8 +58,9 @@ namespace io::ic {
      * Drop out-of-range events (bin_idx < 0), reorder every per-event column so
      * events are grouped by analysis bin, and build the CSR bin_offsets index.
      * Call once at load time after all columns are populated; never during the fit.
+     * `total_bins` is the flattened bin count of the sample's own Binning.
      */
-    void sort_into_bins() {
+    void sort_into_bins(int total_bins) {
       const std::size_t N = size();
 
       // Permutation of the valid events (bin_idx >= 0), grouped by bin.
@@ -92,9 +92,9 @@ namespace io::ic {
       reorder(bin_idx);
 
       // CSR prefix sum over the now-sorted, valid events.
-      bin_offsets.assign(Constants::nBins + 1, 0);
+      bin_offsets.assign(total_bins + 1, 0);
       for (int b : bin_idx) ++bin_offsets[b + 1];
-      for (int b = 0; b < Constants::nBins; ++b) bin_offsets[b + 1] += bin_offsets[b];
+      for (int b = 0; b < total_bins; ++b) bin_offsets[b + 1] += bin_offsets[b];
     }
   };
 

@@ -1,16 +1,25 @@
 {
   "Experiment": "IceCube",
   "IceCube": {
-    "TrackBaselineFilePath": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO/dataset_tracks_baseline.parquet",
-    "UseData": false,
+    "Backend": "cpu",
     "Likelihood": "Poisson",
-    "Livetime": 3.0e8,
+    "UseData": false,
     "ERefGeV": 100000.0,
     "AstroReferenceIndex": 2.0,
     "AstroPerTypeNorm": false,
     "ConvDeltaGammaERef": 1000.0,
     "PromptDeltaGammaERef": 3800.0,
-    "Backend": "cpu"
+    "Binnings": { "tracks_2d": {
+      "axes": "Log10Energy, CosZenith",
+      "Log10Energy": "(2.5, 7.0, 45)",
+      "CosZenith":   "(-1.0, 0.0872, 33)"
+    } },
+    "Samples": { "tracks": {
+      "enabled": true, "binning": "tracks_2d",
+      "parquet": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO/dataset_tracks_baseline.parquet",
+      "livetime": 3.0e8,
+      "components": "astro, conventional, prompt"
+    } }
   },
   "Parameter": [
     { "Name": "AstroNorm",     "StartValue": 1.5, "StepWidth": 0.1,  "Fixed": false, "Constrained": false },

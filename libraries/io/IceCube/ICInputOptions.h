@@ -64,10 +64,10 @@ namespace io::ic {
     [[nodiscard]] bool               use_oscillation() const noexcept { return m_UseOscillation; }
     [[nodiscard]] const std::string& oscillation_spline_file() const noexcept { return m_OscillationSplineFile; }
 
-    // Multi-sample config, populated only when the config provides an
-    // "IceCube.Samples" subtree (see parse_samples() in SampleConfig.h).
-    // Empty for the current flat single-sample configs; not yet on the
-    // running fit path.
+    // Multi-sample config; drives the running fit path (ICModule feeds this
+    // into ICDataBase). Populated whenever the config provides an
+    // "IceCube.Samples" subtree (see parse_samples() in SampleConfig.h);
+    // empty otherwise, e.g. for a config that hasn't been migrated yet.
     [[nodiscard]] const std::vector<SampleConfig>& samples() const noexcept { return m_Samples; }
 
    private:

@@ -1,11 +1,11 @@
 #include "ICDataBase.h"
 
-#include "ICConstants.h"
-
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <arrow/api.h>
@@ -48,66 +48,82 @@ namespace io::ic {
 
   }  // namespace
 
-  arrow::Status ICDataBase::read_track_baseline(const ICInputOptions& options) {
-    const std::string& path = options.track_baseline_file_path();
-    std::cout << "Reading IceCube track baseline: " << path << '\n';
-    ARROW_ASSIGN_OR_RAISE(auto table, read_parquet_file(path));
+  arrow::Status ICDataBase::read_sample(const SampleConfig& cfg, ICSample& out) {
+    // read_sample builds a fixed 2-element {e_reco, reco_zenith} reco array
+    // below; Binning::bin_index reads reco[d] for d < n_axes(), so a binning
+    // with more axes (e.g. a future RA axis) would read past the array.
+    // Phase 3 will extend this deliberately; guard against it until then.
+    if (cfg.binning.n_axes() != 2)
+      return arrow::Status::Invalid(
+          "ICDataBase::read_sample: only 2-axis binnings supported in Phase 1 (sample '" + cfg.name + "')");
 
-    const auto& b = options.branch_names();
+    std::cout << "Reading IceCube sample '" << cfg.name << "': " << cfg.parquet << '\n';
+    ARROW_ASSIGN_OR_RAISE(auto table, read_parquet_file(cfg.parquet));
+
+    const auto& b = cfg.branches;
 
     // Reconstructed variables: only needed to assign analysis bins.
     ARROW_ASSIGN_OR_RAISE(auto e_reco,       get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith,  get_double_column(*table, b.reco_zenith));
 
     // Per-event fit-time columns.
-    ARROW_ASSIGN_OR_RAISE(m_Sample.e_true,          get_double_column(*table, b.true_energy));
-    ARROW_ASSIGN_OR_RAISE(m_Sample.astro_baseline,  get_double_column(*table, b.astro_baseline));
-    ARROW_ASSIGN_OR_RAISE(m_Sample.conv_baseline,   get_double_column(*table, b.conv_baseline));
-    ARROW_ASSIGN_OR_RAISE(m_Sample.conv_alt,        get_double_column(*table, b.conv_alt));
-    ARROW_ASSIGN_OR_RAISE(m_Sample.prompt_baseline, get_double_column(*table, b.prompt_baseline));
-    ARROW_ASSIGN_OR_RAISE(m_Sample.prompt_alt,      get_double_column(*table, b.prompt_alt));
+    ARROW_ASSIGN_OR_RAISE(out.e_true,          get_double_column(*table, b.true_energy));
+    ARROW_ASSIGN_OR_RAISE(out.astro_baseline,  get_double_column(*table, b.astro_baseline));
+    ARROW_ASSIGN_OR_RAISE(out.conv_baseline,   get_double_column(*table, b.conv_baseline));
+    ARROW_ASSIGN_OR_RAISE(out.conv_alt,        get_double_column(*table, b.conv_alt));
+    ARROW_ASSIGN_OR_RAISE(out.prompt_baseline, get_double_column(*table, b.prompt_baseline));
+    ARROW_ASSIGN_OR_RAISE(out.prompt_alt,      get_double_column(*table, b.prompt_alt));
 
     for (int k = 0; k < params::ic::nBarrParams; ++k) {
-      ARROW_ASSIGN_OR_RAISE(m_Sample.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
+      ARROW_ASSIGN_OR_RAISE(out.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
     }
 
     // The MC weights are per-event rates (Hz); scale by the livetime so the
     // binned prediction is in event counts. Baseline weights and their Barr
     // slopes are scaled together, which leaves the (slope/base) reweight ratios
     // and the CR-gradient ratios exactly invariant.
-    const double livetime = options.livetime();
+    const double livetime = cfg.livetime;
     if (livetime != 1.0) {
       auto scale = [livetime](std::vector<double>& col) {
         for (double& v : col) v *= livetime;
       };
-      scale(m_Sample.astro_baseline);
-      scale(m_Sample.conv_baseline);
-      scale(m_Sample.conv_alt);
-      scale(m_Sample.prompt_baseline);
-      scale(m_Sample.prompt_alt);
-      for (auto& g : m_Sample.barr_conv) scale(g);
+      scale(out.astro_baseline);
+      scale(out.conv_baseline);
+      scale(out.conv_alt);
+      scale(out.prompt_baseline);
+      scale(out.prompt_alt);
+      for (auto& g : out.barr_conv) scale(g);
     }
 
     // Assign each event to an analysis bin from its reco energy and zenith.
-    const std::size_t N = m_Sample.e_true.size();
-    m_Sample.bin_idx.resize(N);
-    for (std::size_t i = 0; i < N; ++i)
-      m_Sample.bin_idx[i] = Constants::bin_index(e_reco[i], reco_zenith[i]);
+    const std::size_t N = out.e_true.size();
+    out.bin_idx.resize(N);
+    for (std::size_t i = 0; i < N; ++i) {
+      const std::array<double, 2> reco{e_reco[i], reco_zenith[i]};
+      out.bin_idx[i] = cfg.binning.bin_index(reco);
+    }
 
     // Compact to in-range events, group by bin, build the CSR index.
-    m_Sample.sort_into_bins();
+    out.sort_into_bins(cfg.binning.total_bins());
 
-    std::cout << "IceCube MC loaded: " << N << " rows, "
-              << m_Sample.size() << " in analysis range ("
-              << Constants::nBins << " bins)\n";
+    std::cout << "IceCube sample '" << cfg.name << "' loaded: " << N << " rows, "
+              << out.size() << " in analysis range ("
+              << cfg.binning.total_bins() << " bins)\n";
 
     return arrow::Status::OK();
   }
 
-  ICDataBase::ICDataBase(const ICInputOptions& options) {
-    auto status = read_track_baseline(options);
-    if (!status.ok())
-      throw std::runtime_error("Failed to read IceCube track baseline: " + status.ToString());
+  ICDataBase::ICDataBase(const std::vector<SampleConfig>& samples) {
+    for (const auto& cfg : samples) {
+      if (!cfg.enabled) continue;
+      ICSample sample;
+      auto     status = read_sample(cfg, sample);
+      if (!status.ok())
+        throw std::runtime_error("Failed to read IceCube sample '" + cfg.name + "': " + status.ToString());
+      m_Samples.push_back(std::move(sample));
+    }
+    if (m_Samples.empty())
+      throw std::runtime_error("ICDataBase: no enabled IceCube samples");
   }
 
 }  // namespace io::ic

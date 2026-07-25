@@ -9,7 +9,9 @@ namespace io::ic {
   void ICInputOptions::read(const boost::program_options::variables_map& /*vm*/, const boost::property_tree::ptree& config) {
     const auto& ic = config.get_child("IceCube");
 
-    m_TrackBaselineFilePath = ic.get<std::string>("TrackBaselineFilePath");
+    // Legacy single-sample keys; unused by migrated configs (see Samples
+    // below), so both now default rather than throw when omitted.
+    m_TrackBaselineFilePath = ic.get<std::string>("TrackBaselineFilePath", "");
     m_UseData               = ic.get<bool>("UseData", false);
 
     const std::string likelihood_str = ic.get<std::string>("Likelihood", "Poisson");
@@ -75,10 +77,9 @@ namespace io::ic {
       }
     }
 
-    // Multi-sample config (see SampleConfig.h). Purely additive: only parsed
-    // when the config provides an "IceCube.Samples" subtree, so the existing
-    // flat single-sample configs (which drive the running fit path) are a
-    // no-op here.
+    // Multi-sample config (see SampleConfig.h); this now drives the running
+    // fit path via ICModule -> ICDataBase(samples()). Parsed whenever the
+    // config provides an "IceCube.Samples" subtree; left empty otherwise.
     if (ic.get_child_optional("Samples"))
       m_Samples = parse_samples(ic);
   }
