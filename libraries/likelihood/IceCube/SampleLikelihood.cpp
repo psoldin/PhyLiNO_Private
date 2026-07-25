@@ -105,6 +105,14 @@ namespace ana::ic {
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
     assemble_prediction(nominal);
     std::ranges::copy(m_Predicted, m_Data.begin());
+
+    // Seed the ssq histogram at the nominal point. partial_llh() only refreshes
+    // it when a flux actually recalculated, and the minimizer's first evaluation
+    // is at the start values -- which compare equal to the nominal set here, so
+    // nothing would recalculate and SAY would run that evaluation with ssq == 0
+    // (silently degenerating to plain Poisson).
+    if (m_UseSAY)
+      assemble_fluctuation();
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {

@@ -14,9 +14,14 @@
 # Without it (or without a Double Chooz config) that part is skipped, so a clean clone can still
 # validate the parts that do not depend on the experiment inputs.
 #
+# The IceCube part needs Output.ic_baseline.json, which is deliberately untracked, generated the
+# same way from configs/config_icecube_tracks_cpu.json. Without it that part is skipped.
+#
 # Usage: tools/run_validation.sh [--no-build]
 #   DC_CONFIG   path to the Double Chooz config   (default ../PhyLiNO/config.json)
 #   BASELINE    path to the recorded DC output    (default Output.baseline.json)
+#   IC_CONFIG   path to the IceCube config        (default configs/config_icecube_tracks_cpu.json)
+#   IC_BASELINE path to the recorded IC output    (default Output.ic_baseline.json)
 
 set -u -o pipefail
 
@@ -25,6 +30,8 @@ cd "$(dirname "$0")/.."
 DC_CONFIG=${DC_CONFIG:-../PhyLiNO/config.json}
 BASELINE=${BASELINE:-Output.baseline.json}
 LINREG_CONFIG=configs/config_linreg.json
+IC_CONFIG=${IC_CONFIG:-configs/config_icecube_tracks_cpu.json}
+IC_BASELINE=${IC_BASELINE:-Output.ic_baseline.json}
 LLHFIT=build/programs/LLHFit/LLHFit
 
 failures=0
@@ -93,6 +100,21 @@ then
   pass "a, b and chi2 match the configured truth"
 else
   fail "the fit did not recover the truth values"
+fi
+
+echo "IceCube reproduces the baseline"
+if [ ! -f "$IC_CONFIG" ]; then
+  skip "no IceCube config at $IC_CONFIG (set IC_CONFIG)"
+elif [ ! -f "$IC_BASELINE" ]; then
+  skip "no baseline at $IC_BASELINE (see the header of this script)"
+elif ! "$LLHFIT" -c "$IC_CONFIG" --silent > /tmp/phylino_ic.log 2>&1; then
+  tail -20 /tmp/phylino_ic.log >&2
+  fail "the fit did not run"
+elif python3 tools/compare_output.py "$IC_BASELINE" Output.json > /tmp/phylino_ic_cmp.log 2>&1; then
+  pass "output identical to $IC_BASELINE"
+else
+  head -20 /tmp/phylino_ic_cmp.log >&2
+  fail "output differs from $IC_BASELINE"
 fi
 
 echo "An unusable Experiment key is reported clearly"
