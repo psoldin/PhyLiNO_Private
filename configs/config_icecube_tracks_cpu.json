@@ -1,0 +1,31 @@
+{
+  "Experiment": "IceCube",
+  "IceCube": {
+    "TrackBaselineFilePath": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO/dataset_tracks_baseline.parquet",
+    "UseData": false,
+    "Likelihood": "Poisson",
+    "Livetime": 3.0e8,
+    "ERefGeV": 100000.0,
+    "AstroReferenceIndex": 2.0,
+    "AstroPerTypeNorm": false,
+    "ConvDeltaGammaERef": 1000.0,
+    "PromptDeltaGammaERef": 3800.0,
+    "Backend": "cpu"
+  },
+  "Parameter": [
+    { "Name": "AstroNorm",     "StartValue": 1.5, "StepWidth": 0.1,  "Fixed": false, "Constrained": false },
+    { "Name": "SpectralIndex", "StartValue": 2.4, "StepWidth": 0.1,  "Fixed": false, "Constrained": false },
+    { "Name": "ConvNorm",      "StartValue": 1.0, "StepWidth": 0.4,  "Fixed": false, "Constrained": true  },
+    { "Name": "PromptNorm",    "StartValue": 1.0, "StepWidth": 0.5,  "Fixed": false, "Constrained": true  },
+    { "Name": "BarrH",         "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
+    { "Name": "BarrW",         "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
+    { "Name": "BarrY",         "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
+    { "Name": "BarrZ",         "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
+    { "Name": "CRGrad",        "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
+    { "Name": "DeltaGamma",    "StartValue": 0.0, "StepWidth": 0.05, "Fixed": false, "Constrained": true  },
+    { "Name": "MuonNorm",      "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "DOMEff",        "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "IceAbs",        "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "IceScat",       "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false }
+  ]
+}
