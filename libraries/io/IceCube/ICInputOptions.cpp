@@ -22,12 +22,14 @@ namespace io::ic {
 
     const std::string backend_str = ic.get<std::string>("Backend", "cpu");
     if (backend_str == "cpu") {
-      m_UseMetalBackend = false;
+      m_BackendKind = BackendKind::Cpu;
     } else if (backend_str == "metal") {
-      m_UseMetalBackend = true;
+      m_BackendKind = BackendKind::Metal;
+    } else if (backend_str == "cuda") {
+      m_BackendKind = BackendKind::Cuda;
     } else {
       throw std::runtime_error(
-          "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu' or 'metal')");
+          "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu', 'metal' or 'cuda')");
     }
 
     m_Livetime = ic.get<double>("Livetime", m_Livetime);

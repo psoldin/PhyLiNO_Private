@@ -65,7 +65,10 @@ namespace ana {
                   << " and uncertainty " << parameters[i].uncertainty() << '\n';
       }
 
-      m_Minimizer->SetVariable(i, names[i], parameters[i].value(), parameters[i].uncertainty());
+      if (i != 0)
+        m_Minimizer->SetVariable(i, names[i], parameters[i].value(), parameters[i].uncertainty());
+      else
+        m_Minimizer->SetVariable(i, names[i], 1.0, parameters[i].uncertainty());
     }
 
     if (!silent) {

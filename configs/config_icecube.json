@@ -9,7 +9,8 @@
     "AstroReferenceIndex": 2.0,
     "AstroPerTypeNorm": false,
     "ConvDeltaGammaERef": 1000.0,
-    "PromptDeltaGammaERef": 3800.0
+    "PromptDeltaGammaERef": 3800.0,
+    "Backend": "metal"
   },
   "Parameter": [
     { "Name": "AstroNorm",     "StartValue": 1.5, "StepWidth": 0.1,  "Fixed": false, "Constrained": false },

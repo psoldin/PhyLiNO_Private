@@ -3,6 +3,7 @@
 #include "../ExperimentModule.h"
 #include "ICLikelihood.h"
 
+#include "IceCube/ICDataBase.h"
 #include "IceCube/ICInputOptions.h"
 #include "IceCube/ICParameter.h"
 
@@ -36,8 +37,10 @@ namespace ana::ic {
     [[nodiscard]] const io::ic::ICInputOptions& ic_input_options() const noexcept { return *m_InputOptions; }
 
    private:
-    std::shared_ptr<io::ic::ICInputOptions> m_InputOptions;
-    std::shared_ptr<ICLikelihood>           m_Likelihood;
+    std::shared_ptr<io::ic::ICInputOptions>   m_InputOptions;
+    // Cached immutable MC sample; loaded once, reused across Fit constructions.
+    std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
+    std::shared_ptr<ICLikelihood>             m_Likelihood;
   };
 
 }  // namespace ana::ic

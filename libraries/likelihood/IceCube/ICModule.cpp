@@ -9,11 +9,15 @@
 namespace ana::ic {
 
   std::shared_ptr<Likelihood> ICExperimentModule::create_likelihood(std::shared_ptr<io::Options> options) {
-    // Heavy parquet loading happens here, only for the selected experiment.
-    auto data_base = std::make_shared<const io::ic::ICDataBase>(*m_InputOptions);
+    // Heavy parquet loading happens once, only for the selected experiment. The
+    // ICDataBase is cached on the module so repeated Fit constructions (e.g. the
+    // 2D scan) reuse the same immutable sample instead of re-reading the file.
+    if (m_DataBase == nullptr) {
+      m_DataBase = std::make_shared<const io::ic::ICDataBase>(*m_InputOptions);
+    }
 
     m_Likelihood = std::make_shared<ICLikelihood>(std::move(options),
-                                                  std::move(data_base),
+                                                  m_DataBase,
                                                   *m_InputOptions);
     return m_Likelihood;
   }

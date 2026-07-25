@@ -3,7 +3,7 @@
 #include "../../io/IceCube/ICConstants.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
-#include "MetalBackend.h"
+#include "GpuBackend.h"
 
 #include <array>
 #include <memory>
@@ -22,7 +22,7 @@ namespace ana::ic {
    * per_type_norm=false halves the per-particle-type normalization).
    *
    * astro_baseline_i is the precomputed per-event "powerlaw" weight from the MC.
-   * Recalculates when AstroNorm or SpectralIndex changed. When a MetalBackend is
+   * Recalculates when AstroNorm or SpectralIndex changed. When a GpuBackend is
    * supplied the per-event loop runs on the GPU; otherwise the CPU OMP+SIMD path
    * is used (and serves as the validation oracle).
    */
@@ -32,7 +32,7 @@ namespace ana::ic {
                  double                         e_ref_gev,
                  double                         reference_index,
                  bool                           per_type_norm,
-                 std::shared_ptr<MetalBackend>  metal          = nullptr,
+                 std::shared_ptr<GpuBackend>    gpu            = nullptr,
                  bool                           need_per_event = false);
     ~PowerlawFlux() = default;
 
@@ -60,9 +60,9 @@ namespace ana::ic {
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when the Metal backend is selected; shared with the other flux
+    // Non-null when a GPU backend is selected; shared with the other flux
     // components (so e_true / bin_offsets are uploaded once).
-    std::shared_ptr<MetalBackend> m_Metal;
+    std::shared_ptr<GpuBackend>   m_Gpu;
     int                           m_hETrue    = -1;
     int                           m_hBaseline = -1;
     int                           m_hOffsets  = -1;

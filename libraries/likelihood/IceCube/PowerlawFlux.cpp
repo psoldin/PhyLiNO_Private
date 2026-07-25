@@ -9,7 +9,8 @@ namespace ana::ic {
 
   namespace {
 
-    // Scalars pushed to the kernel each iteration; matches PowerlawParams below.
+    // Scalars pushed to the kernel each iteration; layout shared by both the MSL
+    // and CUDA kernels (same field order/size) and by the host struct.
     struct PowerlawParams {
       float eff_norm;
       float inv_eref;
@@ -17,10 +18,10 @@ namespace ana::ic {
       int   write_pe;
     };
 
-    // One threadgroup per analysis bin over the CSR-sorted sample; grid-stride
-    // sum + threadgroup tree reduction. Buffer order matches the MetalBackend
-    // convention: inputs (e_true, baseline, bin_offsets), params, hist, per_event.
-    constexpr const char* kKernel = R"METAL(
+    // One group per analysis bin over the CSR-sorted sample; grid-stride sum +
+    // in-group tree reduction. Buffer order matches the GpuBackend convention:
+    // inputs (e_true, baseline, bin_offsets), params, hist, per_event.
+    constexpr const char* kKernelMetal = R"METAL(
       #include <metal_stdlib>
       using namespace metal;
 
@@ -56,32 +57,70 @@ namespace ana::ic {
       }
     )METAL";
 
+    // CUDA-C twin of the MSL kernel: one block per bin, 256 threads, block-stride
+    // sum + __shared__ tree reduction. extern "C" so cuModuleGetFunction resolves
+    // the unmangled name. The params struct is passed by value at the same
+    // position the Metal kernel takes its constant buffer.
+    constexpr const char* kKernelCuda = R"CUDA(
+      struct PowerlawParams { float eff_norm; float inv_eref; float exponent; int write_pe; };
+
+      extern "C" __global__ void powerlaw_hist(
+          const float*        e_true,
+          const float*        baseline,
+          const unsigned int* bin_offsets,
+          PowerlawParams      p,
+          float*              hist,
+          float*              per_event)
+      {
+        const unsigned int bin      = blockIdx.x;
+        const unsigned int tid      = threadIdx.x;
+        const unsigned int nthreads = blockDim.x;
+        const unsigned int start    = bin_offsets[bin];
+        const unsigned int end      = bin_offsets[bin + 1];
+        float acc = 0.0f;
+        for (unsigned int i = start + tid; i < end; i += nthreads) {
+          const float w = baseline[i] * p.eff_norm * powf(e_true[i] * p.inv_eref, p.exponent);
+          if (p.write_pe) per_event[i] = w;
+          acc += w;
+        }
+        __shared__ float sdata[256];
+        sdata[tid] = acc;
+        __syncthreads();
+        for (unsigned int s = nthreads / 2; s > 0; s >>= 1) {
+          if (tid < s) sdata[tid] += sdata[tid + s];
+          __syncthreads();
+        }
+        if (tid == 0) hist[bin] = sdata[0];
+      }
+    )CUDA";
+
   }  // namespace
 
   PowerlawFlux::PowerlawFlux(const io::ic::ICSample&       sample,
                              const double                  e_ref_gev,
                              const double                  reference_index,
                              const bool                    per_type_norm,
-                             std::shared_ptr<MetalBackend> metal,
+                             std::shared_ptr<GpuBackend>   gpu,
                              const bool                    need_per_event)
     : m_Sample(sample)
     , m_ERef(e_ref_gev)
     , m_ReferenceIndex(reference_index)
     , m_PerTypeNorm(per_type_norm)
     , m_NeedPerEvent(need_per_event)
-    , m_Metal(std::move(metal)) {
+    , m_Gpu(std::move(gpu)) {
     m_Histogram.fill(0.0);
     m_PerEventWeight.assign(sample.size(), 0.0);
 
-    if (m_Metal) {
-      const std::size_t M = sample.size();
-      m_Metal->ensure_kernel("powerlaw_hist", kKernel);
-      m_hETrue    = m_Metal->upload_column(sample.e_true.data(), M);
-      m_hBaseline = m_Metal->upload_column(sample.astro_baseline.data(), M);
-      m_hOffsets  = m_Metal->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
-      m_hHist     = m_Metal->alloc_output(io::ic::Constants::nBins);
-      m_hPerEvent = m_Metal->alloc_output(M);  // always bound; write gated by need
-      std::cout << "PowerlawFlux: using Metal GPU backend\n";
+    if (m_Gpu) {
+      const std::size_t M   = sample.size();
+      const char*       src = m_Gpu->language() == GpuLanguage::Cuda ? kKernelCuda : kKernelMetal;
+      m_Gpu->ensure_kernel("powerlaw_hist", src);
+      m_hETrue    = m_Gpu->upload_column(sample.e_true.data(), M);
+      m_hBaseline = m_Gpu->upload_column(sample.astro_baseline.data(), M);
+      m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
+      m_hHist     = m_Gpu->alloc_output(io::ic::Constants::nBins);
+      m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
+      std::cout << "PowerlawFlux: using GPU backend\n";
     }
   }
 
@@ -91,7 +130,7 @@ namespace ana::ic {
     const double norm  = parameter[AstroNorm];
     const double gamma = parameter[SpectralIndex];
 
-    if (m_Metal) {
+    if (m_Gpu) {
       PowerlawParams p;
       p.eff_norm = static_cast<float>(m_PerTypeNorm ? norm : 0.5 * norm);
       p.inv_eref = static_cast<float>(1.0 / m_ERef);
@@ -99,13 +138,13 @@ namespace ana::ic {
       p.write_pe = m_NeedPerEvent ? 1 : 0;
 
       const int inputs[] = {m_hETrue, m_hBaseline, m_hOffsets};
-      m_Metal->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent);
+      m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent);
 
-      const float* hist = m_Metal->contents(m_hHist);
+      const float* hist = m_Gpu->contents(m_hHist);
       for (int bin = 0; bin < io::ic::Constants::nBins; ++bin)
         m_Histogram[bin] = static_cast<double>(hist[bin]);
       if (m_NeedPerEvent) {
-        const float* pe = m_Metal->contents(m_hPerEvent);
+        const float* pe = m_Gpu->contents(m_hPerEvent);
         for (std::size_t i = 0, n = m_PerEventWeight.size(); i < n; ++i)
           m_PerEventWeight[i] = static_cast<double>(pe[i]);
       }

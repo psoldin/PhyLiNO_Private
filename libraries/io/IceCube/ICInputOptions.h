@@ -33,6 +33,15 @@ namespace io::ic {
   enum class LikelihoodType { Poisson,
                               SAY };
 
+  // Compute backend for the per-event flux histograms.
+  //   Cpu   - OMP+SIMD reference path, available everywhere.
+  //   Metal - Apple GPU (Apple builds only).
+  //   Cuda  - NVIDIA GPU (builds with the CUDA toolkit only).
+  // A requested GPU backend falls back to Cpu at runtime if no device is present.
+  enum class BackendKind { Cpu,
+                           Metal,
+                           Cuda };
+
   /**
    * @brief Input options of the IceCube tracks-only diffuse-flux experiment.
    *
@@ -53,9 +62,8 @@ namespace io::ic {
     [[nodiscard]] const BranchNames& branch_names() const noexcept { return m_Branches; }
     [[nodiscard]] bool               use_data() const noexcept { return m_UseData; }
     [[nodiscard]] LikelihoodType     likelihood_type() const noexcept { return m_LikelihoodType; }
-    // Compute backend for the flux histograms: false = CPU (OMP+SIMD), true =
-    // Metal GPU (Apple only; falls back to CPU if no device is present).
-    [[nodiscard]] bool               use_metal_backend() const noexcept { return m_UseMetalBackend; }
+    // Selected compute backend for the flux histograms (see BackendKind).
+    [[nodiscard]] BackendKind        backend_kind() const noexcept { return m_BackendKind; }
     // Detector livetime in seconds. The per-event MC weights are rates (Hz);
     // multiplying by the livetime turns the binned prediction into event counts.
     [[nodiscard]] double livetime() const noexcept { return m_Livetime; }
@@ -82,7 +90,7 @@ namespace io::ic {
     BranchNames    m_Branches;
     bool           m_UseData          = false;
     LikelihoodType m_LikelihoodType   = LikelihoodType::Poisson;
-    bool           m_UseMetalBackend  = false;
+    BackendKind    m_BackendKind      = BackendKind::Cpu;
     double         m_Livetime         = 1.0;
 
     double m_ERefGeV             = 1.0e5;

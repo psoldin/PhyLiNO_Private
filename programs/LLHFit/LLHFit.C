@@ -12,6 +12,41 @@
 
 #include <TROOT.h>
 
+void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module) {
+
+  constexpr int x_bins = 50;
+  constexpr int y_bins = 50;
+  constexpr double low_x = 1.0;
+  constexpr double high_x = 3.0;
+  constexpr double low_y = 2.0;
+  constexpr double high_y = 3.0;
+
+  using namespace ana::ic;
+  using enum params::ic::General;
+
+  for (int i = 0; i < x_bins; ++i) {
+    const double x = low_x + static_cast<double>(i) * (high_x - low_x) / x_bins;
+    for (int j = 0; j < y_bins; ++j) {
+      const double y = low_y + static_cast<double>(j) * (high_y - low_y) / y_bins;
+
+      ana::Fit fit(options, module);
+      auto min = fit.get_minimizer();
+      min->SetVariableValue(AstroNorm, x);
+      min->SetVariableValue(SpectralIndex, y);
+      min->FixVariable(AstroNorm);
+      min->FixVariable(SpectralIndex);
+
+      fit.minimize();
+
+      std::stringstream ss;
+
+      ss << "Output_" << i << '_' << j;
+
+      result::write_results(fit, ss.str());
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   ROOT::EnableThreadSafety();
 
@@ -40,6 +75,8 @@ int main(int argc, char** argv) {
 
     fit.minimize();
     result::write_results(fit, "Output");
+
+    // perform_2d_scan(options, module);
 
     std::cout << "####\t" << fit.get_minimizer()->X()[0] << '\n';
   } catch (const std::exception& e) {

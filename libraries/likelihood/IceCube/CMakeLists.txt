@@ -24,13 +24,18 @@ set(files
     ICLikelihood.cpp
     ICModule.h
     ICModule.cpp
+    GpuBackend.h
     MetalBackend.h
+    CudaBackend.h
 )
 
-# Shared Metal GPU backend for the per-event flux histograms: the real
-# Obj-C++/Metal implementation on Apple, a no-op stub (available()==false)
-# everywhere else. Component kernels live in the flux .cpp files as source
-# strings and are compiled through the backend at runtime.
+# GPU backends for the per-event flux histograms, both behind the GpuBackend
+# facade. Component kernels live in the flux .cpp files as source strings (MSL
+# and CUDA-C) and are compiled through the backend at runtime. Each backend is
+# the real implementation where its toolkit exists and a no-op stub
+# (available()==false) otherwise, so the library links everywhere.
+
+# Metal: real Obj-C++/Metal on Apple, stub elsewhere.
 if(APPLE)
     list(APPEND files MetalBackend.mm)
     set_source_files_properties(MetalBackend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -38,10 +43,25 @@ else()
     list(APPEND files MetalBackend_stub.cpp)
 endif()
 
+# CUDA: real driver-API + NVRTC implementation when the CUDA toolkit is found,
+# stub otherwise. Kernels are runtime-compiled by NVRTC, so no nvcc/device
+# compilation is needed here -- CudaBackend.cpp is an ordinary C++ TU linking
+# the CUDA driver + NVRTC libraries.
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    list(APPEND files CudaBackend.cpp)
+else()
+    list(APPEND files CudaBackend_stub.cpp)
+endif()
+
 add_library(icecube SHARED ${files})
 
 if(APPLE)
     target_link_libraries(icecube PRIVATE "-framework Metal" "-framework Foundation")
+endif()
+
+if(CUDAToolkit_FOUND)
+    target_link_libraries(icecube PRIVATE CUDA::cuda_driver CUDA::nvrtc)
 endif()
 
 target_include_directories(icecube PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -4,7 +4,7 @@
 #include "../../io/IceCube/ICParameter.h"  // params::ic::nBarrParams
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
-#include "MetalBackend.h"
+#include "GpuBackend.h"
 
 #include <array>
 #include <memory>
@@ -31,7 +31,7 @@ namespace ana::ic {
    *            * (E_true_i / prompt_e_ref)^(-DeltaGamma)
    *
    * The histogram holds conv_i + prompt_i summed per analysis bin. When a
-   * MetalBackend is supplied the per-event loop runs on the GPU; otherwise the
+   * GpuBackend is supplied the per-event loop runs on the GPU; otherwise the
    * CPU OMP+SIMD path is used (and serves as the validation oracle).
    */
   class AtmosphericFlux {
@@ -39,7 +39,7 @@ namespace ana::ic {
     AtmosphericFlux(const io::ic::ICSample&       sample,
                     double                        conv_delta_gamma_e_ref,
                     double                        prompt_delta_gamma_e_ref,
-                    std::shared_ptr<MetalBackend> metal          = nullptr,
+                    std::shared_ptr<GpuBackend>   gpu            = nullptr,
                     bool                          need_per_event = false);
     ~AtmosphericFlux() = default;
 
@@ -66,9 +66,9 @@ namespace ana::ic {
     BinArray                m_Histogram{};
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when the Metal backend is selected; shared with the other flux
+    // Non-null when a GPU backend is selected; shared with the other flux
     // components (so e_true / bin_offsets are uploaded once).
-    std::shared_ptr<MetalBackend>                    m_Metal;
+    std::shared_ptr<GpuBackend>                      m_Gpu;
     int                                              m_hETrue      = -1;
     int                                              m_hConvBase   = -1;
     int                                              m_hConvAlt    = -1;
@@ -80,7 +80,7 @@ namespace ana::ic {
     int                                              m_hPerEvent   = -1;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
-    void recalculate_metal(const ParameterWrapper& parameter) noexcept;
+    void recalculate_gpu(const ParameterWrapper& parameter) noexcept;
   };
 
 }  // namespace ana::ic
