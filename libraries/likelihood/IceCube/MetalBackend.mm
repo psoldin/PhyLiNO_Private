@@ -138,7 +138,8 @@ namespace ana::ic {
                               const void* params,
                               std::size_t params_len,
                               const int   hist,
-                              const int   per_event) {
+                              const int   per_event,
+                              const std::size_t n_groups) {
     auto* s = static_cast<MetalState*>(m_State);
     @autoreleasepool {
       id<MTLComputePipelineState> pso = s->pipelines.at(std::string(name));
@@ -152,7 +153,7 @@ namespace ana::ic {
       [enc setBuffer:s->buffers[hist] offset:0 atIndex:n_inputs + 1];
       if (per_event >= 0)
         [enc setBuffer:s->buffers[per_event] offset:0 atIndex:n_inputs + 2];
-      [enc dispatchThreadgroups:MTLSizeMake(io::ic::Constants::nBins, 1, 1)
+      [enc dispatchThreadgroups:MTLSizeMake(n_groups, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(kThreadsPerGroup, 1, 1)];
       [enc endEncoding];
       [cb commit];

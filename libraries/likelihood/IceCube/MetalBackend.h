@@ -63,7 +63,7 @@ namespace ana::ic {
     /** Allocate a zeroed FP32 shared-memory output buffer of n floats. */
     int alloc_output(std::size_t n) override;
 
-    /** Dispatch io::ic::Constants::nBins threadgroups of kernel `name`.
+    /** Dispatch n_groups threadgroups of kernel `name`.
         inputs[0..n_inputs) bind at buffer indices 0.., params at n_inputs,
         hist at n_inputs+1, and per_event at n_inputs+2 when >= 0. Blocks. */
     void dispatch(const char* name,
@@ -72,7 +72,8 @@ namespace ana::ic {
                   const void* params,
                   std::size_t params_len,
                   int         hist,
-                  int         per_event) override;
+                  int         per_event,
+                  std::size_t n_groups) override;
 
     /** CPU-readable pointer to a buffer's contents (shared/unified memory). */
     [[nodiscard]] const float* contents(int handle) const noexcept override;

@@ -46,7 +46,8 @@ namespace ana::ic {
                   const void* params,
                   std::size_t params_len,
                   int         hist,
-                  int         per_event) override;
+                  int         per_event,
+                  std::size_t n_groups) override;
     [[nodiscard]] const float* contents(int handle) const noexcept override;
 
    private:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../io/IceCube/ICConstants.h"
+#include "../../io/IceCube/Binning.h"
 #include "../../io/IceCube/ICParameter.h"  // params::ic::nBarrParams
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
@@ -37,6 +37,7 @@ namespace ana::ic {
   class AtmosphericFlux {
    public:
     AtmosphericFlux(const io::ic::ICSample&       sample,
+                    const io::ic::Binning&        binning,
                     double                        conv_delta_gamma_e_ref,
                     double                        prompt_delta_gamma_e_ref,
                     std::shared_ptr<GpuBackend>   gpu            = nullptr,
@@ -57,13 +58,11 @@ namespace ana::ic {
     }
 
    private:
-    using BinArray = std::array<double, io::ic::Constants::nBins>;
-
     const io::ic::ICSample& m_Sample;
     double                  m_ConvDeltaGammaERef;
     double                  m_PromptDeltaGammaERef;
     bool                    m_NeedPerEvent;
-    BinArray                m_Histogram{};
+    std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
     // Non-null when a GPU backend is selected; shared with the other flux

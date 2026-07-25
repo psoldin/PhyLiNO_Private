@@ -97,6 +97,7 @@ namespace ana::ic {
   }  // namespace
 
   PowerlawFlux::PowerlawFlux(const io::ic::ICSample&       sample,
+                             const io::ic::Binning&        binning,
                              const double                  e_ref_gev,
                              const double                  reference_index,
                              const bool                    per_type_norm,
@@ -108,7 +109,7 @@ namespace ana::ic {
     , m_PerTypeNorm(per_type_norm)
     , m_NeedPerEvent(need_per_event)
     , m_Gpu(std::move(gpu)) {
-    m_Histogram.fill(0.0);
+    m_Histogram.assign(binning.total_bins(), 0.0);
     m_PerEventWeight.assign(sample.size(), 0.0);
 
     if (m_Gpu) {
@@ -118,7 +119,7 @@ namespace ana::ic {
       m_hETrue    = m_Gpu->upload_column(sample.e_true.data(), M);
       m_hBaseline = m_Gpu->upload_column(sample.astro_baseline.data(), M);
       m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
-      m_hHist     = m_Gpu->alloc_output(io::ic::Constants::nBins);
+      m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
       m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
       std::cout << "PowerlawFlux: using GPU backend\n";
     }
@@ -138,10 +139,10 @@ namespace ana::ic {
       p.write_pe = m_NeedPerEvent ? 1 : 0;
 
       const int inputs[] = {m_hETrue, m_hBaseline, m_hOffsets};
-      m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent);
+      m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
 
       const float* hist = m_Gpu->contents(m_hHist);
-      for (int bin = 0; bin < io::ic::Constants::nBins; ++bin)
+      for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
         m_Histogram[bin] = static_cast<double>(hist[bin]);
       if (m_NeedPerEvent) {
         const float* pe = m_Gpu->contents(m_hPerEvent);
@@ -159,9 +160,10 @@ namespace ana::ic {
     const auto& off      = m_Sample.bin_offsets;
     const auto& baseline = m_Sample.astro_baseline;
     const auto& e_true   = m_Sample.e_true;
+    const int   n_bins   = static_cast<int>(m_Histogram.size());
 
     #pragma omp parallel for
-    for (int bin = 0; bin < io::ic::Constants::nBins; ++bin) {
+    for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
         const double w = baseline[i] * eff_norm * std::pow(e_true[i] / m_ERef, exponent);

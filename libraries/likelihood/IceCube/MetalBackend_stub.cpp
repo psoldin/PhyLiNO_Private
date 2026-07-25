@@ -21,7 +21,7 @@ namespace ana::ic {
   int  MetalBackend::upload_column(const double*, std::size_t) { return -1; }
   int  MetalBackend::upload_offsets(const std::size_t*, std::size_t) { return -1; }
   int  MetalBackend::alloc_output(std::size_t) { return -1; }
-  void MetalBackend::dispatch(const char*, const int*, int, const void*, std::size_t, int, int) {}
+  void MetalBackend::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
   const float* MetalBackend::contents(int) const noexcept { return nullptr; }
 
 }  // namespace ana::ic

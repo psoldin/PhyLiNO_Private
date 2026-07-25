@@ -1,11 +1,10 @@
 #pragma once
 
-#include "../../io/IceCube/ICConstants.h"
+#include "../../io/IceCube/Binning.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
 #include "GpuBackend.h"
 
-#include <array>
 #include <memory>
 #include <span>
 #include <vector>
@@ -29,6 +28,7 @@ namespace ana::ic {
   class PowerlawFlux {
    public:
     PowerlawFlux(const io::ic::ICSample&        sample,
+                 const io::ic::Binning&         binning,
                  double                         e_ref_gev,
                  double                         reference_index,
                  bool                           per_type_norm,
@@ -50,14 +50,12 @@ namespace ana::ic {
     }
 
    private:
-    using BinArray = std::array<double, io::ic::Constants::nBins>;
-
     const io::ic::ICSample& m_Sample;
     double                  m_ERef;
     double                  m_ReferenceIndex;
     bool                    m_PerTypeNorm;
     bool                    m_NeedPerEvent;
-    BinArray                m_Histogram{};
+    std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
     // Non-null when a GPU backend is selected; shared with the other flux

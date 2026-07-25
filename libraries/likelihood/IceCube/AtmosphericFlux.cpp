@@ -172,6 +172,7 @@ namespace ana::ic {
   }  // namespace
 
   AtmosphericFlux::AtmosphericFlux(const io::ic::ICSample&       sample,
+                                   const io::ic::Binning&        binning,
                                    const double                  conv_delta_gamma_e_ref,
                                    const double                  prompt_delta_gamma_e_ref,
                                    std::shared_ptr<GpuBackend>   gpu,
@@ -181,7 +182,7 @@ namespace ana::ic {
     , m_PromptDeltaGammaERef(prompt_delta_gamma_e_ref)
     , m_NeedPerEvent(need_per_event)
     , m_Gpu(std::move(gpu)) {
-    m_Histogram.fill(0.0);
+    m_Histogram.assign(binning.total_bins(), 0.0);
     m_PerEventWeight.assign(sample.size(), 0.0);
 
     if (m_Gpu) {
@@ -196,7 +197,7 @@ namespace ana::ic {
       for (int k = 0; k < params::ic::nBarrParams; ++k)
         m_hBarr[k] = m_Gpu->upload_column(sample.barr_conv[k].data(), M);
       m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
-      m_hHist     = m_Gpu->alloc_output(io::ic::Constants::nBins);
+      m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
       m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
       std::cout << "AtmosphericFlux: using GPU backend\n";
     }
@@ -220,10 +221,10 @@ namespace ana::ic {
 
     const int inputs[] = {m_hETrue,      m_hConvBase, m_hConvAlt,  m_hPromptBase, m_hPromptAlt,
                           m_hBarr[0],    m_hBarr[1],  m_hBarr[2],  m_hBarr[3],    m_hOffsets};
-    m_Gpu->dispatch("atmo_hist", inputs, 10, &p, sizeof(p), m_hHist, m_hPerEvent);
+    m_Gpu->dispatch("atmo_hist", inputs, 10, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
 
     const float* hist = m_Gpu->contents(m_hHist);
-    for (int bin = 0; bin < io::ic::Constants::nBins; ++bin)
+    for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
       m_Histogram[bin] = static_cast<double>(hist[bin]);
     if (m_NeedPerEvent) {
       const float* pe = m_Gpu->contents(m_hPerEvent);
@@ -251,9 +252,10 @@ namespace ana::ic {
 
     const auto& off    = m_Sample.bin_offsets;
     const auto& e_true = m_Sample.e_true;
+    const int   n_bins = static_cast<int>(m_Histogram.size());
 
     #pragma omp parallel for
-    for (int bin = 0; bin < io::ic::Constants::nBins; ++bin) {
+    for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin]; i < off[bin + 1]; ++i) {
         double event_total = 0.0;

@@ -47,6 +47,7 @@ namespace ana::ic {
     , m_GpuBackend(make_gpu_backend(input_options.backend_kind()))
     // TODO(Task 7): composite over all samples
     , m_Astro(m_DataBase->sample(0),
+              input_options.samples()[0].binning,
               input_options.e_ref_gev(),
               input_options.astro_reference_index(),
               input_options.astro_per_type_norm(),
@@ -54,6 +55,7 @@ namespace ana::ic {
               input_options.likelihood_type() == io::ic::LikelihoodType::SAY)
     // TODO(Task 7): composite over all samples
     , m_Atmo(m_DataBase->sample(0),
+             input_options.samples()[0].binning,
              input_options.conv_delta_gamma_e_ref(),
              input_options.prompt_delta_gamma_e_ref(),
              m_GpuBackend,

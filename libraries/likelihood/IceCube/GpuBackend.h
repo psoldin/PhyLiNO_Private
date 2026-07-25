@@ -50,7 +50,7 @@ namespace ana::ic {
     /** Allocate a zeroed FP32 output buffer of n floats. Returns a handle. */
     virtual int alloc_output(std::size_t n) = 0;
 
-    /** Dispatch io::ic::Constants::nBins groups of kernel `name`.
+    /** Dispatch n_groups groups of kernel `name`.
         inputs[0..n_inputs) bind at indices 0.., params at n_inputs, hist at
         n_inputs+1, and per_event at n_inputs+2 when >= 0. Blocks. */
     virtual void dispatch(const char* name,
@@ -59,7 +59,8 @@ namespace ana::ic {
                           const void* params,
                           std::size_t params_len,
                           int         hist,
-                          int         per_event) = 0;
+                          int         per_event,
+                          std::size_t n_groups) = 0;
 
     /** CPU-readable pointer to an output buffer's contents; valid after the
         dispatch that produced it. */

@@ -195,7 +195,8 @@ namespace ana::ic {
                              const void* params,
                              std::size_t /*params_len*/,
                              const int   hist,
-                             const int   per_event) {
+                             const int   per_event,
+                             const std::size_t n_groups) {
     auto* s = static_cast<CudaState*>(m_State);
     CUfunction fn = s->funcs.at(std::string(name));
 
@@ -216,7 +217,7 @@ namespace ana::ic {
     if (per_event >= 0) args.push_back(&pe_ptr);         // optional per-event
 
     cu_check(cuLaunchKernel(fn,
-                            static_cast<unsigned>(io::ic::Constants::nBins), 1, 1,
+                            static_cast<unsigned>(n_groups), 1, 1,
                             kThreadsPerGroup, 1, 1,
                             0, nullptr, args.data(), nullptr),
              "cuLaunchKernel");
