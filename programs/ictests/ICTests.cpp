@@ -1,6 +1,8 @@
 #include "IceCube/Binning.h"
+#include "IceCube/ICParameter.h"
 #include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
+#include "SampleLikelihood.h"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -9,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <vector>
 
 using io::ic::Axis;
 using io::ic::Binning;
@@ -195,12 +198,131 @@ static void test_sort_into_bins_csr_invariant() {
     assert(std::abs(s.e_true[i] - expected_original_index[i]) < 1e-9);
 }
 
+// Builds a tiny synthetic tracks-like sample (3 log10-energy bins x 2
+// cos-zenith bins = 6 analysis bins, 2 events per bin, every per-event column
+// populated with nonzero physically plausible values) and checks that the
+// Asimov point (predicted == data by construction) minimizes SampleLikelihood's
+// partial -2lnL: perturbing AstroNorm away from its nominal value must not
+// improve (must strictly worsen) the likelihood. Exercises the CPU (gpu =
+// nullptr) path of both PowerlawFlux and AtmosphericFlux end to end, including
+// the SAY ssq path (assemble_fluctuation).
+static void test_sample_likelihood_asimov_is_minimum() {
+  using ana::ic::GlobalFluxSettings;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  // 2D binning: Log10Energy in [2, 5) with 3 bins, CosZenith in [-1, 1) with
+  // 2 bins -> 6 analysis bins total.
+  Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 5.0, 3},
+                   Axis{Axis::Kind::CosZenith, -1.0, 1.0, 2}});
+  assert(binning.total_bins() == 6);
+
+  // log10-energy bin centers: 10^2.5, 10^3.5, 10^4.5 GeV.
+  const double energies[3] = {316.227766, 3162.27766, 31622.7766};
+  // zenith (radians) chosen so cos(zenith) lands in cos-zenith bin 0 ([-1,0))
+  // or bin 1 ([0,1)) respectively.
+  const double zeniths[2] = {2.0, 0.5};
+
+  io::ic::ICSample sample;
+  const int        events_per_bin = 2;
+  const int        n_events       = 3 * 2 * events_per_bin;
+  sample.e_true.reserve(n_events);
+  sample.astro_baseline.reserve(n_events);
+  sample.conv_baseline.reserve(n_events);
+  sample.conv_alt.reserve(n_events);
+  sample.prompt_baseline.reserve(n_events);
+  sample.prompt_alt.reserve(n_events);
+  for (auto& g : sample.barr_conv) g.reserve(n_events);
+  sample.bin_idx.reserve(n_events);
+
+  int event_index = 0;
+  for (int eb = 0; eb < 3; ++eb) {
+    for (int zb = 0; zb < 2; ++zb) {
+      for (int k = 0; k < events_per_bin; ++k, ++event_index) {
+        // Small per-event jitter so events within a bin aren't identical.
+        const double jitter    = 1.0 + 0.01 * static_cast<double>(k);
+        const double e_true    = energies[eb] * jitter;
+        const double reco_e    = energies[eb] * jitter;
+        const double reco_z    = zeniths[zb];
+        const double conv_base = 5.0e-3 * jitter;
+        const double prompt_base = 1.0e-4 * jitter;
+
+        sample.e_true.push_back(e_true);
+        sample.astro_baseline.push_back(1.0e-3 * jitter);
+        sample.conv_baseline.push_back(conv_base);
+        sample.conv_alt.push_back(0.9 * conv_base);
+        sample.prompt_baseline.push_back(prompt_base);
+        sample.prompt_alt.push_back(0.9 * prompt_base);
+        for (int b = 0; b < params::ic::nBarrParams; ++b)
+          sample.barr_conv[b].push_back(1.0e-4 * (b + 1) * jitter);
+
+        const double reco[2] = {reco_e, reco_z};
+        sample.bin_idx.push_back(binning.bin_index(reco));
+      }
+    }
+  }
+  assert(static_cast<int>(sample.size()) == n_events);
+
+  sample.sort_into_bins(binning.total_bins());
+  // All 12 synthetic events were built in-range; none should be dropped.
+  assert(static_cast<int>(sample.size()) == n_events);
+  assert(sample.bin_offsets.back() == sample.size());
+
+  io::ic::SampleConfig cfg{.name = "unit_test_sample", .binning = binning};
+
+  const GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                    .astro_reference_index    = 2.0,
+                                    .conv_delta_gamma_e_ref   = 1.0e3,
+                                    .prompt_delta_gamma_e_ref = 3.8e3,
+                                    .astro_per_type_norm      = false};
+
+  SampleLikelihood likelihood(sample, cfg, settings, /*gpu=*/nullptr, /*use_say=*/true);
+
+  // Nominal parameter values mirror configs/config_icecube_tracks_cpu.json's
+  // "StartValue" entries (physically reasonable defaults for this layout).
+  std::vector<double> nominal_values(params::ic::number_of_parameters(), 0.0);
+  nominal_values[params::ic::AstroNorm]    = 1.5;
+  nominal_values[params::ic::SpectralIndex] = 2.4;
+  nominal_values[params::ic::ConvNorm]     = 1.0;
+  nominal_values[params::ic::PromptNorm]   = 1.0;
+  // BarrH/W/Y/Z, CRGrad, DeltaGamma stay 0.0 (nominal).
+  nominal_values[params::ic::MuonNorm] = 1.0;
+  nominal_values[params::ic::DOMEff]   = 1.0;
+  nominal_values[params::ic::IceAbs]   = 1.0;
+  nominal_values[params::ic::IceScat]  = 1.0;
+
+  ParameterWrapper nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  likelihood.generate_asimov(nominal);
+
+  const double llh_nominal = likelihood.partial_llh(nominal);
+  assert(std::isfinite(llh_nominal));
+
+  // Perturb AstroNorm x1.5 away from its Asimov (nominal) value; everything
+  // else stays at the nominal/config default.
+  std::vector<double> perturbed_values = nominal_values;
+  perturbed_values[params::ic::AstroNorm] *= 1.5;
+
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(perturbed_values.data());
+
+  const double llh_perturbed = likelihood.partial_llh(perturbed);
+  assert(std::isfinite(llh_perturbed));
+
+  // The Asimov point (data == prediction at nominal) must minimize -2lnL:
+  // do NOT assert llh_nominal ~= 0 -- SAY/Poisson here keep the saturated
+  // constant, so the minimum is a nonzero value.
+  assert(llh_nominal < llh_perturbed);
+}
+
 int main() {
   test_total_bins();
   test_bin_index_matches_legacy();
   test_parse_axis_spec();
   test_parse_samples();
   test_sort_into_bins_csr_invariant();
+  test_sample_likelihood_asimov_is_minimum();
   std::puts("ICTests: all passed");
   return 0;
 }

@@ -20,6 +20,8 @@ set(files
     MuonTemplate.cpp
     SAYLikelihood.h
     SAYLikelihood.cpp
+    SampleLikelihood.h
+    SampleLikelihood.cpp
     ICLikelihood.h
     ICLikelihood.cpp
     ICModule.h
