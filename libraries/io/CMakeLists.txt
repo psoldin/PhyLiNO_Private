@@ -7,6 +7,8 @@ set(files
         Options.cpp
         TreeEntry.h
         ParameterValue.h
+        IceCube/Binning.h
+        IceCube/Binning.cpp
 )
 
 add_library(io SHARED ${files})

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(PhLiNO)
 
+enable_testing()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 20)
