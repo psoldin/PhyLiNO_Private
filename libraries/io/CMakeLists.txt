@@ -9,6 +9,9 @@ set(files
         ParameterValue.h
         IceCube/Binning.h
         IceCube/Binning.cpp
+        IceCube/BranchNames.h
+        IceCube/SampleConfig.h
+        IceCube/SampleConfig.cpp
 )
 
 add_library(io SHARED ${files})

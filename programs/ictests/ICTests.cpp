@@ -1,8 +1,13 @@
 #include "IceCube/Binning.h"
+#include "IceCube/SampleConfig.h"
+
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <sstream>
 
 using io::ic::Axis;
 using io::ic::Binning;
@@ -42,10 +47,69 @@ static void test_parse_axis_spec() {
   assert(std::abs(a.hi - 7.0) < 1e-12);
 }
 
+// Exercises the real io::ic::parse_samples() (declared in SampleConfig.h,
+// implemented in SampleConfig.cpp) against an in-memory JSON config, tolerant
+// "Binnings" + "Samples" parser added in Task 3. One binning shared by two
+// samples, one of which is disabled, to check both binning resolution and
+// per-sample field parsing (including the comma-split "components" list).
+static void test_parse_samples() {
+  static constexpr char kJson[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "tracks_2d": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "tracks_baseline": {
+        "binning": "tracks_2d",
+        "parquet": "dataset_tracks_baseline.parquet",
+        "livetime": 3.0e8,
+        "components": "astro, conv, prompt"
+      },
+      "tracks_alt": {
+        "binning": "tracks_2d",
+        "parquet": "dataset_tracks_alt.parquet",
+        "enabled": false,
+        "livetime": 1.0e8
+      }
+    }
+  }
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
+  assert(samples.size() == 2);
+
+  assert(samples[0].name == "tracks_baseline");
+  assert(samples[0].enabled == true);
+  assert(std::abs(samples[0].livetime - 3.0e8) < 1.0);
+  assert(samples[0].binning.total_bins() == 1485);
+  assert(samples[0].components.size() == 3);
+  assert(samples[0].components[0] == "astro");
+  assert(samples[0].components[1] == "conv");
+  assert(samples[0].components[2] == "prompt");
+  assert(samples[0].has_component("conv"));
+  assert(!samples[0].has_component("muon"));
+
+  assert(samples[1].name == "tracks_alt");
+  assert(samples[1].enabled == false);
+  assert(std::abs(samples[1].livetime - 1.0e8) < 1.0);
+  assert(samples[1].binning.total_bins() == 1485);
+}
+
 int main() {
   test_total_bins();
   test_bin_index_matches_legacy();
   test_parse_axis_spec();
+  test_parse_samples();
   std::puts("ICTests: all passed");
   return 0;
 }

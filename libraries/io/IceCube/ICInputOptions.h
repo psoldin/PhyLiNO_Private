@@ -1,34 +1,13 @@
 #pragma once
 
-#include <array>
 #include <string>
+#include <vector>
 
 #include "../InputOptionBase.h"
-#include "ICParameter.h"  // params::ic::nBarrParams
+#include "BranchNames.h"
+#include "SampleConfig.h"  // io::ic::SampleConfig; must be a complete type for the m_Samples vector member below
 
 namespace io::ic {
-
-  /**
-   * Names of the parquet columns read into ICSample. Defaults match the
-   * tracks-only baseline dataset (dataset_tracks_baseline.parquet); override
-   * any of them via the "IceCube.Branches" config subtree if the schema differs.
-   */
-  struct BranchNames {
-    std::string reco_energy     = "energy_truncated";
-    std::string reco_zenith     = "zenith_MPEFit";
-    std::string true_energy     = "MCPrimaryEnergy";
-    std::string astro_baseline  = "powerlaw";
-    std::string conv_baseline   = "mceq_conv_H4a_SIBYLL23c";
-    std::string conv_alt        = "mceq_conv_GST4_SIBYLL23c";
-    std::string prompt_baseline = "mceq_pr_H4a_SIBYLL23c";
-    std::string prompt_alt      = "mceq_pr_GST4_SIBYLL23c";
-    // Conventional Barr gradients, order matches params::ic {BarrH, BarrW, BarrY, BarrZ}.
-    std::array<std::string, params::ic::nBarrParams> barr_conv = {
-        "barr_h_mceq_H4a_SIBYLL23c",
-        "barr_w_mceq_H4a_SIBYLL23c",
-        "barr_y_mceq_H4a_SIBYLL23c",
-        "barr_z_mceq_H4a_SIBYLL23c"};
-  };
 
   enum class LikelihoodType { Poisson,
                               SAY };
@@ -85,6 +64,12 @@ namespace io::ic {
     [[nodiscard]] bool               use_oscillation() const noexcept { return m_UseOscillation; }
     [[nodiscard]] const std::string& oscillation_spline_file() const noexcept { return m_OscillationSplineFile; }
 
+    // Multi-sample config, populated only when the config provides an
+    // "IceCube.Samples" subtree (see parse_samples() in SampleConfig.h).
+    // Empty for the current flat single-sample configs; not yet on the
+    // running fit path.
+    [[nodiscard]] const std::vector<SampleConfig>& samples() const noexcept { return m_Samples; }
+
    private:
     std::string    m_TrackBaselineFilePath;
     BranchNames    m_Branches;
@@ -106,6 +91,8 @@ namespace io::ic {
     std::string m_DetectorGradientFile;
     bool        m_UseOscillation = false;
     std::string m_OscillationSplineFile;
+
+    std::vector<SampleConfig> m_Samples;
   };
 
 }  // namespace io::ic

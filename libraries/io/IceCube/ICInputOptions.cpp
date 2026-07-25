@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "SampleConfig.h"  // parse_samples()
+
 namespace io::ic {
 
   void ICInputOptions::read(const boost::program_options::variables_map& /*vm*/, const boost::property_tree::ptree& config) {
@@ -72,6 +74,13 @@ namespace io::ic {
           throw std::runtime_error("ICInputOptions: expected exactly 4 BarrConv branch names");
       }
     }
+
+    // Multi-sample config (see SampleConfig.h). Purely additive: only parsed
+    // when the config provides an "IceCube.Samples" subtree, so the existing
+    // flat single-sample configs (which drive the running fit path) are a
+    // no-op here.
+    if (ic.get_child_optional("Samples"))
+      m_Samples = parse_samples(ic);
   }
 
 }  // namespace io::ic
