@@ -5,7 +5,7 @@ enable_testing()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 
 include(cmake/mpi.cmake)
 
@@ -79,7 +79,7 @@ macro(remove_flag_from_file _target _file _flag)
   endif()
 endmacro()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -std=c++20 -mtune=native -Wno-#pragma-messages -Wno-deprecated-volatile -Wno-deprecated-declarations -Wno-deprecated-anon-enum-enum-conversion -Wno-unused-command-line-argument -Wno-#warnings")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mtune=native -Wno-#pragma-messages -Wno-deprecated-volatile -Wno-deprecated-declarations -Wno-deprecated-anon-enum-enum-conversion -Wno-unused-command-line-argument -Wno-#warnings -Wno-final-dtor-non-final-class")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -std=c++20 -mtune=native -Wno-#pragma-messages -Wno-deprecated-volatile -Wno-deprecated-declarations -Wno-deprecated-anon-enum-enum-conversion -Wno-unused-command-line-argument -Wno-#warnings")
 
 add_subdirectory(libraries)
