@@ -11,9 +11,15 @@
 namespace io::ic {
 
   /**
-   * Struct-of-Arrays storage for the IceCube tracks-only MC sample.
+   * Struct-of-Arrays storage for one IceCube MC analysis sample.
    * All columns are contiguous vectors for cache-efficient inner loops.
    * Loaded once by ICDataBase at startup; never modified during fitting.
+   *
+   * Only the columns the sample's declared components need are populated:
+   * e_true always, astro_baseline for "astro", and conv/prompt/barr_conv for
+   * the atmospheric components. Columns of components the sample does not
+   * declare stay empty, and the flux component that would read them is not
+   * constructed (see SampleLikelihood).
    *
    * Column meaning (parquet branch in parentheses):
    *   e_true          true neutrino energy in GeV        (MCPrimaryEnergy)
@@ -42,7 +48,7 @@ namespace io::ic {
     std::array<std::vector<double>, params::ic::nBarrParams> barr_conv;
 
     // --- Bin assignment, filled at load time ---
-    // bin_idx[i] = flat (E_reco x cos_zenith) bin, -1 if out of analysis range.
+    // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;
 
     // --- CSR bucket layout, built by sort_into_bins() ---
@@ -74,7 +80,10 @@ namespace io::ic {
       });
 
       // Apply the permutation to one column (materialises a compacted copy).
+      // A column left empty by ICDataBase -- because the sample does not declare
+      // the component that needs it -- is skipped rather than indexed.
       auto reorder = [&perm](auto& col) {
+        if (col.empty()) return;
         using Column = std::decay_t<decltype(col)>;
         Column out;
         out.reserve(perm.size());

@@ -8,6 +8,7 @@
 #include "PowerlawFlux.h"
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -23,10 +24,15 @@ namespace ana::ic {
   };
 
   /**
-   * One IceCube sample's prediction and its partial -2lnL contribution. Owns its
-   * flux components and runtime-sized histograms; knows nothing about other
-   * samples. The meta ICLikelihood (Task 7) sums partial_llh() across samples and
-   * adds the Gaussian pulls once.
+   * One IceCube sample's prediction and its partial -2lnL contribution. Owns the
+   * flux components its SampleConfig declares (see io::ic::component) and its
+   * runtime-sized histograms; knows nothing about other samples. The meta
+   * ICLikelihood sums partial_llh() across samples and adds the Gaussian pulls
+   * once.
+   *
+   * `cfg` must outlive the SampleLikelihood: it is held by reference, and its
+   * name/binning/components describe this sample in the results output.
+   * ICExperimentModule owns the ICInputOptions the configs live in.
    */
   class SampleLikelihood {
    public:
@@ -45,22 +51,30 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> predicted() const noexcept { return m_Predicted; }
     [[nodiscard]] std::span<const double> data() const noexcept { return m_Data; }
 
+    /** This sample's config: name, binning and component list (for the results writer). */
+    [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
+
    private:
-    const io::ic::ICSample& m_Sample;
-    bool                    m_UseSAY;
-    PowerlawFlux            m_Astro;
-    AtmosphericFlux         m_Atmo;
-    std::vector<double>     m_Predicted;
-    std::vector<double>     m_Data;
-    std::vector<double>     m_Ssq;
+    const io::ic::ICSample&     m_Sample;
+    const io::ic::SampleConfig& m_Config;
+    bool                        m_UseSAY;
+
+    // Only the components the config declares are constructed; the parquet
+    // columns of an absent component were never read (see ICDataBase).
+    std::optional<PowerlawFlux>    m_Astro;
+    std::optional<AtmosphericFlux> m_Atmo;
+
+    std::vector<double> m_Predicted;
+    std::vector<double> m_Data;
+    std::vector<double> m_Ssq;
 
     // NOTE: SampleLikelihood does not own a ParameterWrapper member (unlike
     // ICLikelihood's m_Parameter) -- the caller resets one shared ParameterWrapper
     // and passes it into partial_llh()/generate_asimov(). assemble_prediction()
     // therefore takes it explicitly so it can call check_and_recalculate() and
-    // report whether either flux changed, matching ICLikelihood::assemble_prediction's
-    // behavior. assemble_fluctuation() needs no parameter: it only re-sums the
-    // per-event weights the flux components already recalculated.
+    // report whether any flux changed. assemble_fluctuation() needs no parameter:
+    // it only re-sums the per-event weights the flux components already
+    // recalculated.
     bool assemble_prediction(const ParameterWrapper& parameter);
     void assemble_fluctuation();
   };

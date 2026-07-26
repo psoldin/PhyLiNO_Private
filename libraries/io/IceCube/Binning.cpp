@@ -37,6 +37,15 @@ namespace io::ic {
     return Axis{k, lo, hi, n};
   }
 
+  std::string_view axis_kind_name(const Axis::Kind kind) noexcept {
+    switch (kind) {
+      case Axis::Kind::Log10Energy: return "Log10Energy";
+      case Axis::Kind::CosZenith:   return "CosZenith";
+      case Axis::Kind::Ra:          return "Ra";
+    }
+    return "Unknown";
+  }
+
   Binning::Binning(std::vector<Axis> axes) : m_Axes(std::move(axes)) {
     if (m_Axes.empty()) throw std::runtime_error("Binning: needs at least one axis");
     m_TotalBins = 1;

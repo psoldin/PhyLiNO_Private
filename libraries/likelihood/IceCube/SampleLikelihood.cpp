@@ -45,20 +45,25 @@ namespace ana::ic {
                                      std::shared_ptr<GpuBackend> gpu,
                                      const bool                  use_say)
     : m_Sample(sample)
-    , m_UseSAY(use_say)
-    , m_Astro(sample,
-              cfg.binning,
-              settings.e_ref_gev,
-              settings.astro_reference_index,
-              settings.astro_per_type_norm,
-              gpu,
-              use_say)
-    , m_Atmo(sample,
-             cfg.binning,
-             settings.conv_delta_gamma_e_ref,
-             settings.prompt_delta_gamma_e_ref,
-             gpu,
-             use_say) {
+    , m_Config(cfg)
+    , m_UseSAY(use_say) {
+    if (cfg.wants_astro())
+      m_Astro.emplace(sample,
+                      cfg.binning,
+                      settings.e_ref_gev,
+                      settings.astro_reference_index,
+                      settings.astro_per_type_norm,
+                      gpu,
+                      use_say);
+
+    if (cfg.wants_atmospheric())
+      m_Atmo.emplace(sample,
+                     cfg.binning,
+                     settings.conv_delta_gamma_e_ref,
+                     settings.prompt_delta_gamma_e_ref,
+                     gpu,
+                     use_say);
+
     const int total_bins = cfg.binning.total_bins();
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
@@ -66,18 +71,22 @@ namespace ana::ic {
   }
 
   bool SampleLikelihood::assemble_prediction(const ParameterWrapper& parameter) {
-    const bool astro_changed = m_Astro.check_and_recalculate(parameter);
-    const bool atmo_changed  = m_Atmo.check_and_recalculate(parameter);
+    bool changed = false;
+    if (m_Astro) changed |= m_Astro->check_and_recalculate(parameter);
+    if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
 
-    const std::span<const double> astro = m_Astro.histogram();
-    const std::span<const double> atmo  = m_Atmo.histogram();
+    const std::span<const double> astro = m_Astro ? m_Astro->histogram() : std::span<const double>{};
+    const std::span<const double> atmo  = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
 
     for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) {
+      double total = 0.0;
+      if (!astro.empty()) total += astro[b];
+      if (!atmo.empty()) total += atmo[b];
       // Clip at zero to avoid unphysical predictions (matches NNMFit mu clip).
-      m_Predicted[b] = std::max(0.0, astro[b] + atmo[b]);
+      m_Predicted[b] = std::max(0.0, total);
     }
 
-    return astro_changed || atmo_changed;
+    return changed;
   }
 
   void SampleLikelihood::assemble_fluctuation() {
@@ -85,21 +94,32 @@ namespace ana::ic {
     // -- matches NNMFit's rule that same-event components must be summed
     // *before* squaring (NNMFit/core/histogram_builder.py:229-329), since
     // (w1+w2)^2 != w1^2 + w2^2.
-    const std::span<const double> astro = m_Astro.per_event_weight();
-    const std::span<const double> atmo  = m_Atmo.per_event_weight();
+    const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
+    const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
     const auto&                   off   = m_Sample.bin_offsets;
 
     const int n_bins = static_cast<int>(m_Predicted.size());
 
+    // The component test is hoisted out of the per-event loop: which components
+    // exist is fixed at construction, so each case gets its own tight loop.
+    auto accumulate = [&](auto event_weight) {
 #pragma omp parallel for
-    for (int b = 0; b < n_bins; ++b) {
-      double acc = 0.0;
+      for (int b = 0; b < n_bins; ++b) {
+        double acc = 0.0;
 #pragma omp simd reduction(+ : acc)
-      for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
-        acc += square(astro[i] + atmo[i]);
+        for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
+          acc += square(event_weight(i));
+        }
+        m_Ssq[b] = acc;
       }
-      m_Ssq[b] = acc;
-    }
+    };
+
+    if (!astro.empty() && !atmo.empty())
+      accumulate([&](const std::size_t i) { return astro[i] + atmo[i]; });
+    else if (!astro.empty())
+      accumulate([&](const std::size_t i) { return astro[i]; });
+    else if (!atmo.empty())
+      accumulate([&](const std::size_t i) { return atmo[i]; });
   }
 
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {

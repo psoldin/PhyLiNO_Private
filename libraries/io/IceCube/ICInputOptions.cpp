@@ -9,10 +9,7 @@ namespace io::ic {
   void ICInputOptions::read(const boost::program_options::variables_map& /*vm*/, const boost::property_tree::ptree& config) {
     const auto& ic = config.get_child("IceCube");
 
-    // Legacy single-sample keys; unused by migrated configs (see Samples
-    // below), so both now default rather than throw when omitted.
-    m_TrackBaselineFilePath = ic.get<std::string>("TrackBaselineFilePath", "");
-    m_UseData               = ic.get<bool>("UseData", false);
+    m_UseData = ic.get<bool>("UseData", false);
 
     const std::string likelihood_str = ic.get<std::string>("Likelihood", "Poisson");
     if (likelihood_str == "Poisson") {
@@ -36,8 +33,6 @@ namespace io::ic {
           "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu', 'metal' or 'cuda')");
     }
 
-    m_Livetime = ic.get<double>("Livetime", m_Livetime);
-
     m_ERefGeV             = ic.get<double>("ERefGeV", m_ERefGeV);
     m_AstroReferenceIndex = ic.get<double>("AstroReferenceIndex", m_AstroReferenceIndex);
     m_AstroPerTypeNorm    = ic.get<bool>("AstroPerTypeNorm", m_AstroPerTypeNorm);
@@ -52,36 +47,14 @@ namespace io::ic {
     m_UseOscillation         = ic.get<bool>("UseOscillation", false);
     m_OscillationSplineFile  = ic.get<std::string>("OscillationSplineFile", "");
 
-    // Optional per-column branch-name overrides. Defaults (set in BranchNames)
-    // match the tracks-only baseline parquet, so this subtree may be omitted.
-    if (auto branches = config.get_child_optional("IceCube.Branches")) {
-      const auto& br             = *branches;
-      m_Branches.reco_energy     = br.get<std::string>("RecoEnergy", m_Branches.reco_energy);
-      m_Branches.reco_zenith     = br.get<std::string>("RecoZenith", m_Branches.reco_zenith);
-      m_Branches.true_energy     = br.get<std::string>("TrueEnergy", m_Branches.true_energy);
-      m_Branches.astro_baseline  = br.get<std::string>("AstroBaseline", m_Branches.astro_baseline);
-      m_Branches.conv_baseline   = br.get<std::string>("ConvBaseline", m_Branches.conv_baseline);
-      m_Branches.conv_alt        = br.get<std::string>("ConvAlt", m_Branches.conv_alt);
-      m_Branches.prompt_baseline = br.get<std::string>("PromptBaseline", m_Branches.prompt_baseline);
-      m_Branches.prompt_alt      = br.get<std::string>("PromptAlt", m_Branches.prompt_alt);
+    // The samples (with their binnings, branch names and components) drive the
+    // whole fit path: ICModule hands samples() to ICDataBase, which loads the
+    // enabled ones. A config without them describes no analysis at all.
+    if (!ic.get_child_optional("Samples"))
+      throw std::runtime_error(
+          "ICInputOptions: config has no \"IceCube.Samples\" section (see SampleConfig.h for the layout)");
 
-      if (auto barr = br.get_child_optional("BarrConv")) {
-        int k = 0;
-        for (const auto& [_, child] : *barr) {
-          if (k >= params::ic::nBarrParams)
-            throw std::runtime_error("ICInputOptions: too many BarrConv branch names (expected 4)");
-          m_Branches.barr_conv[k++] = child.get_value<std::string>();
-        }
-        if (k != params::ic::nBarrParams)
-          throw std::runtime_error("ICInputOptions: expected exactly 4 BarrConv branch names");
-      }
-    }
-
-    // Multi-sample config (see SampleConfig.h); this now drives the running
-    // fit path via ICModule -> ICDataBase(samples()). Parsed whenever the
-    // config provides an "IceCube.Samples" subtree; left empty otherwise.
-    if (ic.get_child_optional("Samples"))
-      m_Samples = parse_samples(ic);
+    m_Samples = parse_samples(ic);
   }
 
 }  // namespace io::ic

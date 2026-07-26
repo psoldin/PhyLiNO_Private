@@ -23,7 +23,7 @@ namespace ana::ic {
       // ssq == 0 (after clipping): full Poisson log-PMF, matching NNMFit's
       // PoissonLLH.compute_log_L fallback (includes -lgamma(k+1) so this
       // branch is continuous with the general formula above as ssq -> 0;
-      // PhyLiNO's existing plain-Poisson branch in ICLikelihood.cpp drops
+      // PhyLiNO's existing plain-Poisson branch in SampleLikelihood.cpp drops
       // that constant, which is fine there since it doesn't depend on
       // fit parameters, but would break continuity here).
       llh_eff = (mu > 0.0) ? (k * std::log(mu) - mu - std::lgamma(k + 1.0)) : 0.0;

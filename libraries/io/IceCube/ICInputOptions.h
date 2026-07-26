@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "../InputOptionBase.h"
-#include "BranchNames.h"
 #include "SampleConfig.h"  // io::ic::SampleConfig; must be a complete type for the m_Samples vector member below
 
 namespace io::ic {
@@ -22,11 +21,12 @@ namespace io::ic {
                            Cuda };
 
   /**
-   * @brief Input options of the IceCube tracks-only diffuse-flux experiment.
+   * @brief Input options of the IceCube diffuse-flux experiment.
    *
    * Follows the modular convention: default-constructed before the config is
-   * parsed, then populated from the "IceCube" config section in read(). All
-   * heavy input loading happens later in ICDataBase, created by ICModule.
+   * parsed, then populated from the "IceCube" config section in read() --
+   * global flux settings plus the list of analysis samples. All heavy input
+   * loading happens later in ICDataBase, created by ICModule.
    */
   class ICInputOptions : public InputOptionBase {
    public:
@@ -37,15 +37,10 @@ namespace io::ic {
 
     void read(const boost::program_options::variables_map& vm, const boost::property_tree::ptree& config) final;
 
-    [[nodiscard]] const std::string& track_baseline_file_path() const noexcept { return m_TrackBaselineFilePath; }
-    [[nodiscard]] const BranchNames& branch_names() const noexcept { return m_Branches; }
-    [[nodiscard]] bool               use_data() const noexcept { return m_UseData; }
-    [[nodiscard]] LikelihoodType     likelihood_type() const noexcept { return m_LikelihoodType; }
+    [[nodiscard]] bool           use_data() const noexcept { return m_UseData; }
+    [[nodiscard]] LikelihoodType likelihood_type() const noexcept { return m_LikelihoodType; }
     // Selected compute backend for the flux histograms (see BackendKind).
-    [[nodiscard]] BackendKind        backend_kind() const noexcept { return m_BackendKind; }
-    // Detector livetime in seconds. The per-event MC weights are rates (Hz);
-    // multiplying by the livetime turns the binned prediction into event counts.
-    [[nodiscard]] double livetime() const noexcept { return m_Livetime; }
+    [[nodiscard]] BackendKind    backend_kind() const noexcept { return m_BackendKind; }
 
     // --- Astro (Powerlaw) ---
     [[nodiscard]] double e_ref_gev() const noexcept { return m_ERefGeV; }
@@ -64,19 +59,16 @@ namespace io::ic {
     [[nodiscard]] bool               use_oscillation() const noexcept { return m_UseOscillation; }
     [[nodiscard]] const std::string& oscillation_spline_file() const noexcept { return m_OscillationSplineFile; }
 
-    // Multi-sample config; drives the running fit path (ICModule feeds this
-    // into ICDataBase). Populated whenever the config provides an
-    // "IceCube.Samples" subtree (see parse_samples() in SampleConfig.h);
-    // empty otherwise, e.g. for a config that hasn't been migrated yet.
+    // Analysis samples in config order, each with its own binning, parquet,
+    // livetime, branch names and component list (see parse_samples() in
+    // SampleConfig.h). Drives the whole fit path: ICModule feeds these to
+    // ICDataBase, which loads the enabled ones.
     [[nodiscard]] const std::vector<SampleConfig>& samples() const noexcept { return m_Samples; }
 
    private:
-    std::string    m_TrackBaselineFilePath;
-    BranchNames    m_Branches;
-    bool           m_UseData          = false;
-    LikelihoodType m_LikelihoodType   = LikelihoodType::Poisson;
-    BackendKind    m_BackendKind      = BackendKind::Cpu;
-    double         m_Livetime         = 1.0;
+    bool           m_UseData        = false;
+    LikelihoodType m_LikelihoodType = LikelihoodType::Poisson;
+    BackendKind    m_BackendKind    = BackendKind::Cpu;
 
     double m_ERefGeV             = 1.0e5;
     double m_AstroReferenceIndex = 2.0;

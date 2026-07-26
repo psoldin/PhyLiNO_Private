@@ -1,10 +1,14 @@
 #pragma once
 
-#include <cmath>
-
 namespace io::ic::Constants {
 
-  // Analysis binning matches the NNMFit tracks-only config
+  // Legacy fixed tracks grid. Analysis binning is runtime and per-sample now
+  // (see Binning.h / SampleConfig.h); what is left here only sizes the
+  // scaffolded per-bin components (MuonTemplate, DetectorSystematics), which
+  // still assume the tracks grid and are disabled until they are made
+  // per-sample along with the cascade samples.
+  //
+  // The grid matches the NNMFit tracks-only config
   // (IC86_pass2_SnowStorm_v2_tracks_2D_binning):
   //   reco_energy: (2.5, 7, 46, log)  -> 46 edges in log10(E/GeV) => 45 bins
   //   reco_zenith: (-1, 0.0872, 34, cos) -> 34 edges in cos(zenith) => 33 bins
@@ -26,24 +30,5 @@ namespace io::ic::Constants {
 
   // Total flattened bins (energy x zenith, row-major: E is the outer index).
   inline constexpr int nBins = nEnergyBins * nZenithBins;
-
-  /**
-   * Flat analysis-bin index for one event from its reconstructed energy (GeV)
-   * and reconstructed zenith (radians). Returns -1 for events outside the
-   * analysis range (under/overflow in either dimension), which are dropped by
-   * ICSample::sort_into_bins().
-   */
-  [[nodiscard]] inline int bin_index(const double e_reco_gev, const double reco_zenith_rad) noexcept {
-    const double log_e = std::log10(e_reco_gev);
-    if (log_e < LogEnergyMin || log_e >= LogEnergyMax) return -1;
-
-    const double cos_z = std::cos(reco_zenith_rad);
-    if (cos_z < CosZenithMin || cos_z >= CosZenithMax) return -1;
-
-    const int e_bin = static_cast<int>((log_e - LogEnergyMin) / LogEnergyStep);
-    const int z_bin = static_cast<int>((cos_z - CosZenithMin) / CosZenithStep);
-
-    return e_bin * nZenithBins + z_bin;
-  }
 
 }  // namespace io::ic::Constants

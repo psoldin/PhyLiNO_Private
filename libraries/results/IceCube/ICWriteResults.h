@@ -34,25 +34,53 @@ namespace result::ic {
       j["parameters"][names[i]] = {{"value", x[i]}, {"error", err[i]}};
     }
 
-    // The binned Asimov data and the prediction at the minimum, so the output
-    // is self-contained (row-major, reco-energy outer, cos-zenith inner).
-    const auto data      = llh.data();
-    const auto predicted = llh.predicted();
-
+    // One block per enabled sample: its own binning, its binned data and the
+    // prediction at the minimum, so the output is self-contained. Bin arrays are
+    // row-major over the sample's axes (first axis outer, last axis inner).
     double data_total = 0.0;
     double pred_total = 0.0;
-    for (std::size_t b = 0; b < data.size(); ++b) {
-      data_total += data[b];
-      pred_total += predicted[b];
+
+    j["samples"] = nlohmann::json::array();
+    for (std::size_t s = 0; s < llh.n_samples(); ++s) {
+      const auto& sample    = llh.sample(s);
+      const auto& config    = sample.config();
+      const auto  data      = sample.data();
+      const auto  predicted = sample.predicted();
+
+      double sample_data_total = 0.0;
+      double sample_pred_total = 0.0;
+      for (std::size_t b = 0; b < data.size(); ++b) {
+        sample_data_total += data[b];
+        sample_pred_total += predicted[b];
+      }
+      data_total += sample_data_total;
+      pred_total += sample_pred_total;
+
+      nlohmann::json axes = nlohmann::json::array();
+      for (const io::ic::Axis& axis : config.binning.axes()) {
+        axes.push_back({{"kind", io::ic::axis_kind_name(axis.kind)},
+                        {"low", axis.lo},
+                        {"high", axis.hi},
+                        {"nBins", axis.n_bins}});
+      }
+
+      j["samples"].push_back({
+          {"name", config.name},
+          {"components", config.components},
+          {"livetime", config.livetime},
+          {"totalBins", config.binning.total_bins()},
+          {"axes", std::move(axes)},
+          {"data", std::vector<double>(data.begin(), data.end())},
+          {"prediction", std::vector<double>(predicted.begin(), predicted.end())},
+          {"dataTotal", sample_data_total},
+          {"predTotal", sample_pred_total},
+      });
     }
 
-    j["nEnergyBins"] = io::ic::Constants::nEnergyBins;
-    j["nZenithBins"] = io::ic::Constants::nZenithBins;
-    j["data"]        = std::vector<double>(data.begin(), data.end());
-    j["prediction"]  = std::vector<double>(predicted.begin(), predicted.end());
-    j["dataTotal"]   = data_total;
-    j["predTotal"]   = pred_total;
-    j["likelihood"]  = (info.likelihood_type() == io::ic::LikelihoodType::SAY) ? "SAY" : "Poisson";
+    // Summed over all samples (what the single-sample output used to report).
+    j["dataTotal"]  = data_total;
+    j["predTotal"]  = pred_total;
+    j["likelihood"] = (info.likelihood_type() == io::ic::LikelihoodType::SAY) ? "SAY" : "Poisson";
 
     return j;
   }

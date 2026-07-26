@@ -1,4 +1,5 @@
-# The IceCube tracks-only diffuse-flux experiment module. Sources are split across
+# The IceCube diffuse-flux experiment module (one composite likelihood over the
+# config-enabled analysis samples). Sources are split across
 # io/IceCube, likelihood/IceCube and results/IceCube but build into one optional
 # library target. Needs Apache Arrow + Parquet for the MC baseline parquet loader.
 set(files

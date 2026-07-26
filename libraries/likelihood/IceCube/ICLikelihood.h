@@ -1,14 +1,13 @@
 #pragma once
 
-#include "../../io/IceCube/ICConstants.h"
 #include "../../io/IceCube/ICDataBase.h"
 #include "../../io/IceCube/ICInputOptions.h"
 #include "../Likelihood.h"
 #include "GpuBackend.h"
 #include "SampleLikelihood.h"
 
+#include <cstddef>
 #include <memory>
-#include <span>
 #include <tuple>
 #include <vector>
 
@@ -34,11 +33,14 @@ namespace ana::ic {
 
     [[nodiscard]] double calculate_likelihood(const double* parameter) override;
 
-    /** Predicted counts per analysis bin at the last evaluated parameter set (first sample). */
-    [[nodiscard]] std::span<const double> predicted() const noexcept { return m_Samples.front()->predicted(); }
+    /** Number of enabled samples this composite sums over. */
+    [[nodiscard]] std::size_t n_samples() const noexcept { return m_Samples.size(); }
 
-    /** Asimov (or measured) counts per analysis bin the fit runs against (first sample). */
-    [[nodiscard]] std::span<const double> data() const noexcept { return m_Samples.front()->data(); }
+    /**
+     * The i-th enabled sample (config order), for the results writer: each one
+     * carries its own binning, data and prediction.
+     */
+    [[nodiscard]] const SampleLikelihood& sample(std::size_t i) const noexcept { return *m_Samples[i]; }
 
    private:
     // Declared first so it (and its ICSamples) outlives the sample likelihoods below.

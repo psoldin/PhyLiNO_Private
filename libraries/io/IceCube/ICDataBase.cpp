@@ -66,16 +66,24 @@ namespace io::ic {
     ARROW_ASSIGN_OR_RAISE(auto e_reco,       get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith,  get_double_column(*table, b.reco_zenith));
 
-    // Per-event fit-time columns.
-    ARROW_ASSIGN_OR_RAISE(out.e_true,          get_double_column(*table, b.true_energy));
-    ARROW_ASSIGN_OR_RAISE(out.astro_baseline,  get_double_column(*table, b.astro_baseline));
-    ARROW_ASSIGN_OR_RAISE(out.conv_baseline,   get_double_column(*table, b.conv_baseline));
-    ARROW_ASSIGN_OR_RAISE(out.conv_alt,        get_double_column(*table, b.conv_alt));
-    ARROW_ASSIGN_OR_RAISE(out.prompt_baseline, get_double_column(*table, b.prompt_baseline));
-    ARROW_ASSIGN_OR_RAISE(out.prompt_alt,      get_double_column(*table, b.prompt_alt));
+    // Per-event fit-time columns. Only the components this sample declares are
+    // read: a parquet that carries no atmospheric weights (or no astrophysical
+    // baseline) still loads for a sample that does not ask for them.
+    ARROW_ASSIGN_OR_RAISE(out.e_true, get_double_column(*table, b.true_energy));
 
-    for (int k = 0; k < params::ic::nBarrParams; ++k) {
-      ARROW_ASSIGN_OR_RAISE(out.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
+    if (cfg.wants_astro()) {
+      ARROW_ASSIGN_OR_RAISE(out.astro_baseline, get_double_column(*table, b.astro_baseline));
+    }
+
+    if (cfg.wants_atmospheric()) {
+      ARROW_ASSIGN_OR_RAISE(out.conv_baseline,   get_double_column(*table, b.conv_baseline));
+      ARROW_ASSIGN_OR_RAISE(out.conv_alt,        get_double_column(*table, b.conv_alt));
+      ARROW_ASSIGN_OR_RAISE(out.prompt_baseline, get_double_column(*table, b.prompt_baseline));
+      ARROW_ASSIGN_OR_RAISE(out.prompt_alt,      get_double_column(*table, b.prompt_alt));
+
+      for (int k = 0; k < params::ic::nBarrParams; ++k) {
+        ARROW_ASSIGN_OR_RAISE(out.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
+      }
     }
 
     // The MC weights are per-event rates (Hz); scale by the livetime so the
@@ -114,10 +122,10 @@ namespace io::ic {
   }
 
   ICDataBase::ICDataBase(const std::vector<SampleConfig>& samples) {
-    for (const auto& cfg : samples) {
-      if (!cfg.enabled) continue;
-      ICSample sample;
-      auto     status = read_sample(cfg, sample);
+    for (const std::size_t i : enabled_sample_indices(samples)) {
+      const SampleConfig& cfg = samples[i];
+      ICSample            sample;
+      const auto          status = read_sample(cfg, sample);
       if (!status.ok())
         throw std::runtime_error("Failed to read IceCube sample '" + cfg.name + "': " + status.ToString());
       m_Samples.push_back(std::move(sample));

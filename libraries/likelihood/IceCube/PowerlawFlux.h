@@ -43,8 +43,8 @@ namespace ana::ic {
     }
 
     // Per-event weight, same value already summed into m_Histogram, needed by
-    // ICLikelihood to build the combined ssq histogram for the SAY likelihood.
-    // Indexed the same way as io::ic::ICSample (CSR bin order).
+    // SampleLikelihood to build the combined ssq histogram for the SAY
+    // likelihood. Indexed the same way as io::ic::ICSample (CSR bin order).
     [[nodiscard]] std::span<const double> per_event_weight() const noexcept {
       return m_PerEventWeight;
     }

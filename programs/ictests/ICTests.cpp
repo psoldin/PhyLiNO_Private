@@ -10,7 +10,10 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using io::ic::Axis;
@@ -72,13 +75,14 @@ static void test_parse_samples() {
         "binning": "tracks_2d",
         "parquet": "dataset_tracks_baseline.parquet",
         "livetime": 3.0e8,
-        "components": "astro, conv, prompt"
+        "components": "astro, conventional, prompt"
       },
       "tracks_alt": {
         "binning": "tracks_2d",
         "parquet": "dataset_tracks_alt.parquet",
         "enabled": false,
-        "livetime": 1.0e8
+        "livetime": 1.0e8,
+        "components": "astro"
       }
     }
   }
@@ -98,15 +102,108 @@ static void test_parse_samples() {
   assert(samples[0].binning.total_bins() == 1485);
   assert(samples[0].components.size() == 3);
   assert(samples[0].components[0] == "astro");
-  assert(samples[0].components[1] == "conv");
+  assert(samples[0].components[1] == "conventional");
   assert(samples[0].components[2] == "prompt");
-  assert(samples[0].has_component("conv"));
+  assert(samples[0].has_component("conventional"));
   assert(!samples[0].has_component("muon"));
+  assert(samples[0].wants_astro());
+  assert(samples[0].wants_atmospheric());
 
   assert(samples[1].name == "tracks_alt");
   assert(samples[1].enabled == false);
   assert(std::abs(samples[1].livetime - 1.0e8) < 1.0);
   assert(samples[1].binning.total_bins() == 1485);
+  // Component masking: an astro-only sample must not pull in the atmospheric
+  // flux (nor its parquet columns, see ICDataBase::read_sample).
+  assert(samples[1].wants_astro());
+  assert(!samples[1].wants_atmospheric());
+}
+
+// parse_samples() must reject component lists the flux components cannot
+// honour, instead of silently predicting fewer events than the config asks for.
+static void test_parse_samples_rejects_bad_components() {
+  static constexpr char kTemplate[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "grid": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "s": { "binning": "grid", "parquet": "s.parquet"COMPONENTS }
+    }
+  }
+}
+)JSON";
+
+  auto parse_with = [](const std::string& components_entry) {
+    std::string json(kTemplate);
+    json.replace(json.find("COMPONENTS"), std::strlen("COMPONENTS"), components_entry);
+    boost::property_tree::ptree pt;
+    std::istringstream          iss(json);
+    boost::property_tree::read_json(iss, pt);
+    const auto parsed = io::ic::parse_samples(pt.get_child("IceCube"));
+    assert(parsed.size() == 1);
+  };
+
+  auto throws = [&parse_with](const std::string& components_entry) {
+    try {
+      parse_with(components_entry);
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  assert(throws(""));                                        // no components at all
+  assert(throws(R"(, "components": "astro, cascades")"));     // unknown component name
+  assert(throws(R"(, "components": "astro, conventional")")); // conventional without prompt
+  assert(throws(R"(, "components": "prompt")"));              // prompt without conventional
+  assert(!throws(R"(, "components": "astro")"));              // astro alone is fine
+  assert(!throws(R"(, "components": "conventional, prompt")"));
+}
+
+// The composite pairs its SampleLikelihoods with the ICSamples that ICDataBase
+// loaded, relying on both walking the enabled configs in the same order --
+// the riskiest line in the multi-sample refactor. Both sides call
+// enabled_sample_indices(), so pin its behaviour down here.
+static void test_enabled_sample_indices() {
+  using io::ic::SampleConfig;
+
+  const Binning grid = tracks_binning();
+
+  auto make = [&grid](const std::string& name, const bool enabled) {
+    return SampleConfig{.name = name, .enabled = enabled, .binning = grid};
+  };
+
+  // Middle sample disabled: the loaded sample at load-index 1 must pair with
+  // config 2 ("cscd_muon"), not config 1.
+  const std::vector<SampleConfig> middle_disabled{
+      make("tracks", true), make("cscd_cascade", false), make("cscd_muon", true)};
+  const auto enabled = io::ic::enabled_sample_indices(middle_disabled);
+  assert(enabled.size() == 2);
+  assert(enabled[0] == 0);
+  assert(enabled[1] == 2);
+  assert(middle_disabled[enabled[1]].name == "cscd_muon");
+
+  // First disabled, and order is config order, not "enabled first".
+  const std::vector<SampleConfig> first_disabled{
+      make("tracks", false), make("cscd_cascade", true), make("cscd_muon", true)};
+  const auto enabled_tail = io::ic::enabled_sample_indices(first_disabled);
+  assert(enabled_tail.size() == 2);
+  assert(enabled_tail[0] == 1);
+  assert(enabled_tail[1] == 2);
+
+  // All enabled: identity. All disabled: empty (ICDataBase/ICLikelihood throw).
+  const std::vector<SampleConfig> all_enabled{make("a", true), make("b", true)};
+  const auto                      identity = io::ic::enabled_sample_indices(all_enabled);
+  assert(identity.size() == 2);
+  assert(identity[0] == 0 && identity[1] == 1);
+  assert(io::ic::enabled_sample_indices({make("a", false)}).empty());
+  assert(io::ic::enabled_sample_indices({}).empty());
 }
 
 // Proves the CSR invariant that ICSample::sort_into_bins() is supposed to
@@ -198,25 +295,19 @@ static void test_sort_into_bins_csr_invariant() {
     assert(std::abs(s.e_true[i] - expected_original_index[i]) < 1e-9);
 }
 
-// Builds a tiny synthetic tracks-like sample (3 log10-energy bins x 2
-// cos-zenith bins = 6 analysis bins, 2 events per bin, every per-event column
-// populated with nonzero physically plausible values) and checks that the
-// Asimov point (predicted == data by construction) minimizes SampleLikelihood's
-// partial -2lnL: perturbing AstroNorm away from its nominal value must not
-// improve (must strictly worsen) the likelihood. Exercises the CPU (gpu =
-// nullptr) path of both PowerlawFlux and AtmosphericFlux end to end, including
-// the SAY ssq path (assemble_fluctuation).
-static void test_sample_likelihood_asimov_is_minimum() {
-  using ana::ic::GlobalFluxSettings;
-  using ana::ic::SampleLikelihood;
-  using ana::ParameterWrapper;
+// 2D test binning: Log10Energy in [2, 5) with 3 bins, CosZenith in [-1, 1) with
+// 2 bins -> 6 analysis bins total.
+static Binning synthetic_binning() {
+  return Binning({Axis{Axis::Kind::Log10Energy, 2.0, 5.0, 3},
+                  Axis{Axis::Kind::CosZenith, -1.0, 1.0, 2}});
+}
 
-  // 2D binning: Log10Energy in [2, 5) with 3 bins, CosZenith in [-1, 1) with
-  // 2 bins -> 6 analysis bins total.
-  Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 5.0, 3},
-                   Axis{Axis::Kind::CosZenith, -1.0, 1.0, 2}});
-  assert(binning.total_bins() == 6);
-
+// Tiny synthetic tracks-like sample over synthetic_binning(): 2 events per bin,
+// every per-event column populated with nonzero physically plausible values,
+// already compacted into the CSR bin layout. With `with_atmospheric = false`
+// the conventional/prompt/Barr columns are left empty, exactly as
+// ICDataBase::read_sample leaves them for a sample that declares only "astro".
+static io::ic::ICSample synthetic_sample(const Binning& binning, const bool with_atmospheric) {
   // log10-energy bin centers: 10^2.5, 10^3.5, 10^4.5 GeV.
   const double energies[3] = {316.227766, 3162.27766, 31622.7766};
   // zenith (radians) chosen so cos(zenith) lands in cos-zenith bin 0 ([-1,0))
@@ -228,33 +319,29 @@ static void test_sample_likelihood_asimov_is_minimum() {
   const int        n_events       = 3 * 2 * events_per_bin;
   sample.e_true.reserve(n_events);
   sample.astro_baseline.reserve(n_events);
-  sample.conv_baseline.reserve(n_events);
-  sample.conv_alt.reserve(n_events);
-  sample.prompt_baseline.reserve(n_events);
-  sample.prompt_alt.reserve(n_events);
-  for (auto& g : sample.barr_conv) g.reserve(n_events);
   sample.bin_idx.reserve(n_events);
 
-  int event_index = 0;
   for (int eb = 0; eb < 3; ++eb) {
     for (int zb = 0; zb < 2; ++zb) {
-      for (int k = 0; k < events_per_bin; ++k, ++event_index) {
+      for (int k = 0; k < events_per_bin; ++k) {
         // Small per-event jitter so events within a bin aren't identical.
-        const double jitter    = 1.0 + 0.01 * static_cast<double>(k);
-        const double e_true    = energies[eb] * jitter;
-        const double reco_e    = energies[eb] * jitter;
-        const double reco_z    = zeniths[zb];
-        const double conv_base = 5.0e-3 * jitter;
+        const double jitter      = 1.0 + 0.01 * static_cast<double>(k);
+        const double e_true      = energies[eb] * jitter;
+        const double reco_e      = energies[eb] * jitter;
+        const double reco_z      = zeniths[zb];
+        const double conv_base   = 5.0e-3 * jitter;
         const double prompt_base = 1.0e-4 * jitter;
 
         sample.e_true.push_back(e_true);
         sample.astro_baseline.push_back(1.0e-3 * jitter);
-        sample.conv_baseline.push_back(conv_base);
-        sample.conv_alt.push_back(0.9 * conv_base);
-        sample.prompt_baseline.push_back(prompt_base);
-        sample.prompt_alt.push_back(0.9 * prompt_base);
-        for (int b = 0; b < params::ic::nBarrParams; ++b)
-          sample.barr_conv[b].push_back(1.0e-4 * (b + 1) * jitter);
+        if (with_atmospheric) {
+          sample.conv_baseline.push_back(conv_base);
+          sample.conv_alt.push_back(0.9 * conv_base);
+          sample.prompt_baseline.push_back(prompt_base);
+          sample.prompt_alt.push_back(0.9 * prompt_base);
+          for (int b = 0; b < params::ic::nBarrParams; ++b)
+            sample.barr_conv[b].push_back(1.0e-4 * (b + 1) * jitter);
+        }
 
         const double reco[2] = {reco_e, reco_z};
         sample.bin_idx.push_back(binning.bin_index(reco));
@@ -267,29 +354,53 @@ static void test_sample_likelihood_asimov_is_minimum() {
   // All 12 synthetic events were built in-range; none should be dropped.
   assert(static_cast<int>(sample.size()) == n_events);
   assert(sample.bin_offsets.back() == sample.size());
+  return sample;
+}
 
-  io::ic::SampleConfig cfg{.name = "unit_test_sample", .binning = binning};
+static ana::ic::GlobalFluxSettings synthetic_settings() {
+  return ana::ic::GlobalFluxSettings{.e_ref_gev                = 1.0e5,
+                                     .astro_reference_index    = 2.0,
+                                     .conv_delta_gamma_e_ref   = 1.0e3,
+                                     .prompt_delta_gamma_e_ref = 3.8e3,
+                                     .astro_per_type_norm      = false};
+}
 
-  const GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
-                                    .astro_reference_index    = 2.0,
-                                    .conv_delta_gamma_e_ref   = 1.0e3,
-                                    .prompt_delta_gamma_e_ref = 3.8e3,
-                                    .astro_per_type_norm      = false};
-
-  SampleLikelihood likelihood(sample, cfg, settings, /*gpu=*/nullptr, /*use_say=*/true);
-
-  // Nominal parameter values mirror configs/config_icecube_tracks_cpu.json's
-  // "StartValue" entries (physically reasonable defaults for this layout).
-  std::vector<double> nominal_values(params::ic::number_of_parameters(), 0.0);
-  nominal_values[params::ic::AstroNorm]    = 1.5;
-  nominal_values[params::ic::SpectralIndex] = 2.4;
-  nominal_values[params::ic::ConvNorm]     = 1.0;
-  nominal_values[params::ic::PromptNorm]   = 1.0;
+// Nominal parameter values mirror configs/config_icecube_tracks_cpu.json's
+// "StartValue" entries (physically reasonable defaults for this layout).
+static std::vector<double> nominal_parameter_values() {
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]     = 1.5;
+  values[params::ic::SpectralIndex] = 2.4;
+  values[params::ic::ConvNorm]      = 1.0;
+  values[params::ic::PromptNorm]    = 1.0;
   // BarrH/W/Y/Z, CRGrad, DeltaGamma stay 0.0 (nominal).
-  nominal_values[params::ic::MuonNorm] = 1.0;
-  nominal_values[params::ic::DOMEff]   = 1.0;
-  nominal_values[params::ic::IceAbs]   = 1.0;
-  nominal_values[params::ic::IceScat]  = 1.0;
+  values[params::ic::MuonNorm] = 1.0;
+  values[params::ic::DOMEff]   = 1.0;
+  values[params::ic::IceAbs]   = 1.0;
+  values[params::ic::IceScat]  = 1.0;
+  return values;
+}
+
+// Checks that the Asimov point (predicted == data by construction) minimizes
+// SampleLikelihood's partial -2lnL: perturbing AstroNorm away from its nominal
+// value must not improve (must strictly worsen) the likelihood. Exercises the
+// CPU (gpu = nullptr) path of both PowerlawFlux and AtmosphericFlux end to end,
+// including the SAY ssq path (assemble_fluctuation).
+static void test_sample_likelihood_asimov_is_minimum() {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning binning = synthetic_binning();
+  assert(binning.total_bins() == 6);
+  const io::ic::ICSample sample = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
+                                 .binning    = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
 
   ParameterWrapper nominal(params::ic::number_of_parameters());
   nominal.reset_parameter(nominal_values.data());
@@ -316,13 +427,88 @@ static void test_sample_likelihood_asimov_is_minimum() {
   assert(llh_nominal < llh_perturbed);
 }
 
+// An "astro"-only sample must run on a sample whose atmospheric columns were
+// never read: no atmospheric flux is constructed, the prediction is the
+// astrophysical component alone, and the atmospheric parameters have no effect
+// on it. This is what lets a cascade parquet without conv/prompt/Barr columns
+// (or a tracks parquet used astro-only) be fitted.
+static void test_sample_likelihood_component_masking() {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning binning = synthetic_binning();
+
+  const io::ic::ICSample full       = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::ICSample astro_only = synthetic_sample(binning, /*with_atmospheric=*/false);
+  assert(astro_only.conv_baseline.empty());
+  assert(astro_only.prompt_baseline.empty());
+  assert(astro_only.barr_conv[0].empty());
+  assert(astro_only.size() == full.size());
+
+  const io::ic::SampleConfig astro_cfg{
+      .name = "astro_only", .binning = binning, .components = {"astro"}};
+  const io::ic::SampleConfig full_cfg{.name       = "all_components",
+                                      .binning    = binning,
+                                      .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood astro_llh(astro_only, astro_cfg, synthetic_settings(), nullptr, /*use_say=*/true);
+  SampleLikelihood full_llh(full, full_cfg, synthetic_settings(), nullptr, /*use_say=*/true);
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
+  ParameterWrapper          nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  astro_llh.generate_asimov(nominal);
+  full_llh.generate_asimov(nominal);
+
+  const auto astro_pred = astro_llh.predicted();
+  const auto full_pred  = full_llh.predicted();
+  assert(astro_pred.size() == static_cast<std::size_t>(binning.total_bins()));
+
+  // Every bin has atmospheric events in the full sample, so masking them out
+  // must lower the prediction everywhere -- and leave it strictly positive.
+  for (std::size_t b = 0; b < astro_pred.size(); ++b) {
+    assert(astro_pred[b] > 0.0);
+    assert(astro_pred[b] < full_pred[b]);
+  }
+
+  const double astro_at_nominal = astro_llh.partial_llh(nominal);
+  assert(std::isfinite(astro_at_nominal));
+
+  // Moving the atmospheric parameters cannot touch an astro-only sample.
+  std::vector<double> atmo_shifted = nominal_values;
+  atmo_shifted[params::ic::ConvNorm] *= 1.7;
+  atmo_shifted[params::ic::PromptNorm] *= 0.3;
+  atmo_shifted[params::ic::CRGrad]     = 0.5;
+  atmo_shifted[params::ic::DeltaGamma] = 0.1;
+  atmo_shifted[params::ic::BarrH]      = 0.2;
+
+  ParameterWrapper shifted(params::ic::number_of_parameters());
+  shifted.reset_parameter(atmo_shifted.data());
+  assert(astro_llh.partial_llh(shifted) == astro_at_nominal);
+
+  // ... while the same shift does move the sample that includes them.
+  const double full_at_nominal = full_llh.partial_llh(nominal);
+  assert(full_llh.partial_llh(shifted) != full_at_nominal);
+
+  // AstroNorm still moves the astro-only sample away from its Asimov minimum.
+  std::vector<double> astro_shifted = nominal_values;
+  astro_shifted[params::ic::AstroNorm] *= 1.5;
+  ParameterWrapper astro_perturbed(params::ic::number_of_parameters());
+  astro_perturbed.reset_parameter(astro_shifted.data());
+  assert(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
+}
+
 int main() {
   test_total_bins();
   test_bin_index_matches_legacy();
   test_parse_axis_spec();
   test_parse_samples();
+  test_parse_samples_rejects_bad_components();
+  test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();
+  test_sample_likelihood_component_masking();
   std::puts("ICTests: all passed");
   return 0;
 }

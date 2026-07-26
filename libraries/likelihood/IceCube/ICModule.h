@@ -10,10 +10,11 @@
 namespace ana::ic {
 
   /**
-   * @brief Experiment module of the IceCube tracks-only diffuse-flux analysis.
+   * @brief Experiment module of the IceCube diffuse-flux analysis.
    *
    * Owns the IceCube input options and, when IceCube is the selected experiment,
-   * loads the MC baseline parquet (ICDataBase) and creates the ICLikelihood.
+   * loads the MC baseline parquet of every enabled sample (ICDataBase) and
+   * creates the composite ICLikelihood over them.
    */
   class ICExperimentModule : public ExperimentModule {
    public:

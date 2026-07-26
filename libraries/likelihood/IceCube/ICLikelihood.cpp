@@ -37,11 +37,6 @@ namespace ana::ic {
       return nullptr;
     }
 
-    template <typename T>
-    T square(T&& t) noexcept {
-      return t * t;
-    }
-
   }  // namespace
 
   ICLikelihood::ICLikelihood(std::shared_ptr<io::Options>              options,
@@ -65,26 +60,25 @@ namespace ana::ic {
         .astro_per_type_norm      = input_options.astro_per_type_norm(),
     };
 
-    // ICDataBase loaded only the ENABLED configs, in config order; walk the
-    // enabled configs and the data base's samples in lockstep so sample i
-    // here matches the i-th ENABLED SampleConfig.
-    // ICDataBase::sample(i) is an unchecked noexcept accessor, so verify the two
-    // "enabled" filters agree before indexing: a future divergence between this
-    // loop and ICDataBase's would otherwise be silent UB rather than an error.
-    const auto n_enabled = static_cast<std::size_t>(
-        std::ranges::count_if(input_options.samples(),
-                              [](const io::ic::SampleConfig& c) { return c.enabled; }));
-    if (n_enabled != m_DataBase->n_samples())
+    // ICDataBase loaded the enabled configs in config order, using the same
+    // enabled_sample_indices() helper, so the k-th loaded ICSample belongs to
+    // the k-th enabled SampleConfig. ICDataBase::sample(k) is an unchecked
+    // noexcept accessor, so verify the counts agree before indexing: a
+    // divergence would otherwise be silent UB rather than an error.
+    const auto enabled = io::ic::enabled_sample_indices(input_options.samples());
+    if (enabled.size() != m_DataBase->n_samples())
       throw std::runtime_error(
-          "ICLikelihood: enabled-sample count (" + std::to_string(n_enabled) +
+          "ICLikelihood: enabled-sample count (" + std::to_string(enabled.size()) +
           ") does not match the loaded sample count (" + std::to_string(m_DataBase->n_samples()) + ")");
 
-    std::size_t sample_idx = 0;
-    for (const auto& cfg : input_options.samples()) {
-      if (!cfg.enabled) continue;
+    for (std::size_t k = 0; k < enabled.size(); ++k) {
+      const io::ic::SampleConfig& cfg = input_options.samples()[enabled[k]];
+      std::cout << "ICLikelihood: sample '" << cfg.name << "' with "
+                << cfg.binning.total_bins() << " bins, components:";
+      for (const auto& c : cfg.components) std::cout << ' ' << c;
+      std::cout << '\n';
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
-          m_DataBase->sample(sample_idx), cfg, settings, m_GpuBackend, use_say));
-      ++sample_idx;
+          m_DataBase->sample(k), cfg, settings, m_GpuBackend, use_say));
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");
@@ -134,7 +128,8 @@ namespace ana::ic {
   double ICLikelihood::calculate_pulls(const ParameterWrapper& parameter) const noexcept {
     double result = 0.0;
     for (const auto& [idx, cv, sigma] : m_Pulls) {
-      result += square((parameter[idx] - cv) / sigma);
+      const double deviation = (parameter[idx] - cv) / sigma;
+      result += deviation * deviation;
     }
     return result;
   }

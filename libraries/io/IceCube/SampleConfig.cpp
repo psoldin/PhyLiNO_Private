@@ -57,7 +57,36 @@ namespace io::ic {
       return branches;
     }
 
+    // Reject unknown component names and combinations the flux components
+    // cannot express, so a config typo (or a component that is not implemented
+    // yet) fails at startup instead of quietly producing a smaller prediction.
+    void validate_components(const SampleConfig& sample) {
+      if (sample.components.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares no components (expected a \"components\" list, e.g. "
+                                 "\"astro, conventional, prompt\")");
+
+      for (const std::string& c : sample.components) {
+        if (c != component::Astro && c != component::Conventional && c != component::Prompt)
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' declares unknown component '" + c +
+                                   "' (supported: astro, conventional, prompt)");
+      }
+
+      if (sample.has_component(component::Conventional) != sample.has_component(component::Prompt))
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares only one of 'conventional'/'prompt'; AtmosphericFlux computes both in "
+                                 "one pass, so they must be enabled together");
+    }
+
   }  // namespace
+
+  std::vector<std::size_t> enabled_sample_indices(const std::vector<SampleConfig>& samples) {
+    std::vector<std::size_t> enabled;
+    enabled.reserve(samples.size());
+    for (std::size_t i = 0; i < samples.size(); ++i)
+      if (samples[i].enabled) enabled.push_back(i);
+    return enabled;
+  }
 
   std::vector<SampleConfig> parse_samples(const boost::property_tree::ptree& ic) {
     std::map<std::string, Binning> binnings;
@@ -89,6 +118,7 @@ namespace io::ic {
           .components = split_trim(sample_node.get<std::string>("components", ""), ','),
           .branches   = parse_branches(sample_node),
       });
+      validate_components(samples.back());
     }
     return samples;
   }

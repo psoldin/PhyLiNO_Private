@@ -3,8 +3,11 @@
 namespace params::ic {
 
   /**
-   * Flat fit-parameter layout for the single IC86 tracks-only sample, ordered to
-   * match the Minuit2 index array and the top-level "Parameter" list in the config.
+   * Flat fit-parameter layout, ordered to match the Minuit2 index array and the
+   * top-level "Parameter" list in the config. One layout is shared by every
+   * analysis sample: the flux parameters below are global (same astro/atmo
+   * across samples, matching the NNMFit YAML anchors), so enabling or disabling
+   * a sample does not change the layout.
    *
    * Layout mirrors the NNMFit tracks-only configuration (Fig_Configuration.yaml,
    * excluded_components: muon, conventional_veto, prompt_veto):

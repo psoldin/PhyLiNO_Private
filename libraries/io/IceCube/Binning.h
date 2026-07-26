@@ -22,10 +22,12 @@ namespace io::ic {
   /** Parse "(lo, hi, n_bins)" for an axis of the named kind ("Log10Energy"|"CosZenith"|"Ra"). */
   [[nodiscard]] Axis parse_axis(std::string_view kind, std::string_view spec);
 
+  /** Config spelling of an axis kind; inverse of parse_axis' kind argument. */
+  [[nodiscard]] std::string_view axis_kind_name(Axis::Kind kind) noexcept;
+
   /**
-   * Runtime N-dimensional analysis binning. Row-major over the axis order:
-   * flat = ((i0 * n1 + i1) * n2 + i2) ... . Replaces the old constexpr
-   * Constants::nBins / bin_index for a single fixed grid.
+   * Runtime N-dimensional analysis binning, one per sample. Row-major over the
+   * axis order: flat = ((i0 * n1 + i1) * n2 + i2) ... .
    */
   class Binning {
    public:
