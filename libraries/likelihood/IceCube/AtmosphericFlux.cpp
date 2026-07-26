@@ -290,7 +290,11 @@ namespace ana::ic {
   bool AtmosphericFlux::check_and_recalculate(const ParameterWrapper& parameter) {
     using namespace params::ic;
     const bool changed =
-        parameter.check_parameter_changed(ConvNorm) | parameter.check_parameter_changed(PromptNorm) | parameter.check_parameter_changed(CRGrad) | parameter.check_parameter_changed(DeltaGamma) | parameter.check_parameter_changed(BarrH, BarrZ);
+        parameter.check_parameter_changed(ConvNorm)
+        | parameter.check_parameter_changed(PromptNorm)
+        | parameter.check_parameter_changed(CRGrad)
+        | parameter.check_parameter_changed(DeltaGamma)
+        | parameter.check_parameter_changed(BarrH, BarrZ);
 
     if (changed)
       recalculate(parameter);
