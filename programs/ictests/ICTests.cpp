@@ -11,6 +11,7 @@
 #include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
 #include "InputParameter.h"
+#include "MetalBackend.h"
 #include "SampleLikelihood.h"
 #include "TemplateFlux.h"
 
@@ -705,6 +706,68 @@ static void test_sample_likelihood_asimov_is_minimum() {
   assert(llh_nominal < llh_perturbed);
 }
 
+// The GPU SAY path (flux kernels leaving per-event weights on the GPU + the
+// say_ssq reduction kernel) must reproduce the CPU path within FP32 tolerance,
+// at the Asimov point and away from it. Skipped when no Metal device exists.
+static void test_metal_say_ssq_matches_cpu() {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  if (!MetalBackend::available()) {
+    std::puts("ICTests: no Metal device, skipping test_metal_say_ssq_matches_cpu");
+    return;
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "metal_ssq_sample",
+                                 .binning    = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+  SampleLikelihood gpu(sample, cfg, synthetic_settings(), std::make_shared<MetalBackend>(), /*use_say=*/true);
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
+  ParameterWrapper          nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  cpu.generate_asimov(nominal);
+  gpu.generate_asimov(nominal);
+
+  // Move every ssq-relevant parameter off its nominal value so the SAY term
+  // (data fixed at the nominal Asimov, prediction and ssq recomputed) is
+  // sensitive to a wrong ssq, then compare the partial -2lnL.
+  std::vector<double> perturbed_values     = nominal_values;
+  perturbed_values[params::ic::AstroNorm]  = 1.9;
+  perturbed_values[params::ic::ConvNorm]   = 1.2;
+  perturbed_values[params::ic::PromptNorm] = 0.6;
+
+  for (const auto& values : {nominal_values, perturbed_values}) {
+    ParameterWrapper parameter(params::ic::number_of_parameters());
+    parameter.reset_parameter(values.data());
+
+    const double llh_cpu = cpu.partial_llh(parameter);
+    const double llh_gpu = gpu.partial_llh(parameter);
+    assert(std::isfinite(llh_cpu) && std::isfinite(llh_gpu));
+
+    // FP32 flux weights + FP32 ssq reduction vs FP64: a loose relative bound
+    // still catches a structurally wrong ssq (missing component, wrong bin).
+    const double scale = std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0});
+    assert(std::fabs(llh_cpu - llh_gpu) / scale < 1.0e-4);
+
+    // The per-bin predictions must agree too (flux kernels unchanged by the
+    // ssq work; this pins the readback-skip refactor).
+    const auto pred_cpu = cpu.predicted();
+    const auto pred_gpu = gpu.predicted();
+    for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
+      const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
+      assert(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale < 1.0e-4);
+    }
+  }
+}
+
 // An "astro"-only sample must run on a sample whose atmospheric columns were
 // never read: no atmospheric flux is constructed, the prediction is the
 // astrophysical component alone, and the atmospheric parameters have no effect
@@ -1065,6 +1128,7 @@ int main() {
   test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();
+  test_metal_say_ssq_matches_cpu();
   test_sample_likelihood_component_masking();
   test_veto_reweight();
   test_template_flux();

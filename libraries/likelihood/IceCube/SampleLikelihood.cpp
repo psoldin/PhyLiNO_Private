@@ -14,6 +14,86 @@ namespace ana::ic {
       return t * t;
     }
 
+    // SAY ssq reduction on the GPU: sums (astro_i + atmo_i)^2 per analysis bin
+    // over the per-event weight buffers the flux kernels already produced, so
+    // the weights never leave the GPU. Same one-group-per-bin / 256-thread
+    // tree-reduction layout as the flux kernels; buffer order follows the
+    // GpuBackend convention: inputs (astro_pe, atmo_pe, bin_offsets), params,
+    // hist (the ssq output); no per_event output.
+    struct SsqParams {
+      int has_astro;
+      int has_atmo;
+    };
+
+    constexpr const char* kSsqKernelMetal = R"METAL(
+      #include <metal_stdlib>
+      using namespace metal;
+
+      struct SsqParams { int has_astro; int has_atmo; };
+      constant uint kThreadsPerGroup = 256;
+
+      kernel void say_ssq(
+          device const float* astro_pe    [[buffer(0)]],
+          device const float* atmo_pe     [[buffer(1)]],
+          device const uint*  bin_offsets [[buffer(2)]],
+          constant SsqParams& p           [[buffer(3)]],
+          device float*       ssq         [[buffer(4)]],
+          uint bin [[threadgroup_position_in_grid]],
+          uint tid [[thread_position_in_threadgroup]])
+      {
+        const uint start = bin_offsets[bin];
+        const uint end   = bin_offsets[bin + 1];
+        float acc = 0.0f;
+        for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
+          float w = 0.0f;
+          if (p.has_astro) w += astro_pe[i];
+          if (p.has_atmo)  w += atmo_pe[i];
+          acc += w * w;
+        }
+        threadgroup float shared[kThreadsPerGroup];
+        shared[tid] = acc;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint s = kThreadsPerGroup / 2; s > 0; s >>= 1) {
+          if (tid < s) shared[tid] += shared[tid + s];
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (tid == 0) ssq[bin] = shared[0];
+      }
+    )METAL";
+
+    constexpr const char* kSsqKernelCuda = R"CUDA(
+      struct SsqParams { int has_astro; int has_atmo; };
+
+      extern "C" __global__ void say_ssq(
+          const float*        astro_pe,
+          const float*        atmo_pe,
+          const unsigned int* bin_offsets,
+          SsqParams           p,
+          float*              ssq)
+      {
+        const unsigned int bin      = blockIdx.x;
+        const unsigned int tid      = threadIdx.x;
+        const unsigned int nthreads = blockDim.x;
+        const unsigned int start    = bin_offsets[bin];
+        const unsigned int end      = bin_offsets[bin + 1];
+        float acc = 0.0f;
+        for (unsigned int i = start + tid; i < end; i += nthreads) {
+          float w = 0.0f;
+          if (p.has_astro) w += astro_pe[i];
+          if (p.has_atmo)  w += atmo_pe[i];
+          acc += w * w;
+        }
+        __shared__ float sdata[256];
+        sdata[tid] = acc;
+        __syncthreads();
+        for (unsigned int s = nthreads / 2; s > 0; s >>= 1) {
+          if (tid < s) sdata[tid] += sdata[tid + s];
+          __syncthreads();
+        }
+        if (tid == 0) ssq[bin] = sdata[0];
+      }
+    )CUDA";
+
     static double calculate_poisson_likelihood(const std::span<const double> data,
                                                const std::span<const double> prediction) noexcept {
       double llh = 0.0;
@@ -77,9 +157,27 @@ namespace ana::ic {
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
     m_Ssq.assign(total_bins, 0.0);
+
+    // SAY-on-GPU setup. Both flux kernels leave their per-event weights in GPU
+    // buffers; the say_ssq kernel reduces them to the per-bin ssq without a
+    // round trip through the CPU. upload_offsets deduplicates against the flux
+    // components' own upload, so this returns the already-resident buffer.
+    const bool gpu_per_event =
+        (m_Astro && m_Astro->per_event_handle() >= 0) || (m_Atmo && m_Atmo->per_event_handle() >= 0);
+    if (gpu && use_say && gpu_per_event) {
+      m_Gpu = std::move(gpu);
+      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? kSsqKernelCuda : kSsqKernelMetal;
+      m_Gpu->ensure_kernel("say_ssq", src);
+      m_hSsqOffsets = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
+      m_hSsq        = m_Gpu->alloc_output(total_bins);
+    }
   }
 
   bool SampleLikelihood::assemble_prediction(const ParameterWrapper& parameter) {
+    // Components stay sequential within a sample: a Migrad step varies one
+    // parameter, so at most one component is stale per call and running the
+    // checks concurrently was measured to gain nothing (Metal) / <5% (CPU).
+    // Cross-sample concurrency lives in ICLikelihood::calculate_likelihood.
     bool changed = false;
     if (m_Astro) changed |= m_Astro->check_and_recalculate(parameter);
     if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
@@ -111,34 +209,52 @@ namespace ana::ic {
     // -- matches NNMFit's rule that same-event components must be summed
     // *before* squaring (NNMFit/core/histogram_builder.py:229-329), since
     // (w1+w2)^2 != w1^2 + w2^2.
-    const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
-    const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
-    const auto&                   off   = m_Sample.bin_offsets;
-
     const int n_bins = static_cast<int>(m_Predicted.size());
 
-    // The component test is hoisted out of the per-event loop: which components
-    // exist is fixed at construction, so each case gets its own tight loop.
-    auto accumulate = [&](auto event_weight) {
-#pragma omp parallel for
-      for (int b = 0; b < n_bins; ++b) {
-        double acc = 0.0;
-#pragma omp simd reduction(+ : acc)
-        for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
-          acc += square(event_weight(i));
-        }
-        m_Ssq[b] = acc;
-      }
-    };
+    if (m_hSsq >= 0) {
+      // GPU path: reduce the flux kernels' per-event weight buffers in place.
+      // A component that is absent binds the offsets buffer as a dummy (never
+      // read, its flag is 0) -- the backend needs a valid buffer at every slot.
+      const int astro_h = m_Astro ? m_Astro->per_event_handle() : -1;
+      const int atmo_h  = m_Atmo ? m_Atmo->per_event_handle() : -1;
 
-    if (!astro.empty() && !atmo.empty())
-      accumulate([&](const std::size_t i) { return astro[i] + atmo[i]; });
-    else if (!astro.empty())
-      accumulate([&](const std::size_t i) { return astro[i]; });
-    else if (!atmo.empty())
-      accumulate([&](const std::size_t i) { return atmo[i]; });
-    else
-      std::ranges::fill(m_Ssq, 0.0);
+      const SsqParams p{.has_astro = astro_h >= 0 ? 1 : 0, .has_atmo = atmo_h >= 0 ? 1 : 0};
+      const int       inputs[] = {astro_h >= 0 ? astro_h : m_hSsqOffsets,
+                                  atmo_h >= 0 ? atmo_h : m_hSsqOffsets,
+                                  m_hSsqOffsets};
+      m_Gpu->dispatch("say_ssq", inputs, 3, &p, sizeof(p), m_hSsq, -1, static_cast<std::size_t>(n_bins));
+
+      const float* ssq = m_Gpu->contents(m_hSsq);
+      for (int b = 0; b < n_bins; ++b)
+        m_Ssq[b] = static_cast<double>(ssq[b]);
+    } else {
+      const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
+      const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
+      const auto&                   off   = m_Sample.bin_offsets;
+
+      // The component test is hoisted out of the per-event loop: which components
+      // exist is fixed at construction, so each case gets its own tight loop.
+      auto accumulate = [&](auto event_weight) {
+#pragma omp parallel for
+        for (int b = 0; b < n_bins; ++b) {
+          double acc = 0.0;
+#pragma omp simd reduction(+ : acc)
+          for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
+            acc += square(event_weight(i));
+          }
+          m_Ssq[b] = acc;
+        }
+      };
+
+      if (!astro.empty() && !atmo.empty())
+        accumulate([&](const std::size_t i) { return astro[i] + atmo[i]; });
+      else if (!astro.empty())
+        accumulate([&](const std::size_t i) { return astro[i]; });
+      else if (!atmo.empty())
+        accumulate([&](const std::size_t i) { return atmo[i]; });
+      else
+        std::ranges::fill(m_Ssq, 0.0);
+    }
 
     // Histogram-level fluctuation from the template component, added after the
     // per-event sum (NNMFit: ssq += (hist_fluctuation * livetime)**2).

@@ -66,9 +66,15 @@ namespace ana::ic {
     // Per-event (conv_i + prompt_i) combined weight, matching NNMFit's rule
     // that same-event components are summed before squaring for ssq
     // (NNMFit/core/histogram_builder.py:229-329). Indexed like io::ic::ICSample.
+    // Empty on the GPU path: the weights stay in the GPU buffer (see
+    // per_event_handle()) and the ssq reduction runs as a kernel instead.
     [[nodiscard]] std::span<const double> per_event_weight() const noexcept {
       return m_PerEventWeight;
     }
+
+    // GPU buffer handle of the per-event weights (-1 on the CPU path or when
+    // need_per_event is false), for SampleLikelihood's say_ssq kernel.
+    [[nodiscard]] int per_event_handle() const noexcept { return m_hPerEvent; }
 
    private:
     const io::ic::ICSample& m_Sample;

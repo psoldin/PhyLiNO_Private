@@ -110,7 +110,11 @@ namespace ana::ic {
     , m_NeedPerEvent(need_per_event)
     , m_Gpu(std::move(gpu)) {
     m_Histogram.assign(binning.total_bins(), 0.0);
-    m_PerEventWeight.assign(sample.size(), 0.0);
+    // On the GPU path the per-event weights live in a GPU buffer (m_hPerEvent)
+    // consumed by SampleLikelihood's say_ssq kernel; no CPU copy is kept. The
+    // CPU loop always writes them, so the CPU path always allocates.
+    if (!m_Gpu)
+      m_PerEventWeight.assign(sample.size(), 0.0);
 
     if (m_Gpu) {
       const std::size_t M   = sample.size();
@@ -144,11 +148,7 @@ namespace ana::ic {
       const float* hist = m_Gpu->contents(m_hHist);
       for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
         m_Histogram[bin] = static_cast<double>(hist[bin]);
-      if (m_NeedPerEvent) {
-        const float* pe = m_Gpu->contents(m_hPerEvent);
-        for (std::size_t i = 0, n = m_PerEventWeight.size(); i < n; ++i)
-          m_PerEventWeight[i] = static_cast<double>(pe[i]);
-      }
+      // Per-event weights stay GPU-resident (read by the say_ssq kernel).
       return;
     }
 

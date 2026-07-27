@@ -91,6 +91,14 @@ namespace ana::ic {
     std::vector<double> m_Data;
     std::vector<double> m_Ssq;
 
+    // SAY-on-GPU: the per-event ssq reduction runs as the say_ssq kernel over
+    // the flux components' GPU-resident per-event weight buffers. Set up in the
+    // constructor when a backend is present, SAY is active and at least one
+    // per-event component exists; m_hSsq == -1 selects the CPU fallback.
+    std::shared_ptr<GpuBackend> m_Gpu;
+    int                         m_hSsqOffsets = -1;
+    int                         m_hSsq        = -1;
+
     // NOTE: SampleLikelihood does not own a ParameterWrapper member (unlike
     // ICLikelihood's m_Parameter) -- the caller resets one shared ParameterWrapper
     // and passes it into partial_llh()/generate_asimov(). assemble_prediction()

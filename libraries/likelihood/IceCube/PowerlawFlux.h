@@ -45,9 +45,15 @@ namespace ana::ic {
     // Per-event weight, same value already summed into m_Histogram, needed by
     // SampleLikelihood to build the combined ssq histogram for the SAY
     // likelihood. Indexed the same way as io::ic::ICSample (CSR bin order).
+    // Empty on the GPU path: there the weights stay in the GPU buffer (see
+    // per_event_handle()) and the ssq reduction runs as a kernel instead.
     [[nodiscard]] std::span<const double> per_event_weight() const noexcept {
       return m_PerEventWeight;
     }
+
+    // GPU buffer handle of the per-event weights (-1 on the CPU path or when
+    // need_per_event is false), for SampleLikelihood's say_ssq kernel.
+    [[nodiscard]] int per_event_handle() const noexcept { return m_hPerEvent; }
 
    private:
     const io::ic::ICSample& m_Sample;
