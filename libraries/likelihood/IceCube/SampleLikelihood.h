@@ -72,6 +72,9 @@ namespace ana::ic {
       return m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
     }
 
+    /** Replace the Asimov expectation with measured counts (UseData). */
+    void set_data(std::span<const double> counts);
+
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;

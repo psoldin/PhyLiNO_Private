@@ -104,9 +104,6 @@ namespace ana::ic {
   }
 
   void ICLikelihood::initialize_data(const bool use_data) {
-    if (use_data)
-      throw std::runtime_error("ICLikelihood: reading real data not yet implemented");
-
     const auto&         parameters = m_Options->inputOptions().input_parameters().parameters();
     std::vector<double> nominal(params::ic::number_of_parameters());
     for (std::size_t i = 0; i < nominal.size(); ++i)
@@ -115,12 +112,21 @@ namespace ana::ic {
     m_Parameter.reset_parameter(nominal.data());
 
     double total = 0.0;
-    for (auto& s : m_Samples) {
-      s->generate_asimov(m_Parameter);
-      for (const double v : s->data())
+    for (std::size_t k = 0; k < m_Samples.size(); ++k) {
+      // The prediction at the nominal point is needed either way: as the Asimov
+      // expectation, or to seed the SAY ssq before the measured counts replace it.
+      m_Samples[k]->generate_asimov(m_Parameter);
+      if (use_data) {
+        const auto& counts = m_DataBase->data_histogram(k);
+        if (counts.empty())
+          throw std::runtime_error("ICLikelihood: UseData is true but sample " + std::to_string(k) +
+                                   " has no \"data\" path in its config");
+        m_Samples[k]->set_data(counts);
+      }
+      for (const double v : m_Samples[k]->data())
         total += v;
     }
-    std::cout << "IC Asimov total events: " << total << '\n';
+    std::cout << "IC " << (use_data ? "data" : "Asimov") << " total events: " << total << '\n';
   }
 
   double ICLikelihood::calculate_pulls(const ParameterWrapper& parameter) const noexcept {

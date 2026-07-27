@@ -1028,6 +1028,23 @@ static bool assertions_are_live() {
   return live;
 }
 
+// Real data is a plain per-bin count in the sample's own binning: no weights, no
+// livetime scaling. This tests the counting helper the loader uses.
+static void test_data_histogram_counts() {
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
+  assert(binning.total_bins() == 6);
+
+  // Three events in bin (energy 0, zenith 0), one out of range.
+  const std::vector<double> energies{316.0, 316.0, 316.0, 10.0};
+  const std::vector<double> zeniths{2.0, 2.0, 2.0, 2.0};
+
+  const std::vector<double> counts = io::ic::bin_event_counts(binning, energies, zeniths);
+  assert(counts.size() == 6);
+  assert(counts[0] == 3.0);
+  for (std::size_t b = 1; b < counts.size(); ++b) assert(counts[b] == 0.0);
+}
+
 int main() {
   if (!assertions_are_live()) {
     std::puts("ICTests: FAILED -- assertions are compiled out (NDEBUG), the suite checks nothing");
@@ -1052,6 +1069,7 @@ int main() {
   test_veto_reweight();
   test_template_flux();
   test_detector_systematics();
+  test_data_histogram_counts();
   std::puts("ICTests: all passed");
   return 0;
 }

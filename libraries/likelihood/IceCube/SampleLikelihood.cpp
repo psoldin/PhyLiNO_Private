@@ -154,6 +154,18 @@ namespace ana::ic {
     }
   }
 
+  void SampleLikelihood::set_data(const std::span<const double> counts) {
+    if (counts.size() != m_Data.size())
+      throw std::runtime_error("SampleLikelihood: data histogram for sample '" + m_Config.name +
+                               "' has " + std::to_string(counts.size()) + " bins, the binning has " +
+                               std::to_string(m_Data.size()));
+    std::ranges::copy(counts, m_Data.begin());
+
+    // The SAY ssq describes MC statistics, so it still comes from the model; seed
+    // it exactly as generate_asimov does.
+    if (m_UseSAY) assemble_fluctuation();
+  }
+
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
     assemble_prediction(nominal);
     std::ranges::copy(m_Predicted, m_Data.begin());

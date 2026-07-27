@@ -46,6 +46,35 @@ namespace io::ic {
       return out;
     }
 
+    // NNMFit's standard mask (MaskHandler._make_standard_mask): an event passes
+    // if its reco-energy and reco-direction fits both exist and succeeded.
+    // Measured 2026-07-27: 0% dropped on both cascade MC baselines and both
+    // cascade data files, but 0.846% dropped on the tracks data file, so this is
+    // applied unconditionally to real data (never to the MC baselines, which
+    // ICDataBase::read_sample does not call this from).
+    arrow::Result<std::vector<bool>> standard_mask(const arrow::Table& table, const std::string& reco_energy_branch) {
+      auto get = [&table](const std::string& name) { return table.GetColumnByName(name); };
+      auto energy_exists     = get(reco_energy_branch + "_exists");
+      auto energy_fit_status = get(reco_energy_branch + "_fit_status");
+      auto dir_exists        = get("reco_dir_exists");
+      auto dir_fit_status    = get("reco_dir_fit_status");
+      if (!energy_exists || !energy_fit_status || !dir_exists || !dir_fit_status)
+        return arrow::Status::Invalid("ICDataBase: missing standard-mask columns ('" + reco_energy_branch +
+                                      "_exists', '" + reco_energy_branch +
+                                      "_fit_status', 'reco_dir_exists', 'reco_dir_fit_status')");
+
+      auto ee = std::static_pointer_cast<arrow::UInt8Array>(energy_exists->chunk(0));
+      auto es = std::static_pointer_cast<arrow::Int32Array>(energy_fit_status->chunk(0));
+      auto de = std::static_pointer_cast<arrow::UInt8Array>(dir_exists->chunk(0));
+      auto ds = std::static_pointer_cast<arrow::Int32Array>(dir_fit_status->chunk(0));
+
+      const int64_t    n = table.num_rows();
+      std::vector<bool> pass(n, false);
+      for (int64_t i = 0; i < n; ++i)
+        pass[i] = ee->Value(i) == 1 && es->Value(i) == 0 && de->Value(i) == 1 && ds->Value(i) == 0;
+      return pass;
+    }
+
   }  // namespace
 
   arrow::Status ICDataBase::read_sample(const SampleConfig& cfg, ICSample& out) {
@@ -160,6 +189,50 @@ namespace io::ic {
     return arrow::Status::OK();
   }
 
+  arrow::Status ICDataBase::read_data_histogram(const SampleConfig& cfg, std::vector<double>& out) {
+    if (cfg.data_path.empty()) {
+      out.clear();
+      return arrow::Status::OK();
+    }
+
+    std::cout << "Reading IceCube data for sample '" << cfg.name << "': " << cfg.data_path << '\n';
+    ARROW_ASSIGN_OR_RAISE(auto table, read_parquet_file(cfg.data_path));
+
+    const auto& b = cfg.branches;
+    ARROW_ASSIGN_OR_RAISE(auto energy, get_double_column(*table, b.reco_energy));
+    ARROW_ASSIGN_OR_RAISE(auto zenith, get_double_column(*table, b.reco_zenith));
+    const std::size_t n_rows = energy.size();
+
+    // NNMFit's standard mask: apply it to real data (the MC baselines are
+    // measured pre-cut and read_sample does not apply it there). Compact to the
+    // passing rows rather than poisoning failing ones with a sentinel: NaN would
+    // NOT be rejected by Axis::index's `v < lo || v >= hi` (both comparisons are
+    // false for NaN), so it would fall through to an undefined-behaviour cast.
+    ARROW_ASSIGN_OR_RAISE(auto passes, standard_mask(*table, b.reco_energy));
+    std::vector<double> masked_energy;
+    std::vector<double> masked_zenith;
+    masked_energy.reserve(n_rows);
+    masked_zenith.reserve(n_rows);
+    for (std::size_t i = 0; i < n_rows; ++i) {
+      if (passes[i]) {
+        masked_energy.push_back(energy[i]);
+        masked_zenith.push_back(zenith[i]);
+      }
+    }
+    if (masked_energy.size() != n_rows)
+      std::cout << "IceCube data '" << cfg.name << "': standard mask dropped " << (n_rows - masked_energy.size())
+                << " of " << n_rows << " rows ("
+                << (100.0 * static_cast<double>(n_rows - masked_energy.size()) / static_cast<double>(n_rows))
+                << "%)\n";
+
+    out = bin_event_counts(cfg.binning, masked_energy, masked_zenith);
+    double total = 0.0;
+    for (const double v : out) total += v;
+    std::cout << "IceCube data '" << cfg.name << "': " << n_rows << " rows, " << total
+              << " in analysis range\n";
+    return arrow::Status::OK();
+  }
+
   ICDataBase::ICDataBase(const std::vector<SampleConfig>& samples) {
     for (const std::size_t i : enabled_sample_indices(samples)) {
       const SampleConfig& cfg = samples[i];
@@ -168,6 +241,13 @@ namespace io::ic {
       if (!status.ok())
         throw std::runtime_error("Failed to read IceCube sample '" + cfg.name + "': " + status.ToString());
       m_Samples.push_back(std::move(sample));
+
+      std::vector<double> data_histogram;
+      const auto          data_status = read_data_histogram(cfg, data_histogram);
+      if (!data_status.ok())
+        throw std::runtime_error("Failed to read IceCube data for sample '" + cfg.name + "': " +
+                                 data_status.ToString());
+      m_DataHistograms.push_back(std::move(data_histogram));
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICDataBase: no enabled IceCube samples");

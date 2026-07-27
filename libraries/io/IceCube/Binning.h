@@ -55,4 +55,13 @@ namespace io::ic {
     int               m_TotalBins;
   };
 
+  /**
+   * Per-bin event counts for a data sample: bins each (reco energy, reco zenith)
+   * pair with `binning` and counts, dropping out-of-range events. No weights and
+   * no livetime scaling -- real data is a count.
+   */
+  [[nodiscard]] std::vector<double> bin_event_counts(const Binning&             binning,
+                                                    const std::vector<double>& reco_energy,
+                                                    const std::vector<double>& reco_zenith);
+
 }  // namespace io::ic

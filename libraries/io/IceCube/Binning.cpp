@@ -1,6 +1,7 @@
 #include "Binning.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <ios>
@@ -102,6 +103,18 @@ namespace io::ic {
       flat = flat * m_Axes[d].n_bins + i;
     }
     return flat;
+  }
+
+  std::vector<double> bin_event_counts(const Binning&             binning,
+                                       const std::vector<double>& reco_energy,
+                                       const std::vector<double>& reco_zenith) {
+    std::vector<double> counts(binning.total_bins(), 0.0);
+    for (std::size_t i = 0, n = reco_energy.size(); i < n; ++i) {
+      const std::array<double, 2> reco{reco_energy[i], reco_zenith[i]};
+      const int                   bin = binning.bin_index(reco);
+      if (bin >= 0) counts[bin] += 1.0;
+    }
+    return counts;
   }
 
 }  // namespace io::ic
