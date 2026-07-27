@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -50,9 +51,10 @@ namespace io::ic {
     BranchNames branches;
 
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
-      for (const auto& c : components)
-        if (c == component) return true;
-      return false;
+      return std::ranges::any_of(components,
+        [component](std::string_view component_name) {
+          return component_name == component;
+        });
     }
 
     /** Astrophysical power law requested (drives PowerlawFlux + its parquet columns). */

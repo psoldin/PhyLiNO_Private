@@ -67,13 +67,14 @@ int main(int argc, char** argv) {
       modules[ic_module->name()] = ic_module;
     }
 
-    auto options = std::make_shared<io::Options>(argc, argv, ana::collect_input_options(modules));
+    const auto options = std::make_shared<io::Options>(argc, argv, ana::collect_input_options(modules));
 
     const auto module = modules.at(options->inputOptions().experiment());
 
     ana::Fit fit(options, module);
 
     fit.minimize();
+
     result::write_results(fit, "Output");
 
     // perform_2d_scan(options, module);

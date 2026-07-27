@@ -33,13 +33,13 @@ namespace io::ic {
     BranchNames parse_branches(const boost::property_tree::ptree& node) {
       BranchNames branches;
       if (auto branches_node = node.get_child_optional("Branches")) {
-        const auto& br          = *branches_node;
-        branches.reco_energy    = br.get<std::string>("RecoEnergy", branches.reco_energy);
-        branches.reco_zenith    = br.get<std::string>("RecoZenith", branches.reco_zenith);
-        branches.true_energy    = br.get<std::string>("TrueEnergy", branches.true_energy);
-        branches.astro_baseline = br.get<std::string>("AstroBaseline", branches.astro_baseline);
-        branches.conv_baseline  = br.get<std::string>("ConvBaseline", branches.conv_baseline);
-        branches.conv_alt       = br.get<std::string>("ConvAlt", branches.conv_alt);
+        const auto& br           = *branches_node;
+        branches.reco_energy     = br.get<std::string>("RecoEnergy", branches.reco_energy);
+        branches.reco_zenith     = br.get<std::string>("RecoZenith", branches.reco_zenith);
+        branches.true_energy     = br.get<std::string>("TrueEnergy", branches.true_energy);
+        branches.astro_baseline  = br.get<std::string>("AstroBaseline", branches.astro_baseline);
+        branches.conv_baseline   = br.get<std::string>("ConvBaseline", branches.conv_baseline);
+        branches.conv_alt        = br.get<std::string>("ConvAlt", branches.conv_alt);
         branches.prompt_baseline = br.get<std::string>("PromptBaseline", branches.prompt_baseline);
         branches.prompt_alt      = br.get<std::string>("PromptAlt", branches.prompt_alt);
 
@@ -102,13 +102,13 @@ namespace io::ic {
 
     std::vector<SampleConfig> samples;
     for (const auto& [sample_name, sample_node] : ic.get_child("Samples")) {
-      const std::string binning_name = sample_node.get<std::string>("binning");
-      const auto        it           = binnings.find(binning_name);
+      const auto binning_name = sample_node.get<std::string>("binning");
+      const auto it           = binnings.find(binning_name);
       if (it == binnings.end())
         throw std::runtime_error(
             "parse_samples: sample '" + sample_name + "' references unknown binning '" + binning_name + "'");
 
-      samples.push_back(SampleConfig{
+      samples.push_back(SampleConfig {
           .name       = sample_name,
           .enabled    = sample_node.get<bool>("enabled", true),
           .binning    = it->second,
