@@ -29,6 +29,35 @@ def fnum(x):
     """
     return repr(float(x))
 
+
+def reverse_zenith_axis(values, zenith_bins):
+    """Undo NNMFit's zenith-axis mirror relative to io::ic::Binning's convention.
+
+    NNMFit's cos/cscd-cos_5up bin edges are built as
+    np.sort(arccos(ascending_cos_values)): arccos is monotonically DECREASING,
+    so an ascending-cos input produces a descending-zenith-radians array, which
+    np.sort then flips back to ascending zenith radians. The net effect,
+    verified numerically against both the uniform "cos" and the explicit
+    "cscd-cos_5up" edges: NNMFit's zenith bin index and ours satisfy
+        nnmfit_zenith_idx == (zenith_bins - 1) - our_zenith_idx
+    for every event, i.e. the zenith axis is exactly mirrored (energy is
+    unaffected: NNMFit's "log" spacing is ascending already, matching ours).
+
+    Any flat array NNMFit hands us (template rate, template fluctuation,
+    gradient, gradient_error, or a covariance column) is row-major
+    (energy outer, NNMFit's zenith inner); reshape to (n_energy, zenith_bins)
+    and flip the zenith axis to relabel it into our own bin_index() order,
+    which is what the C++ reader (TemplateFlux, DetectorSystematics) assumes.
+
+    zenith_bins == 1 makes this a no-op (the single-bin cscd_muon sample).
+    """
+    if zenith_bins <= 1:
+        return values
+    if values.size % zenith_bins != 0:
+        sys.exit(f"reverse_zenith_axis: {values.size} values not divisible by zenith_bins={zenith_bins}")
+    reshaped = values.reshape(-1, zenith_bins)
+    return np.flip(reshaped, axis=1).reshape(-1)
+
 # The order DetectorSystematics assumes, matching params::ic {DOMEff, IceAbs,
 # IceScat, HoleIceP0, HoleIceP1}.
 SYSTEMATICS = [
@@ -61,18 +90,19 @@ def load(path, det_conf):
     return obj
 
 
-def flat(array, bins, what):
+def flat(array, bins, what, zenith_bins):
     a = np.asarray(array, dtype=float)
     if a.size != bins:
         sys.exit(f"{what}: expected {bins} values, pickle has {a.size} (shape {a.shape})")
     # Flattening is row-major: first axis (energy) outer, second (zenith) inner --
     # the same order io::ic::Binning uses for its flat index. Verified against the
     # tracks Corsika pickle: its flat "template" equals template_2d.flatten() with
-    # template_2d shaped (n_energy, n_zenith).
-    return a.reshape(-1)
+    # template_2d shaped (n_energy, n_zenith). The zenith sub-axis itself is then
+    # relabelled into our own bin_index() order (see reverse_zenith_axis).
+    return reverse_zenith_axis(a.reshape(-1), zenith_bins)
 
 
-def export_template(entry, out, bins):
+def export_template(entry, out, bins, zenith_bins):
     # Two layouts seen in practice: the multi-dataset MuonGun pickles carry a flat
     # "template", and so does the single-dataset Corsika tracks pickle (alongside
     # "template_2d", which is the same data pre-flatten -- "template" is used
@@ -83,16 +113,17 @@ def export_template(entry, out, bins):
     key = "template" if "template" in entry else "template_2d"
     if key not in entry:
         sys.exit(f"pickle entry has neither 'template' nor 'template_2d'; keys: {sorted(entry)}")
-    template = flat(entry[key], bins, key)
+    template = flat(entry[key], bins, key, zenith_bins)
     fluctuation = entry.get("template_fluctuation")
     fluctuation = (
-        flat(fluctuation, bins, "template_fluctuation")
+        flat(fluctuation, bins, "template_fluctuation", zenith_bins)
         if fluctuation is not None
         else np.zeros(bins)
     )
     with open(out, "w") as f:
         f.write(f"# template bins {bins}\n")
         f.write("# columns: template_rate fluctuation_rate (both per second)\n")
+        f.write("# zenith axis relabelled into io::ic::Binning order (see reverse_zenith_axis)\n")
         if "energy_bins" in entry:
             f.write(f"# energy_bins {' '.join(repr(float(x)) for x in entry['energy_bins'])}\n")
         if "zenith_bins" in entry:
@@ -102,7 +133,7 @@ def export_template(entry, out, bins):
     print(f"wrote {out}: {bins} bins, template sum {fnum(template.sum())} s^-1")
 
 
-def export_gradients(entry, out, bins, livetime_scale):
+def export_gradients(entry, out, bins, livetime_scale, zenith_bins):
     missing = [s for s in SYSTEMATICS if s not in entry]
     if missing:
         sys.exit(f"gradient pickle lacks systematics {missing}; has {sorted(entry.keys())}")
@@ -112,10 +143,11 @@ def export_gradients(entry, out, bins, livetime_scale):
             f"# gradients bins {bins} params {len(SYSTEMATICS)} lt_scale {fnum(livetime_scale)}\n"
         )
         f.write("# per param: name split, then <bins> lines of 'gradient gradient_error'\n")
+        f.write("# zenith axis relabelled into io::ic::Binning order (see reverse_zenith_axis)\n")
         for name in SYSTEMATICS:
             g = entry[name]
-            gradient = flat(g["gradient"], bins, f"{name}.gradient")
-            error = flat(g["gradient_error"], bins, f"{name}.gradient_error")
+            gradient = flat(g["gradient"], bins, f"{name}.gradient", zenith_bins)
+            error = flat(g["gradient_error"], bins, f"{name}.gradient_error", zenith_bins)
             f.write(f"# param {name} split {fnum(g['split_value'])}\n")
             for v, e in zip(gradient, error):
                 f.write(f"{fnum(v)} {fnum(e)}\n")
@@ -127,7 +159,7 @@ def export_gradients(entry, out, bins, livetime_scale):
                 split_terms = np.zeros(bins)
                 for key, sign in COV_TERMS:
                     split_terms += sign * flat(
-                        np.asarray(corr[key]["error"]) ** 2, bins, f"{name_i}/{name_j} {key}"
+                        np.asarray(corr[key]["error"]) ** 2, bins, f"{name_i}/{name_j} {key}", zenith_bins
                     )
                 cov = (
                     float(entry[name_i]["factor"])
@@ -148,6 +180,14 @@ def main():
     p.add_argument("--det-conf", default=None)
     p.add_argument("--bins", type=int, required=True)
     p.add_argument(
+        "--zenith-bins",
+        type=int,
+        required=True,
+        help="number of zenith bins (the fast-varying axis); used to undo NNMFit's "
+        "zenith-axis mirror (see reverse_zenith_axis). Pass 1 for a binning with no "
+        "zenith axis or a single zenith bin.",
+    )
+    p.add_argument(
         "--livetime-scale",
         type=float,
         default=1.0,
@@ -157,9 +197,9 @@ def main():
 
     entry = load(args.pickle_path, args.det_conf)
     if args.kind == "template":
-        export_template(entry, args.out_path, args.bins)
+        export_template(entry, args.out_path, args.bins, args.zenith_bins)
     else:
-        export_gradients(entry, args.out_path, args.bins, args.livetime_scale)
+        export_gradients(entry, args.out_path, args.bins, args.livetime_scale, args.zenith_bins)
 
 
 if __name__ == "__main__":
