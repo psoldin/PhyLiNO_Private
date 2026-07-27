@@ -144,6 +144,70 @@ template immediately: the MuonGun rates are 2.3425769796686227e-06 s⁻¹ (casca
 `template_fluctuation` is `None`, so the template contributes nothing to σ² (visible in the dumps:
 `total` and `no_template` share the same σ² sum).
 
+## Per-bin comparison against PhyLiNO
+
+```
+tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined.json /tmp/probe_defaults.json
+tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined.json /tmp/probe_fitted_nosys.json \
+    --set AstroNorm=2.0102235093493097 --set SpectralIndex=2.4973509081979963 \
+    --set ConvNorm=1.1862521739969658 --set PromptNorm=0.0 --set DeltaGamma=0.07312317645432367 \
+    --set CRGrad=0.5278438102260666 --set BarrH=-0.059121890824429764 --set BarrW=0.2941434915474592 \
+    --set BarrY=0.048184445442831736 --set BarrZ=-0.028540463688312537 \
+    --set VetoThreshold=0.14108708515445395 --set MuonGunNorm=1.1362703633930007 \
+    --set MuonNorm=1.827017996655897
+
+build/programs/LLHFit/LLHFit -c /tmp/probe_defaults.json --silent && cp Output.json /tmp/probe_defaults_output.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_fitted_nosys.json --silent && cp Output.json /tmp/probe_fitted_nosys_output.json
+
+tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_defaults_output.json /tmp/nnmfit_dumps --tolerance 1e-6
+tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_fitted_nosys_output.json /tmp/nnmfit_dumps_fitted_nosys --tolerance 1e-6
+```
+
+`make_probe_config.py` fixes every parameter (so `Fit::minimize()` evaluates the Asimov prediction
+at the given point instead of moving it) and pins `Likelihood: SAY`, `Backend: cpu`, `UseData: false`
+regardless of what the base config currently has.
+
+Both points agree with NNMFit to floating-point precision (~1e-13 to 1e-16 relative) for every
+sample and component that has a dump:
+
+```
+=== defaults ===
+ok     tracks         astro              max rel dev 3.160e-16
+ok     tracks         atmospheric        max rel dev 1.324e-14
+ok     cscd_cascade   astro              max rel dev 2.485e-16
+ok     cscd_cascade   atmospheric_veto   max rel dev 4.360e-15
+ok     cscd_muon      astro              max rel dev 1.748e-16
+ok     cscd_muon      atmospheric_veto   max rel dev 1.693e-13
+all compared components agree
+
+=== fitted_nosys ===
+ok     tracks         astro              max rel dev 3.397e-16
+ok     tracks         atmospheric        max rel dev 3.613e-16
+ok     cscd_cascade   astro              max rel dev 1.830e-16
+ok     cscd_cascade   atmospheric_veto   max rel dev 9.540e-17
+ok     cscd_muon      astro              max rel dev 1.899e-16
+ok     cscd_muon      atmospheric_veto   max rel dev 0.000e+00
+all compared components agree
+```
+
+`tracks/atmospheric` only agrees at `fitted_nosys` (where CRGrad/Barr* are nonzero, so the CR-alt
+and Barr-slope columns actually contribute) after fixing `ICDataBase.cpp`'s oscillation application
+to scale only `conv_baseline`/`prompt_baseline`, not `conv_alt`/`prompt_alt`/`barr_conv[k]` — see
+`libraries/io/IceCube/ICDataBase.cpp`'s `apply_survival` block and its comment for why NNMFit's
+`OscillationsHook` only ever touches a flux's primary baseline-weight column
+(`Flux.py::apply_hooks_for_flux`). At `defaults` both CRGrad and every Barr parameter are 0, so the
+bug was invisible there — any future check of this kind should include a nonzero-systematics point,
+not just defaults.
+
+`template` is skipped everywhere: no individual `muontemplate`/`muon` pickle is dumped (see "Two
+NNMFit behaviours the harness works around" above), and reconstructing `total − no_template` on the
+NNMFit side isn't wired into `compare_to_nnmfit.py`.
+
+A real-data comparison (`UseData: true` on both sides) is *not* run by this harness — do not run
+LLHFit against real detector data without explicit authorization. If/when that check is wanted,
+the same `compare_to_nnmfit.py` works against an `Output.json` produced with `UseData: true` and a
+`dump_histograms.sh` run under `analysis_type: data`; script it, don't run it inline.
+
 ## Regenerating everything
 
 ```bash
