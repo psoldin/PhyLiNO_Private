@@ -107,8 +107,9 @@ namespace io::ic {
                                  "' has a \"Template\" entry but declares neither 'muontemplate' nor 'muon'");
     }
 
-    // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" } and
-    // "Gradients": { "File": ... }, both optional.
+    // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
+    // "Gradients": { "File": ... } and "Oscillations": { "File": ..., "Branch": ... },
+    // all optional.
     void parse_component_files(const boost::property_tree::ptree& node, SampleConfig& sample) {
       if (const auto tmpl = node.get_child_optional("Template")) {
         sample.template_file = tmpl->get<std::string>("File");
@@ -125,6 +126,11 @@ namespace io::ic {
 
       if (const auto gradients = node.get_child_optional("Gradients"))
         sample.gradient_file = gradients->get<std::string>("File");
+
+      if (const auto osc = node.get_child_optional("Oscillations")) {
+        sample.oscillation_file   = osc->get<std::string>("File");
+        sample.oscillation_branch = osc->get<std::string>("Branch", sample.oscillation_branch);
+      }
     }
 
   }  // namespace

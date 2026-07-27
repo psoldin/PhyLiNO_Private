@@ -351,6 +351,50 @@ static void test_parse_samples_cascade_entry() {
   assert(tracks[0].gradient_file.empty());
 }
 
+// The oscillation sidecar is a per-event multiplicative factor on the atmospheric
+// baselines only (NNMFit's OscillationsHook: nu_mu disappearance, applied to the
+// conventional and prompt baseline weights at load time).
+static void test_parse_samples_oscillation_entry() {
+  static constexpr char kJson[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "grid": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "tracks": {
+        "binning": "grid",
+        "parquet": "tracks.parquet",
+        "components": "astro, conventional, prompt",
+        "Oscillations": { "File": "osc_tracks.parquet", "Branch": "osc_survival" }
+      },
+      "no_osc": {
+        "binning": "grid",
+        "parquet": "other.parquet",
+        "components": "astro, conventional, prompt"
+      }
+    }
+  }
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
+  assert(samples.size() == 2);
+  assert(samples[0].oscillation_file == "osc_tracks.parquet");
+  assert(samples[0].oscillation_branch == "osc_survival");
+  assert(samples[1].oscillation_file.empty());
+  // Default branch name applies even without an explicit "Branch" key.
+  assert(samples[1].oscillation_branch == "osc_survival");
+}
+
 // The composite pairs its SampleLikelihoods with the ICSamples that ICDataBase
 // loaded, relying on both walking the enabled configs in the same order --
 // the riskiest line in the multi-sample refactor. Both sides call
@@ -807,6 +851,7 @@ int main() {
   test_parse_samples();
   test_parse_samples_rejects_bad_components();
   test_parse_samples_cascade_entry();
+  test_parse_samples_oscillation_entry();
   test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();

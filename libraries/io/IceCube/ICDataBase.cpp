@@ -93,6 +93,36 @@ namespace io::ic {
           ARROW_ASSIGN_OR_RAISE(out.veto_prompt[k], get_double_column(*table, b.veto_prompt[k]));
         }
       }
+
+      // NNMFit's OscillationsHook multiplies the atmospheric baseline weights by a
+      // per-event nu_mu survival probability, once at load time. The factor lives
+      // in a sidecar parquet, row-aligned with this sample's baseline file, so the
+      // hot loop is untouched. Barr slopes are scaled too: they are derivatives of
+      // the same conventional weight, so leaving them unscaled would change the
+      // (slope / baseline) reweight ratios.
+      if (!cfg.oscillation_file.empty()) {
+        ARROW_ASSIGN_OR_RAISE(auto osc_table, read_parquet_file(cfg.oscillation_file));
+        ARROW_ASSIGN_OR_RAISE(auto survival, get_double_column(*osc_table, cfg.oscillation_branch));
+        if (survival.size() != out.conv_baseline.size())
+          return arrow::Status::Invalid(
+              "ICDataBase: oscillation sidecar '" + cfg.oscillation_file + "' has " +
+              std::to_string(survival.size()) + " rows, the baseline parquet has " +
+              std::to_string(out.conv_baseline.size()) + " (they must be row-aligned)");
+
+        auto apply_survival = [&survival](std::vector<double>& column) {
+          for (std::size_t i = 0; i < column.size(); ++i) column[i] *= survival[i];
+        };
+        apply_survival(out.conv_baseline);
+        apply_survival(out.conv_alt);
+        apply_survival(out.prompt_baseline);
+        apply_survival(out.prompt_alt);
+        for (auto& slope : out.barr_conv) apply_survival(slope);
+
+        double mean = 0.0;
+        for (const double v : survival) mean += v;
+        std::cout << "IceCube sample '" << cfg.name << "': applied oscillation survival factors (mean "
+                  << mean / static_cast<double>(survival.size()) << ")\n";
+      }
     }
 
     // The MC weights are per-event rates (Hz); scale by the livetime so the

@@ -64,6 +64,12 @@ namespace io::ic {
     // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
     std::string gradient_file;
 
+    // Per-event nu_mu survival factor (NNMFit OscillationsHook), exported by
+    // tools/export_oscillation_factors.py. Row-aligned with `parquet`; applied to
+    // the atmospheric baselines at load time. "" = no oscillation reweight.
+    std::string oscillation_file;
+    std::string oscillation_branch = "osc_survival";
+
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,
         [component](std::string_view component_name) {
