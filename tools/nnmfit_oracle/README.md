@@ -203,10 +203,17 @@ not just defaults.
 NNMFit behaviours the harness works around" above), and reconstructing `total − no_template` on the
 NNMFit side isn't wired into `compare_to_nnmfit.py`.
 
-A real-data comparison (`UseData: true` on both sides) is *not* run by this harness — do not run
-LLHFit against real detector data without explicit authorization. If/when that check is wanted,
-the same `compare_to_nnmfit.py` works against an `Output.json` produced with `UseData: true` and a
-`dump_histograms.sh` run under `analysis_type: data`; script it, don't run it inline.
+## Comparing the fit itself against real data
+
+`tools/nnmfit_oracle/run_ic_data_fit.sh [OUT_DIR]` fits `config_icecube_combined.json` against real
+detector data (`UseData: true`) and prints the resulting parameters next to NNMFit's recorded fit
+(`/tmp/nnmfit_fit_reference.json`). This is the only step in the Phase 2 acceptance gate that
+touches real data, so it is a standalone script you run yourself from a shell — it is not run as
+part of any automated check here. Expected, non-defect differences: `PromptNorm` may land slightly
+negative for us where NNMFit clips it at its 0.0 range boundary (this framework has no bounds
+plumbing), and the two sides' random/fixed seeding means only the minimum is comparable, not the
+trajectory. Absolute likelihood values are not comparable either (see "Likelihood convention" above)
+— only differences between points are.
 
 ## Regenerating everything
 
