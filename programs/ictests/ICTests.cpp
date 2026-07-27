@@ -421,6 +421,8 @@ static void test_sort_into_bins_csr_invariant() {
   s.prompt_baseline.resize(N);
   s.prompt_alt.resize(N);
   for (auto& g : s.barr_conv) g.resize(N);
+  for (auto& v : s.veto_conv) v.resize(N);
+  for (auto& v : s.veto_prompt) v.resize(N);
   s.bin_idx = bins;
 
   for (std::size_t i = 0; i < N; ++i) {
@@ -433,6 +435,10 @@ static void test_sort_into_bins_csr_invariant() {
     s.prompt_alt[i]          = 500.0 + idx;     // offset 500
     for (int k = 0; k < params::ic::nBarrParams; ++k)
       s.barr_conv[k][i] = 1000.0 * (k + 1) + idx;  // offset 1000*(k+1)
+    for (int k = 0; k < 3; ++k) {
+      s.veto_conv[k][i]   = 5000.0 * (k + 1) + idx;  // offset 5000*(k+1)
+      s.veto_prompt[k][i] = 9000.0 * (k + 1) + idx;  // offset 9000*(k+1)
+    }
   }
 
   s.sort_into_bins(/*total_bins=*/4);
@@ -471,6 +477,10 @@ static void test_sort_into_bins_csr_invariant() {
     assert(std::abs(s.prompt_alt[i]      - s.e_true[i] - 500.0) < 1e-9);
     for (int k = 0; k < params::ic::nBarrParams; ++k)
       assert(std::abs(s.barr_conv[k][i] - s.e_true[i] - 1000.0 * (k + 1)) < 1e-9);
+    for (int k = 0; k < 3; ++k) {
+      assert(std::abs(s.veto_conv[k][i]   - s.e_true[i] - 5000.0 * (k + 1)) < 1e-9);
+      assert(std::abs(s.veto_prompt[k][i] - s.e_true[i] - 9000.0 * (k + 1)) < 1e-9);
+    }
   }
 
   // Explicit grouping check via the recorded permutation: sorted original

@@ -47,6 +47,14 @@ namespace io::ic {
     // NNMFit BarrLinear reweight: conv *= (1 + barr_k * barr_conv[k][i] / conv_baseline[i]).
     std::array<std::vector<double>, params::ic::nBarrParams> barr_conv;
 
+    // Veto passing-fraction coefficients, index order {a, b, c}: NNMFit expands
+    // log10(PF) to second order around 100 GeV per event and per component,
+    //   log10(PF_i) = a_i + b_i * e + c_i * e^2,
+    // with e set by the shared VetoThreshold parameter. Populated only for samples
+    // declaring the veto components.
+    std::array<std::vector<double>, 3> veto_conv;
+    std::array<std::vector<double>, 3> veto_prompt;
+
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;
@@ -98,6 +106,8 @@ namespace io::ic {
       reorder(prompt_baseline);
       reorder(prompt_alt);
       for (auto& grad : barr_conv) reorder(grad);
+      for (auto& coefficient : veto_conv) reorder(coefficient);
+      for (auto& coefficient : veto_prompt) reorder(coefficient);
       reorder(bin_idx);
 
       // CSR prefix sum over the now-sorted, valid events.

@@ -84,6 +84,15 @@ namespace io::ic {
       for (int k = 0; k < params::ic::nBarrParams; ++k) {
         ARROW_ASSIGN_OR_RAISE(out.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
       }
+
+      // Veto passing-fraction coefficients {a, b, c} per component. Dimensionless,
+      // so deliberately left out of the livetime scaling below.
+      if (cfg.wants_veto()) {
+        for (int k = 0; k < 3; ++k) {
+          ARROW_ASSIGN_OR_RAISE(out.veto_conv[k], get_double_column(*table, b.veto_conv[k]));
+          ARROW_ASSIGN_OR_RAISE(out.veto_prompt[k], get_double_column(*table, b.veto_prompt[k]));
+        }
+      }
     }
 
     // The MC weights are per-event rates (Hz); scale by the livetime so the

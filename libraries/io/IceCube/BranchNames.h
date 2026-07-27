@@ -28,6 +28,19 @@ namespace io::ic {
         "barr_w_mceq_H4a_SIBYLL23c",
         "barr_y_mceq_H4a_SIBYLL23c",
         "barr_z_mceq_H4a_SIBYLL23c"};
+
+    // Veto passing-fraction coefficients {a, b, c} of NNMFit's second-order
+    // log10(PF) expansion, one set per atmospheric component. Only read for
+    // samples that declare the veto components -- the tracks baseline parquet
+    // does not carry these columns.
+    std::array<std::string, 3> veto_conv = {
+        "log_PF_at100GeV_conv_a",
+        "log_PF_at100GeV_conv_b",
+        "log_PF_at100GeV_conv_c"};
+    std::array<std::string, 3> veto_prompt = {
+        "log_PF_at100GeV_pr_a",
+        "log_PF_at100GeV_pr_b",
+        "log_PF_at100GeV_pr_c"};
   };
 
 }  // namespace io::ic
