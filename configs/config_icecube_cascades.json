@@ -33,7 +33,6 @@
         "components": "astro, conventional_veto, prompt_veto, muon",
         "Template":  { "File": "/Users/soldin/Downloads/nnmfit_files/exported/template_cscd_cascade.txt", "Norm": "MuonGunNorm" },
         "Gradients": { "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_cascade.txt" },
-        "Oscillations": { "File": "/Users/soldin/Downloads/nnmfit_files/exported/osc_cscd_cascade.parquet" },
         "Branches":  { "RecoEnergy": "energy_monopod", "RecoZenith": "zenith_monopod" }
       },
       "cscd_muon": {
@@ -45,7 +44,6 @@
         "components": "astro, conventional_veto, prompt_veto, muon",
         "Template":  { "File": "/Users/soldin/Downloads/nnmfit_files/exported/template_cscd_muon.txt", "Norm": "MuonGunNorm" },
         "Gradients": { "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_muon.txt" },
-        "Oscillations": { "File": "/Users/soldin/Downloads/nnmfit_files/exported/osc_cscd_muon.parquet" },
         "Branches":  { "RecoEnergy": "energy_monopod", "RecoZenith": "zenith_monopod" }
       }
     }

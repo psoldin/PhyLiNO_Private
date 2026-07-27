@@ -65,9 +65,6 @@
         "Gradients": {
           "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_cascade.txt"
         },
-        "Oscillations": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/osc_cscd_cascade.parquet"
-        },
         "Branches": {
           "RecoEnergy": "energy_monopod",
           "RecoZenith": "zenith_monopod"
@@ -86,9 +83,6 @@
         },
         "Gradients": {
           "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_muon.txt"
-        },
-        "Oscillations": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/osc_cscd_muon.parquet"
         },
         "Branches": {
           "RecoEnergy": "energy_monopod",
