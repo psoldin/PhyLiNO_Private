@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ana::ic {
 
@@ -141,9 +143,25 @@ namespace ana::ic {
   double ICLikelihood::calculate_likelihood(const double* parameter) {
     m_Parameter.reset_parameter(parameter);
 
+    // Samples are independent (own flux components, own histograms; m_Parameter
+    // is only read after the reset above), so their partial_llh calls run
+    // concurrently. The shared GPU backend takes concurrent dispatches: its
+    // pipeline/buffer maps are only mutated during construction and the Metal
+    // command queue is thread-safe. Summing the futures in sample-index order
+    // keeps the result bit-identical to the sequential loop.
     double llh = 0.0;
-    for (auto& s : m_Samples)
-      llh += s->partial_llh(m_Parameter);
+    if (m_Samples.size() > 1) {
+      std::vector<std::future<double>> partial;
+      partial.reserve(m_Samples.size());
+      for (auto& s : m_Samples)
+        partial.push_back(std::async(std::launch::async,
+                                     [this, &s] { return s->partial_llh(m_Parameter); }));
+      for (auto& f : partial)
+        llh += f.get();
+    } else {
+      for (auto& s : m_Samples)
+        llh += s->partial_llh(m_Parameter);
+    }
     llh += calculate_pulls(m_Parameter);
 
     if (m_FirstCall) {

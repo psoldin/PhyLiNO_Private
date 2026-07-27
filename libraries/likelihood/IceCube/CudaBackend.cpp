@@ -198,6 +198,10 @@ namespace ana::ic {
                              const int   per_event,
                              const std::size_t n_groups) {
     auto* s = static_cast<CudaState*>(m_State);
+    // CUDA driver contexts are thread-local; dispatch() may run on a worker
+    // thread (ICLikelihood computes samples concurrently), so bind the backend's
+    // context here. Idempotent and cheap when it is already current.
+    cu_check(cuCtxSetCurrent(s->ctx), "cuCtxSetCurrent");
     CUfunction fn = s->funcs.at(std::string(name));
 
     // cuLaunchKernel wants an array of pointers to each argument. Kernel
