@@ -21,6 +21,8 @@ namespace ana::ic {
     double conv_delta_gamma_e_ref;
     double prompt_delta_gamma_e_ref;
     bool   astro_per_type_norm;
+    double veto_anchor_energy;
+    double veto_rescale_energy;
   };
 
   /**

@@ -51,6 +51,12 @@ namespace io::ic {
     [[nodiscard]] double conv_delta_gamma_e_ref() const noexcept { return m_ConvDeltaGammaERef; }
     [[nodiscard]] double prompt_delta_gamma_e_ref() const noexcept { return m_PromptDeltaGammaERef; }
 
+    // NNMFit effective_veto "additional" block: the passing-fraction expansion
+    // point and the scale the fit parameter is exponentiated against, in GeV.
+    // Shared by every veto-reweighted sample.
+    [[nodiscard]] double veto_anchor_energy() const noexcept { return m_VetoAnchorEnergy; }
+    [[nodiscard]] double veto_rescale_energy() const noexcept { return m_VetoRescaleEnergy; }
+
     // --- Scaffolded components (no-op until enabled AND a file is provided) ---
     [[nodiscard]] bool               use_muon_template() const noexcept { return m_UseMuonTemplate; }
     [[nodiscard]] const std::string& muon_template_file() const noexcept { return m_MuonTemplateFile; }
@@ -76,6 +82,9 @@ namespace io::ic {
 
     double m_ConvDeltaGammaERef   = 1000.0;
     double m_PromptDeltaGammaERef = 3800.0;
+
+    double m_VetoAnchorEnergy  = 100.0;
+    double m_VetoRescaleEnergy = 100.0;
 
     bool        m_UseMuonTemplate = false;
     std::string m_MuonTemplateFile;

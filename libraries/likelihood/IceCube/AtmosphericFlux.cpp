@@ -25,6 +25,8 @@ namespace ana::ic {
       float inv_eref_conv;
       float inv_eref_prompt;
       int   write_pe;
+      int   use_veto;
+      float veto_e;
     };
 
     // One group per analysis bin over the CSR-sorted sample. Buffer order matches
@@ -39,23 +41,31 @@ namespace ana::ic {
         float barr0; float barr1; float barr2; float barr3;
         float inv_eref_conv; float inv_eref_prompt;
         int write_pe;
+        int use_veto;
+        float veto_e;
       };
       constant uint kThreadsPerGroup = 256;
 
       kernel void atmo_hist(
-          device const float*  e_true      [[buffer(0)]],
-          device const float*  conv_base   [[buffer(1)]],
-          device const float*  conv_alt    [[buffer(2)]],
-          device const float*  prompt_base [[buffer(3)]],
-          device const float*  prompt_alt  [[buffer(4)]],
-          device const float*  barr0       [[buffer(5)]],
-          device const float*  barr1       [[buffer(6)]],
-          device const float*  barr2       [[buffer(7)]],
-          device const float*  barr3       [[buffer(8)]],
-          device const uint*   bin_offsets [[buffer(9)]],
-          constant AtmoParams& p           [[buffer(10)]],
-          device float*        hist        [[buffer(11)]],
-          device float*        per_event   [[buffer(12)]],
+          device const float*  e_true       [[buffer(0)]],
+          device const float*  conv_base    [[buffer(1)]],
+          device const float*  conv_alt     [[buffer(2)]],
+          device const float*  prompt_base  [[buffer(3)]],
+          device const float*  prompt_alt   [[buffer(4)]],
+          device const float*  barr0        [[buffer(5)]],
+          device const float*  barr1        [[buffer(6)]],
+          device const float*  barr2        [[buffer(7)]],
+          device const float*  barr3        [[buffer(8)]],
+          device const float*  veto_conv_a  [[buffer(9)]],
+          device const float*  veto_conv_b  [[buffer(10)]],
+          device const float*  veto_conv_c  [[buffer(11)]],
+          device const float*  veto_pr_a    [[buffer(12)]],
+          device const float*  veto_pr_b    [[buffer(13)]],
+          device const float*  veto_pr_c    [[buffer(14)]],
+          device const uint*   bin_offsets  [[buffer(15)]],
+          constant AtmoParams& p            [[buffer(16)]],
+          device float*        hist         [[buffer(17)]],
+          device float*        per_event    [[buffer(18)]],
           uint bin [[threadgroup_position_in_grid]],
           uint tid [[thread_position_in_threadgroup]])
       {
@@ -74,6 +84,11 @@ namespace ana::ic {
             cw *= 1.0f + p.barr2 * barr2[i] / cb;
             cw *= 1.0f + p.barr3 * barr3[i] / cb;
             cw *= p.conv_norm * pow(et * p.inv_eref_conv, -p.dg);
+            if (p.use_veto) {
+              const float log_pf = veto_conv_a[i] + veto_conv_b[i] * p.veto_e +
+                                   veto_conv_c[i] * p.veto_e * p.veto_e;
+              cw *= pow(10.0f, log_pf);
+            }
             event_total += cw;
           }
 
@@ -81,6 +96,11 @@ namespace ana::ic {
           if (pb > 0.0f) {
             float pw = pb + p.cr * (prompt_alt[i] - pb);
             pw *= p.prompt_norm * pow(et * p.inv_eref_prompt, -p.dg);
+            if (p.use_veto) {
+              const float log_pf = veto_pr_a[i] + veto_pr_b[i] * p.veto_e +
+                                   veto_pr_c[i] * p.veto_e * p.veto_e;
+              pw *= pow(10.0f, log_pf);
+            }
             event_total += pw;
           }
 
@@ -109,6 +129,8 @@ namespace ana::ic {
         float barr0; float barr1; float barr2; float barr3;
         float inv_eref_conv; float inv_eref_prompt;
         int write_pe;
+        int use_veto;
+        float veto_e;
       };
 
       extern "C" __global__ void atmo_hist(
@@ -121,6 +143,12 @@ namespace ana::ic {
           const float*        barr1,
           const float*        barr2,
           const float*        barr3,
+          const float*        veto_conv_a,
+          const float*        veto_conv_b,
+          const float*        veto_conv_c,
+          const float*        veto_pr_a,
+          const float*        veto_pr_b,
+          const float*        veto_pr_c,
           const unsigned int* bin_offsets,
           AtmoParams          p,
           float*              hist,
@@ -144,6 +172,11 @@ namespace ana::ic {
             cw *= 1.0f + p.barr2 * barr2[i] / cb;
             cw *= 1.0f + p.barr3 * barr3[i] / cb;
             cw *= p.conv_norm * powf(et * p.inv_eref_conv, -p.dg);
+            if (p.use_veto) {
+              const float log_pf = veto_conv_a[i] + veto_conv_b[i] * p.veto_e +
+                                   veto_conv_c[i] * p.veto_e * p.veto_e;
+              cw *= powf(10.0f, log_pf);
+            }
             event_total += cw;
           }
 
@@ -151,6 +184,11 @@ namespace ana::ic {
           if (pb > 0.0f) {
             float pw = pb + p.cr * (prompt_alt[i] - pb);
             pw *= p.prompt_norm * powf(et * p.inv_eref_prompt, -p.dg);
+            if (p.use_veto) {
+              const float log_pf = veto_pr_a[i] + veto_pr_b[i] * p.veto_e +
+                                   veto_pr_c[i] * p.veto_e * p.veto_e;
+              pw *= powf(10.0f, log_pf);
+            }
             event_total += pw;
           }
 
@@ -176,11 +214,17 @@ namespace ana::ic {
                                    const double                  conv_delta_gamma_e_ref,
                                    const double                  prompt_delta_gamma_e_ref,
                                    std::shared_ptr<GpuBackend>   gpu,
-                                   const bool                    need_per_event)
+                                   const bool                    need_per_event,
+                                   const bool                    use_veto,
+                                   const double                  veto_anchor_energy,
+                                   const double                  veto_rescale_energy)
     : m_Sample(sample)
     , m_ConvDeltaGammaERef(conv_delta_gamma_e_ref)
     , m_PromptDeltaGammaERef(prompt_delta_gamma_e_ref)
     , m_NeedPerEvent(need_per_event)
+    , m_UseVeto(use_veto)
+    , m_VetoAnchorEnergy(veto_anchor_energy)
+    , m_VetoRescaleEnergy(veto_rescale_energy)
     , m_Gpu(std::move(gpu)) {
     m_Histogram.assign(binning.total_bins(), 0.0);
     m_PerEventWeight.assign(sample.size(), 0.0);
@@ -196,6 +240,13 @@ namespace ana::ic {
       m_hPromptAlt  = m_Gpu->upload_column(sample.prompt_alt.data(), M);
       for (int k = 0; k < params::ic::nBarrParams; ++k)
         m_hBarr[k] = m_Gpu->upload_column(sample.barr_conv[k].data(), M);
+      // Every kernel argument must be bound even when unread (Metal faults on an
+      // unbound buffer it might touch); a sample without veto columns binds
+      // e_true's already-uploaded handle instead of allocating dead buffers.
+      for (int k = 0; k < 3; ++k) {
+        m_hVetoConv[k]   = m_UseVeto ? m_Gpu->upload_column(sample.veto_conv[k].data(), M) : m_hETrue;
+        m_hVetoPrompt[k] = m_UseVeto ? m_Gpu->upload_column(sample.veto_prompt[k].data(), M) : m_hETrue;
+      }
       m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
       m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
       m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
@@ -218,10 +269,15 @@ namespace ana::ic {
     p.inv_eref_conv   = static_cast<float>(1.0 / m_ConvDeltaGammaERef);
     p.inv_eref_prompt = static_cast<float>(1.0 / m_PromptDeltaGammaERef);
     p.write_pe        = m_NeedPerEvent ? 1 : 0;
+    p.use_veto        = m_UseVeto ? 1 : 0;
+    p.veto_e          = static_cast<float>(
+        m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0);
 
-    const int inputs[] = {m_hETrue,      m_hConvBase, m_hConvAlt,  m_hPromptBase, m_hPromptAlt,
-                          m_hBarr[0],    m_hBarr[1],  m_hBarr[2],  m_hBarr[3],    m_hOffsets};
-    m_Gpu->dispatch("atmo_hist", inputs, 10, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
+    const int inputs[] = {m_hETrue,        m_hConvBase,      m_hConvAlt,       m_hPromptBase,
+                          m_hPromptAlt,    m_hBarr[0],       m_hBarr[1],       m_hBarr[2],
+                          m_hBarr[3],      m_hVetoConv[0],   m_hVetoConv[1],   m_hVetoConv[2],
+                          m_hVetoPrompt[0], m_hVetoPrompt[1], m_hVetoPrompt[2], m_hOffsets};
+    m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
 
     const float* hist = m_Gpu->contents(m_hHist);
     for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
@@ -254,6 +310,11 @@ namespace ana::ic {
     const auto& e_true = m_Sample.e_true;
     const int   n_bins = static_cast<int>(m_Histogram.size());
 
+    // NNMFit VetoThreshold: the energy offset is scalar per evaluation; only the
+    // second-order coefficients are per event.
+    const double veto_e =
+        m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0;
+
     #pragma omp parallel for
     for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
@@ -269,6 +330,11 @@ namespace ana::ic {
           for (int k = 0; k < nBarrParams; ++k)
             conv_w *= 1.0 + barr[k] * m_Sample.barr_conv[k][i] / conv_base;
           conv_w *= conv_norm * std::pow(e_true[i] / m_ConvDeltaGammaERef, -dg);
+          if (m_UseVeto) {
+            const double log_pf = m_Sample.veto_conv[0][i] + m_Sample.veto_conv[1][i] * veto_e +
+                                  m_Sample.veto_conv[2][i] * veto_e * veto_e;
+            conv_w *= std::pow(10.0, log_pf);
+          }
           event_total += conv_w;
         }
 
@@ -277,6 +343,11 @@ namespace ana::ic {
         if (prompt_base > 0.0) {
           double prompt_w = prompt_base + cr * (m_Sample.prompt_alt[i] - prompt_base);
           prompt_w *= prompt_norm * std::pow(e_true[i] / m_PromptDeltaGammaERef, -dg);
+          if (m_UseVeto) {
+            const double log_pf = m_Sample.veto_prompt[0][i] + m_Sample.veto_prompt[1][i] * veto_e +
+                                  m_Sample.veto_prompt[2][i] * veto_e * veto_e;
+            prompt_w *= std::pow(10.0, log_pf);
+          }
           event_total += prompt_w;
         }
 
@@ -294,7 +365,8 @@ namespace ana::ic {
         | parameter.check_parameter_changed(PromptNorm)
         | parameter.check_parameter_changed(CRGrad)
         | parameter.check_parameter_changed(DeltaGamma)
-        | parameter.check_parameter_changed(BarrH, BarrZ);
+        | parameter.check_parameter_changed(BarrH, BarrZ)
+        | (m_UseVeto && parameter.check_parameter_changed(VetoThreshold));
 
     if (changed)
       recalculate(parameter);

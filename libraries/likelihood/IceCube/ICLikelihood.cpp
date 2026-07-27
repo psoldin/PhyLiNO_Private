@@ -58,6 +58,8 @@ namespace ana::ic {
         .conv_delta_gamma_e_ref   = input_options.conv_delta_gamma_e_ref(),
         .prompt_delta_gamma_e_ref = input_options.prompt_delta_gamma_e_ref(),
         .astro_per_type_norm      = input_options.astro_per_type_norm(),
+        .veto_anchor_energy       = input_options.veto_anchor_energy(),
+        .veto_rescale_energy      = input_options.veto_rescale_energy(),
     };
 
     // ICDataBase loaded the enabled configs in config order, using the same

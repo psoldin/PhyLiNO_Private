@@ -557,7 +557,9 @@ static ana::ic::GlobalFluxSettings synthetic_settings() {
                                      .astro_reference_index    = 2.0,
                                      .conv_delta_gamma_e_ref   = 1.0e3,
                                      .prompt_delta_gamma_e_ref = 3.8e3,
-                                     .astro_per_type_norm      = false};
+                                     .astro_per_type_norm      = false,
+                                     .veto_anchor_energy       = 100.0,
+                                     .veto_rescale_energy      = 100.0};
 }
 
 // Nominal parameter values mirror configs/config_icecube_tracks_cpu.json's
@@ -694,6 +696,93 @@ static void test_sample_likelihood_component_masking() {
   assert(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
 }
 
+// The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
+//   e  = rescale * 10^p - anchor        (both 100 GeV in the combined config)
+//   PF = 10^(a + b*e + c*e^2)           per event, per component
+// applied multiplicatively to the conventional and prompt weights. Checked here
+// against the same formula evaluated by hand on a one-bin sample, and against the
+// invariant that veto-off reproduces the un-vetoed prediction exactly.
+static void test_veto_reweight() {
+  using ana::ic::AtmosphericFlux;
+  using ana::ParameterWrapper;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  assert(binning.total_bins() == 1);
+
+  // Two events in the single bin, no Barr slopes and conv_alt == conv_base, so the
+  // un-vetoed weight is exactly conv_base * ConvNorm + prompt_base * PromptNorm at
+  // DeltaGamma = 0 and e_true == the delta-gamma reference energy.
+  io::ic::ICSample sample;
+  const double     conv[2]   = {2.0, 3.0};
+  const double     prompt[2] = {0.5, 0.25};
+  const double     a_conv[2] = {-0.30, -0.20};
+  const double     b_conv[2] = {-1.0e-3, -2.0e-3};
+  const double     c_conv[2] = {1.0e-6, 2.0e-6};
+  const double     a_pr[2]   = {-0.10, -0.05};
+  const double     b_pr[2]   = {-5.0e-4, -1.0e-3};
+  const double     c_pr[2]   = {5.0e-7, 1.0e-6};
+
+  for (int i = 0; i < 2; ++i) {
+    sample.e_true.push_back(1000.0);
+    sample.astro_baseline.push_back(0.0);
+    sample.conv_baseline.push_back(conv[i]);
+    sample.conv_alt.push_back(conv[i]);
+    sample.prompt_baseline.push_back(prompt[i]);
+    sample.prompt_alt.push_back(prompt[i]);
+    for (int k = 0; k < params::ic::nBarrParams; ++k) sample.barr_conv[k].push_back(0.0);
+    sample.veto_conv[0].push_back(a_conv[i]);
+    sample.veto_conv[1].push_back(b_conv[i]);
+    sample.veto_conv[2].push_back(c_conv[i]);
+    sample.veto_prompt[0].push_back(a_pr[i]);
+    sample.veto_prompt[1].push_back(b_pr[i]);
+    sample.veto_prompt[2].push_back(c_pr[i]);
+    sample.bin_idx.push_back(0);
+  }
+  sample.sort_into_bins(binning.total_bins());
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::ConvNorm]   = 1.0;
+  values[params::ic::PromptNorm] = 1.0;
+
+  auto histogram_at = [&](const bool use_veto, const double veto_threshold) {
+    AtmosphericFlux flux(sample, binning, /*conv_e_ref=*/1000.0, /*prompt_e_ref=*/1000.0,
+                         /*gpu=*/nullptr, /*need_per_event=*/false,
+                         /*use_veto=*/use_veto, /*veto_anchor_energy=*/100.0,
+                         /*veto_rescale_energy=*/100.0);
+    std::vector<double> v = values;
+    v[params::ic::VetoThreshold] = veto_threshold;
+    ParameterWrapper p(params::ic::number_of_parameters());
+    p.reset_parameter(v.data());
+    flux.check_and_recalculate(p);
+    return flux.histogram()[0];
+  };
+
+  // Reference: the NNMFit formula, evaluated in double precision here.
+  auto reference = [&](const bool use_veto, const double veto_threshold) {
+    const double e     = 100.0 * std::pow(10.0, veto_threshold) - 100.0;
+    double       total = 0.0;
+    for (int i = 0; i < 2; ++i) {
+      double conv_w   = conv[i];
+      double prompt_w = prompt[i];
+      if (use_veto) {
+        conv_w *= std::pow(10.0, a_conv[i] + b_conv[i] * e + c_conv[i] * e * e);
+        prompt_w *= std::pow(10.0, a_pr[i] + b_pr[i] * e + c_pr[i] * e * e);
+      }
+      total += conv_w + prompt_w;
+    }
+    return total;
+  };
+
+  const double unvetoed = reference(false, 0.0);
+  assert(std::abs(histogram_at(false, 0.0) - unvetoed) < 1e-12 * unvetoed);
+  for (double p : {0.0, 0.5, -0.5, 1.301, -1.301})
+    assert(std::abs(histogram_at(true, p) - reference(true, p)) < 1e-12 * unvetoed);
+  // The veto suppresses the flux, and its parameter actually triggers a recalculation.
+  assert(histogram_at(true, 0.0) < histogram_at(false, 0.0));
+  assert(histogram_at(true, 1.0) != histogram_at(true, 0.0));
+}
+
 // Guards against the whole suite silently becoming a no-op: if NDEBUG ever wins
 // again, assert() expands to nothing, `live` stays false and this reports it
 // instead of printing "all passed".
@@ -722,6 +811,7 @@ int main() {
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();
   test_sample_likelihood_component_masking();
+  test_veto_reweight();
   std::puts("ICTests: all passed");
   return 0;
 }

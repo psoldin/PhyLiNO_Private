@@ -30,6 +30,16 @@ namespace ana::ic {
    *            * PromptNorm
    *            * (E_true_i / prompt_e_ref)^(-DeltaGamma)
    *
+   * When use_veto is set (the cascade samples), both conv_i and prompt_i also
+   * carry NNMFit's passing-fraction reweight (parameters/veto_threshold.py):
+   *   e        = veto_rescale_energy * 10^VetoThreshold - veto_anchor_energy   (both 100 GeV)
+   *   PF_i     = 10^(veto_a_i + veto_b_i * e + veto_c_i * e^2)
+   *   conv_i   *= PF_conv_i
+   *   prompt_i *= PF_prompt_i
+   * `e` is a scalar per evaluation; only the six per-event coefficients differ per
+   * event. The tracks sample runs with use_veto = false and is bit-for-bit
+   * unaffected (the veto columns are never read for it, see ICDataBase).
+   *
    * The histogram holds conv_i + prompt_i summed per analysis bin. When a
    * GpuBackend is supplied the per-event loop runs on the GPU; otherwise the
    * CPU OMP+SIMD path is used (and serves as the validation oracle).
@@ -40,8 +50,11 @@ namespace ana::ic {
                     const io::ic::Binning&        binning,
                     double                        conv_delta_gamma_e_ref,
                     double                        prompt_delta_gamma_e_ref,
-                    std::shared_ptr<GpuBackend>   gpu            = nullptr,
-                    bool                          need_per_event = false);
+                    std::shared_ptr<GpuBackend>   gpu                 = nullptr,
+                    bool                          need_per_event      = false,
+                    bool                          use_veto            = false,
+                    double                        veto_anchor_energy  = 100.0,
+                    double                        veto_rescale_energy = 100.0);
     ~AtmosphericFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -62,6 +75,9 @@ namespace ana::ic {
     double                  m_ConvDeltaGammaERef;
     double                  m_PromptDeltaGammaERef;
     bool                    m_NeedPerEvent;
+    bool                    m_UseVeto;
+    double                  m_VetoAnchorEnergy;
+    double                  m_VetoRescaleEnergy;
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
@@ -74,6 +90,8 @@ namespace ana::ic {
     int                                              m_hPromptBase = -1;
     int                                              m_hPromptAlt  = -1;
     std::array<int, params::ic::nBarrParams>         m_hBarr{};
+    std::array<int, 3>                               m_hVetoConv{};
+    std::array<int, 3>                               m_hVetoPrompt{};
     int                                              m_hOffsets    = -1;
     int                                              m_hHist       = -1;
     int                                              m_hPerEvent   = -1;

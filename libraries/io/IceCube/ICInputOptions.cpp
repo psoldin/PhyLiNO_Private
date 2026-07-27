@@ -40,6 +40,9 @@ namespace io::ic {
     m_ConvDeltaGammaERef   = ic.get<double>("ConvDeltaGammaERef", m_ConvDeltaGammaERef);
     m_PromptDeltaGammaERef = ic.get<double>("PromptDeltaGammaERef", m_PromptDeltaGammaERef);
 
+    m_VetoAnchorEnergy  = ic.get<double>("VetoAnchorEnergy", m_VetoAnchorEnergy);
+    m_VetoRescaleEnergy = ic.get<double>("VetoRescaleEnergy", m_VetoRescaleEnergy);
+
     m_UseMuonTemplate        = ic.get<bool>("UseMuonTemplate", false);
     m_MuonTemplateFile       = ic.get<std::string>("MuonTemplateFile", "");
     m_UseDetectorSystematics = ic.get<bool>("UseDetectorSystematics", false);

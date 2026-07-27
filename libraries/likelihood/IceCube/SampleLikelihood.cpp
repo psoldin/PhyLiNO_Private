@@ -62,7 +62,10 @@ namespace ana::ic {
                      settings.conv_delta_gamma_e_ref,
                      settings.prompt_delta_gamma_e_ref,
                      gpu,
-                     use_say);
+                     use_say,
+                     cfg.wants_veto(),
+                     settings.veto_anchor_energy,
+                     settings.veto_rescale_energy);
 
     const int total_bins = cfg.binning.total_bins();
     m_Predicted.assign(total_bins, 0.0);
