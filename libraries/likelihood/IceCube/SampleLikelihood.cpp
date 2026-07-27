@@ -67,6 +67,9 @@ namespace ana::ic {
                      settings.veto_anchor_energy,
                      settings.veto_rescale_energy);
 
+    if (cfg.wants_template())
+      m_Template.emplace(cfg.binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
+
     const int total_bins = cfg.binning.total_bins();
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
@@ -77,14 +80,17 @@ namespace ana::ic {
     bool changed = false;
     if (m_Astro) changed |= m_Astro->check_and_recalculate(parameter);
     if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
+    if (m_Template) changed |= m_Template->check_and_recalculate(parameter);
 
     const std::span<const double> astro = m_Astro ? m_Astro->histogram() : std::span<const double>{};
     const std::span<const double> atmo  = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
+    const std::span<const double> tmpl  = m_Template ? m_Template->histogram() : std::span<const double>{};
 
     for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) {
       double total = 0.0;
       if (!astro.empty()) total += astro[b];
       if (!atmo.empty()) total += atmo[b];
+      if (!tmpl.empty()) total += tmpl[b];
       // Clip at zero to avoid unphysical predictions (matches NNMFit mu clip).
       m_Predicted[b] = std::max(0.0, total);
     }
@@ -123,6 +129,15 @@ namespace ana::ic {
       accumulate([&](const std::size_t i) { return astro[i]; });
     else if (!atmo.empty())
       accumulate([&](const std::size_t i) { return atmo[i]; });
+    else
+      std::ranges::fill(m_Ssq, 0.0);
+
+    // Histogram-level fluctuation from the template component, added after the
+    // per-event sum (NNMFit: ssq += (hist_fluctuation * livetime)**2).
+    if (m_Template) {
+      const std::span<const double> tmpl_ssq = m_Template->fluctuation();
+      for (int b = 0; b < n_bins; ++b) m_Ssq[b] += tmpl_ssq[b];
+    }
   }
 
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {

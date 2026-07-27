@@ -6,6 +6,7 @@
 #include "AtmosphericFlux.h"
 #include "GpuBackend.h"
 #include "PowerlawFlux.h"
+#include "TemplateFlux.h"
 
 #include <memory>
 #include <optional>
@@ -65,6 +66,7 @@ namespace ana::ic {
     // columns of an absent component were never read (see ICDataBase).
     std::optional<PowerlawFlux>    m_Astro;
     std::optional<AtmosphericFlux> m_Atmo;
+    std::optional<TemplateFlux>    m_Template;
 
     std::vector<double> m_Predicted;
     std::vector<double> m_Data;

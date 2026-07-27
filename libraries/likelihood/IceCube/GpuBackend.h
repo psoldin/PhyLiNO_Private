@@ -20,7 +20,7 @@ namespace ana::ic {
    * bin_offsets, ...) are uploaded once.
    *
    * Only per-event-reduce-to-histogram components belong on a backend. Per-bin
-   * components (MuonTemplate, DetectorSystematics: O(nBins) work) stay on the
+   * components (TemplateFlux, DetectorSystematics: O(nBins) work) stay on the
    * CPU; GPU launch overhead would exceed their compute.
    *
    * Buffer-binding convention every kernel must follow: inputs at indices

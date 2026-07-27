@@ -17,8 +17,8 @@ set(files
     AtmosphericFlux.cpp
     DetectorSystematics.h
     DetectorSystematics.cpp
-    MuonTemplate.h
-    MuonTemplate.cpp
+    TemplateFlux.h
+    TemplateFlux.cpp
     SAYLikelihood.h
     SAYLikelihood.cpp
     SampleLikelihood.h

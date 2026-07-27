@@ -17,7 +17,7 @@ namespace ana::ic {
    * available()==false so the library builds and links everywhere.
    *
    * Only per-event-reduce-to-histogram components belong here. Per-bin
-   * components (MuonTemplate, DetectorSystematics: O(nBins) work) stay on the
+   * components (TemplateFlux, DetectorSystematics: O(nBins) work) stay on the
    * CPU; GPU launch overhead would exceed their compute.
    *
    * Usage (one backend shared by every component):

@@ -43,12 +43,8 @@ namespace io::ic {
     m_VetoAnchorEnergy  = ic.get<double>("VetoAnchorEnergy", m_VetoAnchorEnergy);
     m_VetoRescaleEnergy = ic.get<double>("VetoRescaleEnergy", m_VetoRescaleEnergy);
 
-    m_UseMuonTemplate        = ic.get<bool>("UseMuonTemplate", false);
-    m_MuonTemplateFile       = ic.get<std::string>("MuonTemplateFile", "");
     m_UseDetectorSystematics = ic.get<bool>("UseDetectorSystematics", false);
     m_DetectorGradientFile   = ic.get<std::string>("DetectorGradientFile", "");
-    m_UseOscillation         = ic.get<bool>("UseOscillation", false);
-    m_OscillationSplineFile  = ic.get<std::string>("OscillationSplineFile", "");
 
     // The samples (with their binnings, branch names and components) drive the
     // whole fit path: ICModule hands samples() to ICDataBase, which loads the

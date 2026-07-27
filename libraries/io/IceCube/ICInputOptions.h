@@ -58,12 +58,8 @@ namespace io::ic {
     [[nodiscard]] double veto_rescale_energy() const noexcept { return m_VetoRescaleEnergy; }
 
     // --- Scaffolded components (no-op until enabled AND a file is provided) ---
-    [[nodiscard]] bool               use_muon_template() const noexcept { return m_UseMuonTemplate; }
-    [[nodiscard]] const std::string& muon_template_file() const noexcept { return m_MuonTemplateFile; }
     [[nodiscard]] bool               use_detector_systematics() const noexcept { return m_UseDetectorSystematics; }
     [[nodiscard]] const std::string& detector_gradient_file() const noexcept { return m_DetectorGradientFile; }
-    [[nodiscard]] bool               use_oscillation() const noexcept { return m_UseOscillation; }
-    [[nodiscard]] const std::string& oscillation_spline_file() const noexcept { return m_OscillationSplineFile; }
 
     // Analysis samples in config order, each with its own binning, parquet,
     // livetime, branch names and component list (see parse_samples() in
@@ -86,12 +82,8 @@ namespace io::ic {
     double m_VetoAnchorEnergy  = 100.0;
     double m_VetoRescaleEnergy = 100.0;
 
-    bool        m_UseMuonTemplate = false;
-    std::string m_MuonTemplateFile;
     bool        m_UseDetectorSystematics = false;
     std::string m_DetectorGradientFile;
-    bool        m_UseOscillation = false;
-    std::string m_OscillationSplineFile;
 
     std::vector<SampleConfig> m_Samples;
   };

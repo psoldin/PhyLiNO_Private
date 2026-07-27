@@ -10,6 +10,7 @@
 #include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
 #include "SampleLikelihood.h"
+#include "TemplateFlux.h"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -827,6 +829,72 @@ static void test_veto_reweight() {
   assert(histogram_at(true, 1.0) != histogram_at(true, 0.0));
 }
 
+// A muon template is a per-bin rate plus a per-bin fluctuation; the component
+// scales both by its norm parameter and the sample livetime, matching NNMFit
+// (histogram_builder: ssq += (hist_fluctuation * livetime)**2).
+static void test_template_flux() {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  assert(binning.total_bins() == 3);
+
+  const std::string path = "ictests_template.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 3\n";
+    out << "# columns: template_rate fluctuation_rate (both per second)\n";
+    out << "1.0e-6 2.0e-7\n";
+    out << "2.0e-6 3.0e-7\n";
+    out << "4.0e-6 5.0e-7\n";
+  }
+
+  const double livetime = 3.0e8;
+  TemplateFlux flux(binning, path, params::ic::MuonGunNorm, livetime);
+  std::remove(path.c_str());
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::MuonGunNorm] = 2.0;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  assert(flux.check_and_recalculate(parameter));
+
+  const double rates[3]  = {1.0e-6, 2.0e-6, 4.0e-6};
+  const double sigmas[3] = {2.0e-7, 3.0e-7, 5.0e-7};
+  for (int b = 0; b < 3; ++b) {
+    const double mu  = 2.0 * rates[b] * livetime;
+    const double ssq = (2.0 * sigmas[b] * livetime) * (2.0 * sigmas[b] * livetime);
+    assert(std::abs(flux.histogram()[b] - mu) < 1e-9 * mu);
+    assert(std::abs(flux.fluctuation()[b] - ssq) < 1e-9 * ssq);
+  }
+
+  // Unchanged parameters must not trigger a recalculation. check_parameter_changed
+  // compares against the set from the last reset_parameter() call, not against
+  // what check_and_recalculate last saw -- so "unchanged" has to be established by
+  // resetting to the same values again, exactly as ICLikelihood::calculate_likelihood
+  // resets the shared ParameterWrapper once per evaluation.
+  parameter.reset_parameter(values.data());
+  assert(!flux.check_and_recalculate(parameter));
+
+  // A template whose bin count disagrees with the binning is a hard error: it
+  // would otherwise silently mis-assign every bin.
+  const std::string bad = "ictests_template_bad.txt";
+  {
+    std::ofstream out(bad);
+    out << "# template bins 2\n1.0 0.1\n2.0 0.2\n";
+  }
+  bool threw = false;
+  try {
+    TemplateFlux mismatched(binning, bad, params::ic::MuonGunNorm, livetime);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  std::remove(bad.c_str());
+  assert(threw);
+}
+
 // Guards against the whole suite silently becoming a no-op: if NDEBUG ever wins
 // again, assert() expands to nothing, `live` stays false and this reports it
 // instead of printing "all passed".
@@ -857,6 +925,7 @@ int main() {
   test_sample_likelihood_asimov_is_minimum();
   test_sample_likelihood_component_masking();
   test_veto_reweight();
+  test_template_flux();
   std::puts("ICTests: all passed");
   return 0;
 }

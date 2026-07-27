@@ -45,10 +45,6 @@ namespace ana::ic {
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(make_gpu_backend(input_options.backend_kind())) {
-    if (input_options.use_oscillation())
-      std::cout << "ICLikelihood: OscillationsHook configured but not yet implemented; "
-                   "atmospheric baselines are used un-oscillated (no-op).\n";
-
     const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
     std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";
 
