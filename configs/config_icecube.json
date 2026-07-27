@@ -33,8 +33,12 @@
     { "Name": "CRGrad",        "StartValue": 0.0, "StepWidth": 1.0,  "Fixed": false, "Constrained": true  },
     { "Name": "DeltaGamma",    "StartValue": 0.0, "StepWidth": 0.05, "Fixed": false, "Constrained": true  },
     { "Name": "MuonNorm",      "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "MuonGunNorm",   "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "VetoThreshold", "StartValue": 0.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
     { "Name": "DOMEff",        "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
     { "Name": "IceAbs",        "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
-    { "Name": "IceScat",       "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false }
+    { "Name": "IceScat",       "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
+    { "Name": "HoleIceP0",     "StartValue": 0.24901831812365854,  "StepWidth": 0.05, "Fixed": true, "Constrained": false },
+    { "Name": "HoleIceP1",     "StartValue": -0.05678798504997925, "StepWidth": 0.02, "Fixed": true, "Constrained": false }
   ]
 }

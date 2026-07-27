@@ -124,6 +124,23 @@ static void test_mixed_binning_cascade_grid() {
   assert(muon.bin_index(too_soft) == -1);
 }
 
+// The parameter layout is the contract between the config's "Parameter" array, the
+// Minuit index array and every component that reads a fixed index, so pin down the
+// count and the two contiguous blocks components index into.
+static void test_parameter_layout() {
+  using namespace params::ic;
+  assert(number_of_parameters() == 18);
+  assert(nBarrParams == 4);
+  assert(nDetSysParams == 5);
+  // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
+  assert(BarrW == BarrH + 1 && BarrY == BarrH + 2 && BarrZ == BarrH + 3);
+  // Detector block, contiguous in the order the exported gradient file uses.
+  assert(IceAbs == DOMEff + 1 && IceScat == DOMEff + 2);
+  assert(HoleIceP0 == DOMEff + 3 && HoleIceP1 == DOMEff + 4);
+  // The two template norms are distinct: tracks Corsika vs cascade MuonGun.
+  assert(MuonNorm != MuonGunNorm);
+}
+
 // Exercises the real io::ic::parse_samples() (declared in SampleConfig.h,
 // implemented in SampleConfig.cpp) against an in-memory JSON config, tolerant
 // "Binnings" + "Samples" parser added in Task 3. One binning shared by two
@@ -589,6 +606,7 @@ int main() {
   test_parse_axis_spec();
   test_non_uniform_axis_index();
   test_mixed_binning_cascade_grid();
+  test_parameter_layout();
   test_parse_samples();
   test_parse_samples_rejects_bad_components();
   test_enabled_sample_indices();

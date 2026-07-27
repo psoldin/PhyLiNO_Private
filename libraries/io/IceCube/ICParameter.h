@@ -18,11 +18,14 @@ namespace params::ic {
    *   Shared atmo nuisances: CRGrad, DeltaGamma  (one shared param each, applied
    *                          to both conv and prompt, matching the YAML anchors)
    *
-   * The trailing block is scaffolding for components whose input files are not
-   * present in the repo/parquet yet (gated by config flags, no-op until loaded):
-   *   MuonNorm  -> muontemplate (Corsika muon template pickle)
-   *   DOMEff, IceAbs, IceScat -> SnowStorm detector-gradient systematics pickle
-   * Keep these Fixed in the config while their component is disabled.
+   * The trailing block covers the per-sample components (a sample builds only what
+   * its config declares, so these are Fixed in a config whose samples do not use
+   * them):
+   *   MuonNorm     -> muontemplate, the Corsika muon template (tracks)
+   *   MuonGunNorm  -> muon, the MuonGun template (cascade samples)
+   *   VetoThreshold-> effective_veto, shared by every veto-reweighted sample
+   *   DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -> SnowStorm detector gradients
+   *     (shared parameter names; the gradient file itself is per sample)
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -41,11 +44,19 @@ namespace params::ic {
     DeltaGamma,               // atmospheric spectral tilt, shared conv+prompt
     _last_of_Flux_,
 
-    // --- scaffolded systematics (no-op unless the component's file + flag are set) ---
-    MuonNorm = _last_of_Flux_,  // atmospheric muon template normalization
-    DOMEff,                     // DOM efficiency (SnowStorm gradient)
-    IceAbs,                     // bulk ice absorption (SnowStorm gradient)
-    IceScat,                    // bulk ice scattering (SnowStorm gradient)
+    // --- muon templates: one norm per template kind, a sample declares at most one ---
+    MuonNorm = _last_of_Flux_,  // Corsika muon template normalization (tracks)
+    MuonGunNorm,                // MuonGun template normalization (cascade samples)
+
+    // --- veto (NNMFit effective_veto): shared by every veto-reweighted sample ---
+    VetoThreshold,
+
+    // --- SnowStorm detector gradients, in the order the exported gradient file uses ---
+    DOMEff,     // DOM efficiency
+    IceAbs,     // bulk ice absorption
+    IceScat,    // bulk ice scattering
+    HoleIceP0,  // hole-ice forward p0
+    HoleIceP1,  // hole-ice forward p1
     _last_of_General_
   };
 
@@ -53,7 +64,7 @@ namespace params::ic {
     static_cast<int>(_last_of_Barr_) - static_cast<int>(BarrH);  // = 4 (H, W, Y, Z)
 
   inline constexpr int nDetSysParams =
-    static_cast<int>(_last_of_General_) - static_cast<int>(DOMEff);  // = 3 (DOMEff, IceAbs, IceScat)
+    static_cast<int>(_last_of_General_) - static_cast<int>(DOMEff);  // = 5
 
   constexpr int number_of_general_parameters() noexcept {
     return static_cast<int>(_last_of_General_);
@@ -64,7 +75,10 @@ namespace params::ic {
   }
 
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
-  static_assert(number_of_parameters() == 14,
-    "10 flux/atmo params + MuonNorm + 3 detector params. Update config + this if the layout changes.");
+  static_assert(nDetSysParams == 5,
+    "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
+  static_assert(number_of_parameters() == 18,
+    "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params. "
+    "Update every config's Parameter array and this if the layout changes.");
 
 }  // namespace params::ic
