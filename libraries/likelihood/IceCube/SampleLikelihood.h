@@ -58,6 +58,20 @@ namespace ana::ic {
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
 
+    /** Per-bin prediction of one named part of this sample, for the results writer. */
+    [[nodiscard]] std::span<const double> astro_histogram() const noexcept {
+      return m_Astro ? m_Astro->histogram() : std::span<const double>{};
+    }
+    [[nodiscard]] std::span<const double> atmospheric_histogram() const noexcept {
+      return m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
+    }
+    [[nodiscard]] std::span<const double> template_histogram() const noexcept {
+      return m_Template ? m_Template->histogram() : std::span<const double>{};
+    }
+    [[nodiscard]] std::span<const double> systematics_mu_delta() const noexcept {
+      return m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
+    }
+
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;

@@ -32,7 +32,7 @@
     { "Name": "BarrZ",         "StartValue": 0.0, "StepWidth": 0.05, "PriorValue": 0.0, "PriorWidth": 0.12, "Fixed": false, "Constrained": true  },
     { "Name": "CRGrad",        "StartValue": 0.0, "StepWidth": 0.1,  "PriorValue": 0.0, "PriorWidth": 1.0,  "Fixed": false, "Constrained": true  },
     { "Name": "DeltaGamma",    "StartValue": 0.0, "StepWidth": 0.05, "Fixed": false, "Constrained": false },
-    { "Name": "MuonNorm",      "StartValue": 1.0, "StepWidth": 0.1,  "PriorValue": 1.0, "PriorWidth": 0.5,  "Fixed": true,  "Constrained": false },
+    { "Name": "MuonNorm",      "StartValue": 1.0, "StepWidth": 0.1,  "PriorValue": 1.0, "PriorWidth": 0.5,  "Fixed": true,  "Constrained": true },
     { "Name": "MuonGunNorm",   "StartValue": 1.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
     { "Name": "VetoThreshold", "StartValue": 0.0, "StepWidth": 0.1,  "Fixed": true,  "Constrained": false },
     { "Name": "DOMEff",        "StartValue": 1.0, "StepWidth": 0.02, "Fixed": true,  "Constrained": false },

@@ -64,6 +64,35 @@ namespace result::ic {
                         {"nBins", axis.n_bins}});
       }
 
+      // Per-component breakdown, both summed and per-bin: a mis-scaled template
+      // or gradient is visible here instead of hidden inside the sample total.
+      // The atmospheric component is keyed by whichever variant the sample
+      // actually declared, so a diff against an external reference (e.g. NNMFit)
+      // can tell a veto-reweighted sample from a plain one.
+      auto sum_of = [](const std::span<const double> values) {
+        double total = 0.0;
+        for (const double v : values) total += v;
+        return total;
+      };
+      const std::string atmo_key = config.wants_veto() ? "atmospheric_veto" : "atmospheric";
+
+      nlohmann::json component_totals = {
+          {"astro", sum_of(sample.astro_histogram())},
+          {atmo_key, sum_of(sample.atmospheric_histogram())},
+          {"template", sum_of(sample.template_histogram())},
+          {"systematicsDelta", sum_of(sample.systematics_mu_delta())},
+      };
+
+      auto as_vector = [](const std::span<const double> values) {
+        return std::vector<double>(values.begin(), values.end());
+      };
+      nlohmann::json component_bins = {
+          {"astro", as_vector(sample.astro_histogram())},
+          {atmo_key, as_vector(sample.atmospheric_histogram())},
+          {"template", as_vector(sample.template_histogram())},
+          {"systematicsDelta", as_vector(sample.systematics_mu_delta())},
+      };
+
       j["samples"].push_back({
           {"name", config.name},
           {"components", config.components},
@@ -74,6 +103,8 @@ namespace result::ic {
           {"prediction", std::vector<double>(predicted.begin(), predicted.end())},
           {"dataTotal", sample_data_total},
           {"predTotal", sample_pred_total},
+          {"componentTotals", std::move(component_totals)},
+          {"componentBins", std::move(component_bins)},
       });
     }
 

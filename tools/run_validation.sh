@@ -17,11 +17,17 @@
 # The IceCube part needs Output.ic_baseline.json, which is deliberately untracked, generated the
 # same way from configs/config_icecube_tracks_cpu.json. Without it that part is skipped.
 #
+# The IceCube cascade part is the same idea for configs/config_icecube_cascades.json and
+# Output.ic_cascades_baseline.json (also untracked; needs the local NNMFit input files under
+# ~/Downloads/nnmfit_files, so it is expected to skip on a machine without them).
+#
 # Usage: tools/run_validation.sh [--no-build]
-#   DC_CONFIG   path to the Double Chooz config   (default ../PhyLiNO/config.json)
-#   BASELINE    path to the recorded DC output    (default Output.baseline.json)
-#   IC_CONFIG   path to the IceCube config        (default configs/config_icecube_tracks_cpu.json)
-#   IC_BASELINE path to the recorded IC output    (default Output.ic_baseline.json)
+#   DC_CONFIG       path to the Double Chooz config       (default ../PhyLiNO/config.json)
+#   BASELINE        path to the recorded DC output        (default Output.baseline.json)
+#   IC_CONFIG       path to the IceCube config             (default configs/config_icecube_tracks_cpu.json)
+#   IC_BASELINE     path to the recorded IC output         (default Output.ic_baseline.json)
+#   IC_CASCADE_CONFIG   path to the IceCube cascade config (default configs/config_icecube_cascades.json)
+#   IC_CASCADE_BASELINE path to the recorded cascade output (default Output.ic_cascades_baseline.json)
 
 set -u -o pipefail
 
@@ -32,6 +38,8 @@ BASELINE=${BASELINE:-Output.baseline.json}
 LINREG_CONFIG=configs/config_linreg.json
 IC_CONFIG=${IC_CONFIG:-configs/config_icecube_tracks_cpu.json}
 IC_BASELINE=${IC_BASELINE:-Output.ic_baseline.json}
+IC_CASCADE_CONFIG=${IC_CASCADE_CONFIG:-configs/config_icecube_cascades.json}
+IC_CASCADE_BASELINE=${IC_CASCADE_BASELINE:-Output.ic_cascades_baseline.json}
 LLHFIT=build/programs/LLHFit/LLHFit
 
 failures=0
@@ -115,6 +123,21 @@ elif python3 tools/compare_output.py "$IC_BASELINE" Output.json > /tmp/phylino_i
 else
   head -20 /tmp/phylino_ic_cmp.log >&2
   fail "output differs from $IC_BASELINE"
+fi
+
+echo "IceCube cascades reproduce the baseline"
+if [ ! -f "$IC_CASCADE_CONFIG" ]; then
+  skip "no IceCube cascade config at $IC_CASCADE_CONFIG (set IC_CASCADE_CONFIG)"
+elif [ ! -f "$IC_CASCADE_BASELINE" ]; then
+  skip "no baseline at $IC_CASCADE_BASELINE (see the header of this script)"
+elif ! "$LLHFIT" -c "$IC_CASCADE_CONFIG" --silent > /tmp/phylino_ic_cascade.log 2>&1; then
+  tail -20 /tmp/phylino_ic_cascade.log >&2
+  fail "the fit did not run"
+elif python3 tools/compare_output.py "$IC_CASCADE_BASELINE" Output.json > /tmp/phylino_ic_cascade_cmp.log 2>&1; then
+  pass "output identical to $IC_CASCADE_BASELINE"
+else
+  head -20 /tmp/phylino_ic_cascade_cmp.log >&2
+  fail "output differs from $IC_CASCADE_BASELINE"
 fi
 
 echo "An unusable Experiment key is reported clearly"
