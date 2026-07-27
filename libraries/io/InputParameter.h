@@ -136,7 +136,12 @@ namespace io {
        */
       explicit Parameter(const boost::property_tree::ptree& parameter)
         : m_Value(parameter.get<double>("StartValue"))
-        , m_Uncertainty(parameter.get<double>("StepWidth")) {
+        , m_Uncertainty(parameter.get<double>("StepWidth"))
+        // The Gaussian pull's central value and width. Optional: they default to
+        // the start value and the step width, which is what every config meant
+        // before the two were separable, so existing configs keep their pulls.
+        , m_PriorValue(parameter.get<double>("PriorValue", m_Value))
+        , m_PriorWidth(parameter.get<double>("PriorWidth", m_Uncertainty)) {
       }
 
       /**
@@ -147,15 +152,23 @@ namespace io {
       [[nodiscard]] double value() const noexcept { return m_Value; }
 
       /**
-       * @brief Gets the uncertainty of the parameter.
+       * @brief Gets the minimiser step width (Minuit's initial step) of the parameter.
        *
-       * @return The uncertainty of the parameter.
+       * @return The step width of the parameter.
        */
       [[nodiscard]] double uncertainty() const noexcept { return m_Uncertainty; }
 
+      /** Central value of the Gaussian pull on a constrained parameter. */
+      [[nodiscard]] double prior_value() const noexcept { return m_PriorValue; }
+
+      /** Width (sigma) of the Gaussian pull on a constrained parameter. */
+      [[nodiscard]] double prior_width() const noexcept { return m_PriorWidth; }
+
      private:
-      double m_Value;        ///< The value of the parameter.
-      double m_Uncertainty;  ///< The uncertainty of the parameter.
+      double m_Value;        ///< The start value of the parameter.
+      double m_Uncertainty;  ///< The minimiser step width.
+      double m_PriorValue;   ///< Central value of the Gaussian pull.
+      double m_PriorWidth;   ///< Width of the Gaussian pull.
     };
   };
 

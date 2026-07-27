@@ -10,6 +10,7 @@
 #include "IceCube/ICParameter.h"
 #include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
+#include "InputParameter.h"
 #include "SampleLikelihood.h"
 #include "TemplateFlux.h"
 
@@ -142,6 +143,39 @@ static void test_parameter_layout() {
   assert(HoleIceP0 == DOMEff + 3 && HoleIceP1 == DOMEff + 4);
   // The two template norms are distinct: tracks Corsika vs cascade MuonGun.
   assert(MuonNorm != MuonGunNorm);
+}
+
+// The Gaussian pull width must be separable from the minimiser step, while a
+// config that specifies neither prior key keeps today's meaning -- the
+// compatibility guarantee the Double Chooz configs rely on.
+static void test_prior_defaults_and_overrides() {
+  static constexpr char kJson[] = R"JSON(
+{
+  "Parameter": [
+    { "Name": "legacy",   "StartValue": 1.0, "StepWidth": 0.4, "Fixed": false, "Constrained": true },
+    { "Name": "explicit", "StartValue": 1.0, "StepWidth": 0.1, "PriorValue": 1.2,
+      "PriorWidth": 0.5, "Fixed": false, "Constrained": true }
+  ]
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const io::InputParameter parameters(pt.get_child("Parameter"));
+  assert(parameters.size() == 2);
+
+  // Legacy entry: prior falls back to StartValue / StepWidth exactly as before.
+  assert(parameters.parameters()[0].value() == 1.0);
+  assert(parameters.parameters()[0].uncertainty() == 0.4);
+  assert(parameters.parameters()[0].prior_value() == 1.0);
+  assert(parameters.parameters()[0].prior_width() == 0.4);
+
+  // Explicit entry: step and prior are independent.
+  assert(parameters.parameters()[1].uncertainty() == 0.1);
+  assert(parameters.parameters()[1].prior_value() == 1.2);
+  assert(parameters.parameters()[1].prior_width() == 0.5);
 }
 
 // Exercises the real io::ic::parse_samples() (declared in SampleConfig.h,
@@ -1006,6 +1040,7 @@ int main() {
   test_non_uniform_axis_index();
   test_mixed_binning_cascade_grid();
   test_parameter_layout();
+  test_prior_defaults_and_overrides();
   test_parse_samples();
   test_parse_samples_rejects_bad_components();
   test_parse_samples_cascade_entry();

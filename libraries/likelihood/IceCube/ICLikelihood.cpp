@@ -94,11 +94,11 @@ namespace ana::ic {
     for (std::size_t i = 0; i < parameters.size(); ++i) {
       if (constrained[i]) {
         std::cout << "IC pull: " << names[i]
-                  << " CV=" << parameters[i].value()
-                  << " sigma=" << parameters[i].uncertainty() << '\n';
+                  << " CV=" << parameters[i].prior_value()
+                  << " sigma=" << parameters[i].prior_width() << '\n';
         m_Pulls.emplace_back(static_cast<int>(i),
-                             parameters[i].value(),
-                             parameters[i].uncertainty());
+                             parameters[i].prior_value(),
+                             parameters[i].prior_width());
       }
     }
   }
