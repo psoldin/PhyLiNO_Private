@@ -5,6 +5,7 @@
 // really are live.
 #undef NDEBUG
 
+#include "DetectorSystematics.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICParameter.h"
 #include "IceCube/ICSample.h"
@@ -895,6 +896,95 @@ static void test_template_flux() {
   assert(threw);
 }
 
+// SnowStorm gradients are a histogram-level additive perturbation of mu and
+// sigma^2 (NNMFit snowstorm_gradient.make_graph, external_gradients: True so the
+// histogram-gradient covariance is excluded):
+//   D_k       = p_k - split_k
+//   mu_add_b  = sum_k D_k * gradient_k_b * lt_scale
+//   ssq_add_b = sum_k (D_k * error_k_b * lt_scale)^2 + 2 * sum_{i<j} D_i D_j cov_ij_b
+static void test_detector_systematics() {
+  using ana::ic::DetectorSystematics;
+  using ana::ParameterWrapper;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 2)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  assert(binning.total_bins() == 2);
+
+  const int    n_sys    = params::ic::nDetSysParams;  // 5
+  const double lt_scale = 2.0;
+  const double split[5] = {1.0, 1.0, 1.0, 0.25, -0.05};
+  // gradient[k][b], error[k][b]: distinct values so a transposed read is caught.
+  double gradient[5][2];
+  double error[5][2];
+  for (int k = 0; k < n_sys; ++k)
+    for (int b = 0; b < 2; ++b) {
+      gradient[k][b] = 10.0 * (k + 1) + b;
+      error[k][b]    = 0.5 * (k + 1) + 0.1 * b;
+    }
+  // covariance for each of the 10 unordered pairs, in the file's pair order.
+  double cov[10][2];
+  for (int p = 0; p < 10; ++p)
+    for (int b = 0; b < 2; ++b) cov[p][b] = 0.01 * (p + 1) + 0.001 * b;
+
+  static const char* kNames[5] = {"DOMEfficiency", "IceAbsorption", "IceScattering",
+                                  "HoleIceForward_p0", "HoleIceForward_p1"};
+
+  const std::string path = "ictests_gradients.txt";
+  {
+    std::ofstream out(path);
+    out << "# gradients bins 2 params 5 lt_scale " << lt_scale << "\n";
+    for (int k = 0; k < n_sys; ++k) {
+      out << "# param " << kNames[k] << " split " << split[k] << "\n";
+      for (int b = 0; b < 2; ++b) out << gradient[k][b] << " " << error[k][b] << "\n";
+    }
+    int pair = 0;
+    for (int i = 0; i < n_sys; ++i)
+      for (int j = i + 1; j < n_sys; ++j, ++pair) {
+        out << "# cov " << kNames[i] << " " << kNames[j] << "\n";
+        for (int b = 0; b < 2; ++b) out << cov[pair][b] << "\n";
+      }
+  }
+
+  DetectorSystematics systematics(binning, path);
+  std::remove(path.c_str());
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  for (int k = 0; k < n_sys; ++k) values[params::ic::DOMEff + k] = split[k];
+  ParameterWrapper at_split(params::ic::number_of_parameters());
+  at_split.reset_parameter(values.data());
+  systematics.check_and_recalculate(at_split);
+  for (int b = 0; b < 2; ++b) {
+    assert(systematics.mu_delta()[b] == 0.0);
+    assert(systematics.ssq_delta()[b] == 0.0);
+  }
+
+  // Perturb two systematics.
+  values[params::ic::DOMEff] = split[0] + 0.05;
+  values[params::ic::IceAbs] = split[1] - 0.02;
+  ParameterWrapper shifted(params::ic::number_of_parameters());
+  shifted.reset_parameter(values.data());
+  assert(systematics.check_and_recalculate(shifted));
+
+  const double d[5] = {0.05, -0.02, 0.0, 0.0, 0.0};
+  for (int b = 0; b < 2; ++b) {
+    double mu_add = 0.0;
+    for (int k = 0; k < n_sys; ++k) mu_add += d[k] * gradient[k][b] * lt_scale;
+
+    double ssq_add = 0.0;
+    for (int k = 0; k < n_sys; ++k) {
+      const double term = d[k] * error[k][b] * lt_scale;
+      ssq_add += term * term;
+    }
+    int pair = 0;
+    for (int i = 0; i < n_sys; ++i)
+      for (int j = i + 1; j < n_sys; ++j, ++pair)
+        ssq_add += 2.0 * (d[i] * lt_scale) * (d[j] * lt_scale) * cov[pair][b];
+
+    assert(std::abs(systematics.mu_delta()[b] - mu_add) < 1e-12 * std::abs(mu_add));
+    assert(std::abs(systematics.ssq_delta()[b] - ssq_add) < 1e-12 * std::abs(ssq_add));
+  }
+}
+
 // Guards against the whole suite silently becoming a no-op: if NDEBUG ever wins
 // again, assert() expands to nothing, `live` stays false and this reports it
 // instead of printing "all passed".
@@ -926,6 +1016,7 @@ int main() {
   test_sample_likelihood_component_masking();
   test_veto_reweight();
   test_template_flux();
+  test_detector_systematics();
   std::puts("ICTests: all passed");
   return 0;
 }

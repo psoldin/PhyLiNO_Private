@@ -1,51 +1,61 @@
 #pragma once
 
-#include "../../io/IceCube/ICConstants.h"
+#include "../../io/IceCube/Binning.h"
 #include "../../io/IceCube/ICParameter.h"
 #include "../ParameterWrapper.h"
 
 #include <array>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace ana::ic {
 
   /**
-   * SnowStorm detector-gradient systematics (NNMFit SnowStormGradient), applied
-   * at histogram level as an additive perturbation of the predicted counts:
+   * SnowStorm detector-gradient systematics (NNMFit SnowStormGradient with
+   * hist_parameter_overall: True), applied to one sample's summed prediction as
+   * an additive perturbation of mu and sigma^2:
    *
-   *   mu_delta_b = sum_k (param_k - split_k) * gradient_k_b
+   *   D_k       = (parameter_k - split_k) * lt_scale   k in {DOMEff .. HoleIceP1}
+   *   mu_add_b  = sum_k D_k * gradient_k_b
+   *   ssq_add_b = sum_k (D_k * gradient_error_k_b)^2 + 2 * sum_{i<j} D_i * D_j * cov_ij_b
    *
-   * with k in {DOMEff, IceAbs, IceScat}. Because the tracks-only fit uses a
-   * plain PoissonLLH, the sigma^2 fluctuation term of the gradient is ignored.
+   * lt_scale is the analysis / gradient livetime ratio. The histogram-gradient
+   * covariance term of NNMFit's formula is correctly absent: the FTP gradient
+   * configs set external_gradients: True (the gradients come from independent MC).
    *
-   * SCAFFOLD: the pre-computed gradients live in a Python pickle not present in
-   * this repo. When disabled (or no file given) the delta is identically zero.
-   * When enabled with a file, a plain-text file of nDetSysParams*nBins values
-   * (systematic-major: all bins for DOMEff, then IceAbs, then IceScat) is read;
-   * the pickle reader is left for future work.
+   * Gradients are per sample (each detector config has its own pickle; the
+   * cascade samples share the _5up one) and are read from the text file produced
+   * by tools/export_nnmfit_inputs.py, whose systematics order matches
+   * params::ic {DOMEff .. HoleIceP1}. O(nBins) work: CPU only.
    */
   class DetectorSystematics {
    public:
-    DetectorSystematics(bool enabled, const std::string& gradient_file);
+    DetectorSystematics(const io::ic::Binning& binning, const std::string& gradient_file);
     ~DetectorSystematics() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
 
-    [[nodiscard]] std::span<const double> delta() const noexcept { return m_Delta; }
-    [[nodiscard]] bool enabled() const noexcept { return m_Enabled; }
+    /** Additive contribution to the predicted counts per bin. */
+    [[nodiscard]] std::span<const double> mu_delta() const noexcept { return m_MuDelta; }
+
+    /** Additive contribution to sigma^2 per bin (SAY only). */
+    [[nodiscard]] std::span<const double> ssq_delta() const noexcept { return m_SsqDelta; }
 
    private:
-    using BinArray = std::array<double, io::ic::Constants::nBins>;
+    static constexpr int nPairs = params::ic::nDetSysParams * (params::ic::nDetSysParams - 1) / 2;
 
-    bool m_Enabled = false;
-    // Split (reference) values the gradients were computed at; NNMFit FTP config
-    // uses 1.0 for DOM efficiency, absorption and scattering.
-    std::array<double, params::ic::nDetSysParams> m_Split{{1.0, 1.0, 1.0}};
-    std::array<BinArray, params::ic::nDetSysParams> m_Gradients{};  // per-systematic, per-bin
-    BinArray m_Delta{};  // additive contribution to the total prediction
+    double                                        m_LivetimeScale = 1.0;
+    std::array<double, params::ic::nDetSysParams> m_Split{};
 
-    bool load_gradients(const std::string& path);
+    std::array<std::vector<double>, params::ic::nDetSysParams> m_Gradient;
+    std::array<std::vector<double>, params::ic::nDetSysParams> m_GradientError;
+    std::array<std::vector<double>, nPairs>                    m_Covariance;
+
+    std::vector<double> m_MuDelta;
+    std::vector<double> m_SsqDelta;
+
+    void load(const std::string& path, int total_bins);
   };
 
 }  // namespace ana::ic

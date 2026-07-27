@@ -70,6 +70,9 @@ namespace ana::ic {
     if (cfg.wants_template())
       m_Template.emplace(cfg.binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
 
+    if (!cfg.gradient_file.empty())
+      m_Systematics.emplace(cfg.binning, cfg.gradient_file);
+
     const int total_bins = cfg.binning.total_bins();
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
@@ -81,17 +84,22 @@ namespace ana::ic {
     if (m_Astro) changed |= m_Astro->check_and_recalculate(parameter);
     if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
     if (m_Template) changed |= m_Template->check_and_recalculate(parameter);
+    if (m_Systematics) changed |= m_Systematics->check_and_recalculate(parameter);
 
-    const std::span<const double> astro = m_Astro ? m_Astro->histogram() : std::span<const double>{};
-    const std::span<const double> atmo  = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
-    const std::span<const double> tmpl  = m_Template ? m_Template->histogram() : std::span<const double>{};
+    const std::span<const double> astro     = m_Astro ? m_Astro->histogram() : std::span<const double>{};
+    const std::span<const double> atmo      = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
+    const std::span<const double> tmpl      = m_Template ? m_Template->histogram() : std::span<const double>{};
+    const std::span<const double> mu_delta  = m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
 
     for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) {
       double total = 0.0;
       if (!astro.empty()) total += astro[b];
       if (!atmo.empty()) total += atmo[b];
       if (!tmpl.empty()) total += tmpl[b];
-      // Clip at zero to avoid unphysical predictions (matches NNMFit mu clip).
+      if (!mu_delta.empty()) total += mu_delta[b];
+      // Clip at zero to avoid unphysical predictions (matches NNMFit mu clip),
+      // applied after the gradient delta -- NNMFit clips mu_tot, not the
+      // pre-gradient sum.
       m_Predicted[b] = std::max(0.0, total);
     }
 
@@ -137,6 +145,12 @@ namespace ana::ic {
     if (m_Template) {
       const std::span<const double> tmpl_ssq = m_Template->fluctuation();
       for (int b = 0; b < n_bins; ++b) m_Ssq[b] += tmpl_ssq[b];
+    }
+
+    // Histogram-level fluctuation from the SnowStorm detector gradients.
+    if (m_Systematics) {
+      const std::span<const double> sys_ssq = m_Systematics->ssq_delta();
+      for (int b = 0; b < n_bins; ++b) m_Ssq[b] += sys_ssq[b];
     }
   }
 

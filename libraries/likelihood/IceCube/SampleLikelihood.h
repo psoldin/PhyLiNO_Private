@@ -4,6 +4,7 @@
 #include "../../io/IceCube/SampleConfig.h"
 #include "../ParameterWrapper.h"
 #include "AtmosphericFlux.h"
+#include "DetectorSystematics.h"
 #include "GpuBackend.h"
 #include "PowerlawFlux.h"
 #include "TemplateFlux.h"
@@ -64,9 +65,10 @@ namespace ana::ic {
 
     // Only the components the config declares are constructed; the parquet
     // columns of an absent component were never read (see ICDataBase).
-    std::optional<PowerlawFlux>    m_Astro;
-    std::optional<AtmosphericFlux> m_Atmo;
-    std::optional<TemplateFlux>    m_Template;
+    std::optional<PowerlawFlux>         m_Astro;
+    std::optional<AtmosphericFlux>      m_Atmo;
+    std::optional<TemplateFlux>         m_Template;
+    std::optional<DetectorSystematics>  m_Systematics;
 
     std::vector<double> m_Predicted;
     std::vector<double> m_Data;
