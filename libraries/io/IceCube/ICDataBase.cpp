@@ -138,14 +138,17 @@ namespace io::ic {
               std::to_string(survival.size()) + " rows, the baseline parquet has " +
               std::to_string(out.conv_baseline.size()) + " (they must be row-aligned)");
 
+        // NNMFit's OscillationsHook is constructed per-flux with the flux's own
+        // self._baseline_weight as its target column (Flux.py::apply_hooks_for_flux:
+        // hook_obj = hook_cls(self._baseline_weight, **self._hooks[hook])), so it
+        // multiplies ONLY the primary baseline weight (conv_baseline / prompt_baseline).
+        // The CR-gradient alternative (conv_alt/prompt_alt) and the Barr slope columns
+        // are separate flux graphs the hook never touches.
         auto apply_survival = [&survival](std::vector<double>& column) {
           for (std::size_t i = 0; i < column.size(); ++i) column[i] *= survival[i];
         };
         apply_survival(out.conv_baseline);
-        apply_survival(out.conv_alt);
         apply_survival(out.prompt_baseline);
-        apply_survival(out.prompt_alt);
-        for (auto& slope : out.barr_conv) apply_survival(slope);
 
         double mean = 0.0;
         for (const double v : survival) mean += v;
