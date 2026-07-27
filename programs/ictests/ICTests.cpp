@@ -251,6 +251,104 @@ static void test_parse_samples_rejects_bad_components() {
   assert(throws(R"(, "components": "prompt")"));              // prompt without conventional
   assert(!throws(R"(, "components": "astro")"));              // astro alone is fine
   assert(!throws(R"(, "components": "conventional, prompt")"));
+
+  // Veto pair, variant mixing and duplicate templates.
+  assert(throws(R"(, "components": "astro, conventional_veto")"));  // veto pair incomplete
+  assert(throws(R"(, "components": "astro, prompt_veto")"));
+  assert(throws(R"(, "components": "conventional, prompt, conventional_veto, prompt_veto")"));
+  assert(throws(R"(, "components": "astro, muon, muontemplate", "Template": { "File": "t.txt" })"));
+  assert(!throws(R"(, "components": "astro, conventional_veto, prompt_veto")"));
+
+  // A template component needs its file, and a file needs its component.
+  assert(throws(R"(, "components": "astro, muon")"));  // template declared, no Template block
+  assert(throws(R"(, "components": "astro", "Template": { "File": "t.txt" })"));
+  assert(throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "Nope" })"));
+  assert(!throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "MuonGunNorm" })"));
+}
+
+// The cascade samples declare the veto variants plus the MuonGun template, and
+// carry their template / gradient file paths and reco branch overrides per sample.
+static void test_parse_samples_cascade_entry() {
+  static constexpr char kJson[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "cscd_cascade_2d": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.8, 7.0, 21)",
+        "CosZenith": "[-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0]"
+      }
+    },
+    "Samples": {
+      "cscd_cascade": {
+        "binning": "cscd_cascade_2d",
+        "parquet": "cscd_cascade.parquet",
+        "data": "data_cscd_cascade.parquet",
+        "livetime": 330315015.11,
+        "components": "astro, conventional_veto, prompt_veto, muon",
+        "Template": { "File": "muongun_cascade.txt", "Norm": "MuonGunNorm" },
+        "Gradients": { "File": "gradients_cscd_cascade.txt" },
+        "Branches": { "RecoEnergy": "energy_monopod", "RecoZenith": "zenith_monopod" }
+      }
+    }
+  }
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
+  assert(samples.size() == 1);
+  const io::ic::SampleConfig& cascade = samples[0];
+
+  assert(cascade.binning.total_bins() == 147);
+  assert(std::abs(cascade.livetime - 330315015.11) < 1e-6);
+  assert(cascade.wants_astro());
+  assert(cascade.wants_atmospheric());
+  assert(cascade.wants_veto());
+  assert(cascade.wants_template());
+  assert(cascade.template_file == "muongun_cascade.txt");
+  assert(cascade.template_norm_index == params::ic::MuonGunNorm);
+  assert(cascade.gradient_file == "gradients_cscd_cascade.txt");
+  assert(cascade.data_path == "data_cscd_cascade.parquet");
+  assert(cascade.branches.reco_energy == "energy_monopod");
+  assert(cascade.branches.reco_zenith == "zenith_monopod");
+  // Defaults still apply to the columns the sample did not override.
+  assert(cascade.branches.true_energy == "MCPrimaryEnergy");
+
+  // The tracks-style sample: plain atmospheric pair, Corsika template norm, and
+  // no gradient file, so detector systematics stay off for it.
+  static constexpr char kTracksJson[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": { "grid": { "axes": "Log10Energy, CosZenith",
+                            "Log10Energy": "(2.5, 7.0, 45)",
+                            "CosZenith": "(-1.0, 0.0872, 33)" } },
+    "Samples": {
+      "tracks": {
+        "binning": "grid",
+        "parquet": "tracks.parquet",
+        "components": "astro, conventional, prompt, muontemplate",
+        "Template": { "File": "corsika_tracks.txt" }
+      }
+    }
+  }
+}
+)JSON";
+
+  boost::property_tree::ptree tracks_pt;
+  std::istringstream          tracks_iss(kTracksJson);
+  boost::property_tree::read_json(tracks_iss, tracks_pt);
+
+  const auto tracks = io::ic::parse_samples(tracks_pt.get_child("IceCube"));
+  assert(tracks.size() == 1);
+  assert(tracks[0].wants_atmospheric());
+  assert(!tracks[0].wants_veto());
+  assert(tracks[0].wants_template());
+  assert(tracks[0].template_norm_index == params::ic::MuonNorm);  // Norm defaults to MuonNorm
+  assert(tracks[0].gradient_file.empty());
 }
 
 // The composite pairs its SampleLikelihoods with the ICSamples that ICDataBase
@@ -609,6 +707,7 @@ int main() {
   test_parameter_layout();
   test_parse_samples();
   test_parse_samples_rejects_bad_components();
+  test_parse_samples_cascade_entry();
   test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();

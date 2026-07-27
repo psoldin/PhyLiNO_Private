@@ -19,14 +19,20 @@ namespace io::ic {
    * directly. Only the components listed here are implemented; parse_samples()
    * rejects anything else rather than silently ignoring it.
    *
-   * NNMFit's cascade samples use `conventional_veto`/`prompt_veto` (the same
-   * atmospheric flux times a passing-fraction reweight) and the `muon`/
-   * `muontemplate` templates; those arrive with the cascade samples.
+   * NNMFit gives each sample one atmospheric variant: the plain
+   * `conventional`/`prompt` pair (tracks) or the veto-reweighted
+   * `conventional_veto`/`prompt_veto` pair (the cascade samples), which is the same
+   * flux times a per-event passing fraction. Muon backgrounds come from a binned
+   * template: Corsika `muontemplate` for tracks, MuonGun `muon` for the cascades.
    */
   namespace component {
-    inline constexpr std::string_view Astro        = "astro";
-    inline constexpr std::string_view Conventional = "conventional";
-    inline constexpr std::string_view Prompt       = "prompt";
+    inline constexpr std::string_view Astro            = "astro";
+    inline constexpr std::string_view Conventional     = "conventional";
+    inline constexpr std::string_view Prompt           = "prompt";
+    inline constexpr std::string_view ConventionalVeto = "conventional_veto";
+    inline constexpr std::string_view PromptVeto       = "prompt_veto";
+    inline constexpr std::string_view MuonTemplate     = "muontemplate";  // Corsika, tracks
+    inline constexpr std::string_view MuonGun          = "muon";          // MuonGun, cascades
   }  // namespace component
 
   /**
@@ -50,6 +56,14 @@ namespace io::ic {
     std::vector<std::string> components;
     BranchNames branches;
 
+    // Muon template, when the sample declares "muontemplate" or "muon": the
+    // exported per-bin template file and which norm parameter scales it.
+    std::string template_file;
+    int         template_norm_index = -1;
+
+    // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
+    std::string gradient_file;
+
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,
         [component](std::string_view component_name) {
@@ -61,12 +75,24 @@ namespace io::ic {
     [[nodiscard]] bool wants_astro() const noexcept { return has_component(component::Astro); }
 
     /**
-     * Conventional + prompt atmospheric flux requested. AtmosphericFlux computes
-     * both in one per-event pass, so the two are enabled together; parse_samples()
-     * rejects a sample that declares only one of them.
+     * Conventional + prompt atmospheric flux requested, plain or veto-reweighted.
+     * AtmosphericFlux computes conv and prompt in one per-event pass, so each
+     * variant's pair is enabled together; parse_samples() rejects a half pair and
+     * rejects declaring both variants at once.
      */
     [[nodiscard]] bool wants_atmospheric() const noexcept {
-      return has_component(component::Conventional) || has_component(component::Prompt);
+      return has_component(component::Conventional) || has_component(component::Prompt) ||
+             wants_veto();
+    }
+
+    /** The atmospheric components carry NNMFit's passing-fraction reweight. */
+    [[nodiscard]] bool wants_veto() const noexcept {
+      return has_component(component::ConventionalVeto) || has_component(component::PromptVeto);
+    }
+
+    /** A muon template was declared (see template_file / template_norm_index). */
+    [[nodiscard]] bool wants_template() const noexcept {
+      return has_component(component::MuonTemplate) || has_component(component::MuonGun);
     }
   };
 
@@ -90,8 +116,10 @@ namespace io::ic {
    * Each entry under "Samples" references a binning by name (throws if
    * unknown), and reads "enabled" (default true), "parquet" (required),
    * "data" (default ""), "livetime" (default 1.0), "components" (comma-split,
-   * required and validated against io::ic::component) and an optional
-   * per-sample "Branches" subtree.
+   * required and validated against io::ic::component), an optional per-sample
+   * "Branches" subtree, an optional "Template" subtree ("File" required, "Norm"
+   * one of MuonNorm|MuonGunNorm, default MuonNorm) and an optional "Gradients"
+   * subtree ("File").
    */
   [[nodiscard]] std::vector<SampleConfig> parse_samples(const boost::property_tree::ptree& ic);
 

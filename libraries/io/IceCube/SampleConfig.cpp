@@ -57,6 +57,12 @@ namespace io::ic {
       return branches;
     }
 
+    bool is_known_component(const std::string& name) noexcept {
+      return name == component::Astro || name == component::Conventional || name == component::Prompt ||
+             name == component::ConventionalVeto || name == component::PromptVeto ||
+             name == component::MuonTemplate || name == component::MuonGun;
+    }
+
     // Reject unknown component names and combinations the flux components
     // cannot express, so a config typo (or a component that is not implemented
     // yet) fails at startup instead of quietly producing a smaller prediction.
@@ -67,15 +73,58 @@ namespace io::ic {
                                  "\"astro, conventional, prompt\")");
 
       for (const std::string& c : sample.components) {
-        if (c != component::Astro && c != component::Conventional && c != component::Prompt)
+        if (!is_known_component(c))
           throw std::runtime_error("parse_samples: sample '" + sample.name + "' declares unknown component '" + c +
-                                   "' (supported: astro, conventional, prompt)");
+                                   "' (supported: astro, conventional, prompt, conventional_veto, prompt_veto, "
+                                   "muontemplate, muon)");
       }
 
-      if (sample.has_component(component::Conventional) != sample.has_component(component::Prompt))
+      const bool plain = sample.has_component(component::Conventional);
+      const bool veto  = sample.has_component(component::ConventionalVeto);
+
+      if (plain != sample.has_component(component::Prompt))
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' declares only one of 'conventional'/'prompt'; AtmosphericFlux computes both in "
                                  "one pass, so they must be enabled together");
+      if (veto != sample.has_component(component::PromptVeto))
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares only one of 'conventional_veto'/'prompt_veto'; they must be enabled "
+                                 "together");
+      if (plain && veto)
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares both the plain and the veto atmospheric components; NNMFit excludes one "
+                                 "variant per sample and enabling both would double-count");
+
+      if (sample.has_component(component::MuonTemplate) && sample.has_component(component::MuonGun))
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares two muon templates ('muontemplate' and 'muon'); pick one");
+
+      if (sample.wants_template() && sample.template_file.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares a muon template but has no \"Template\": { \"File\": ... } entry");
+      if (!sample.wants_template() && !sample.template_file.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' has a \"Template\" entry but declares neither 'muontemplate' nor 'muon'");
+    }
+
+    // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" } and
+    // "Gradients": { "File": ... }, both optional.
+    void parse_component_files(const boost::property_tree::ptree& node, SampleConfig& sample) {
+      if (const auto tmpl = node.get_child_optional("Template")) {
+        sample.template_file = tmpl->get<std::string>("File");
+
+        const std::string norm = tmpl->get<std::string>("Norm", "MuonNorm");
+        if (norm == "MuonNorm")
+          sample.template_norm_index = params::ic::MuonNorm;
+        else if (norm == "MuonGunNorm")
+          sample.template_norm_index = params::ic::MuonGunNorm;
+        else
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' Template.Norm '" + norm +
+                                   "' is not a known template norm (expected MuonNorm or MuonGunNorm)");
+      }
+
+      if (const auto gradients = node.get_child_optional("Gradients"))
+        sample.gradient_file = gradients->get<std::string>("File");
     }
 
   }  // namespace
@@ -118,7 +167,10 @@ namespace io::ic {
           .components = split_trim(sample_node.get<std::string>("components", ""), ','),
           .branches   = parse_branches(sample_node),
       });
-      validate_components(samples.back());
+
+      SampleConfig& sample = samples.back();
+      parse_component_files(sample_node, sample);
+      validate_components(sample);
     }
     return samples;
   }
