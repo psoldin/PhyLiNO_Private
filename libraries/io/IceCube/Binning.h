@@ -6,20 +6,31 @@
 
 namespace io::ic {
 
-  /** One analysis axis: a uniform grid in a derived reconstructed quantity. */
+  /**
+   * One analysis axis in a derived reconstructed quantity. Either a uniform grid
+   * ((lo, hi, n_bins), `edges` empty) or an explicit ascending edge list
+   * (`edges.size() == n_bins + 1`), which is what NNMFit's non-uniform cascade
+   * zenith binning ("cscd-cos_5up") needs.
+   */
   struct Axis {
     enum class Kind { Log10Energy, CosZenith, Ra };
-    Kind   kind;
-    double lo;
-    double hi;
-    int    n_bins;
+    Kind                kind;
+    double              lo;
+    double              hi;
+    int                 n_bins;
+    std::vector<double> edges;  // empty => uniform
 
+    [[nodiscard]] bool uniform() const noexcept { return edges.empty(); }
     [[nodiscard]] double step() const noexcept { return (hi - lo) / n_bins; }
     [[nodiscard]] double project(double raw_value) const noexcept;
     [[nodiscard]] int index(double raw_value) const noexcept;
   };
 
-  /** Parse "(lo, hi, n_bins)" for an axis of the named kind ("Log10Energy"|"CosZenith"|"Ra"). */
+  /**
+     * Parse an axis spec for the named kind ("Log10Energy"|"CosZenith"|"Ra"):
+     *   "(lo, hi, n_bins)"        uniform grid
+     *   "[e0, e1, ..., eN]"       explicit ascending edges, N bins
+     */
   [[nodiscard]] Axis parse_axis(std::string_view kind, std::string_view spec);
 
   /** Config spelling of an axis kind; inverse of parse_axis' kind argument. */

@@ -1,3 +1,10 @@
+// These tests ARE their assertions. The project configures Release with -DNDEBUG,
+// which compiles every assert() away and would leave this executable printing
+// "all passed" without checking anything -- so NDEBUG is dropped for this file
+// before <cassert> is pulled in, and main() verifies at runtime that assertions
+// really are live.
+#undef NDEBUG
+
 #include "IceCube/Binning.h"
 #include "IceCube/ICParameter.h"
 #include "IceCube/ICSample.h"
@@ -52,6 +59,69 @@ static void test_parse_axis_spec() {
   assert(a.n_bins == 45);
   assert(std::abs(a.lo - 2.5) < 1e-12);
   assert(std::abs(a.hi - 7.0) < 1e-12);
+  assert(a.uniform());
+}
+
+// The cascade zenith axis is a hardcoded non-uniform cos-zenith edge list in
+// NNMFit (binning/rectangular_binning.py, spacing "cscd-cos_5up"). Expressed here
+// as explicit edges, Axis::index must bin by upper_bound over those edges.
+static void test_non_uniform_axis_index() {
+  const std::vector<double> edges{-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0};
+  const Axis a = io::ic::parse_axis("CosZenith", "[-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0]");
+  assert(!a.uniform());
+  assert(a.n_bins == 7);
+  assert(a.edges.size() == 8);
+  assert(std::abs(a.lo + 1.0) < 1e-12);
+  assert(std::abs(a.hi - 1.0) < 1e-12);
+
+  // Reference: the bin containing cos(zenith), -1 outside [lo, hi).
+  auto reference = [&edges](const double zenith_rad) -> int {
+    const double cos_zenith = std::cos(zenith_rad);
+    if (cos_zenith < edges.front() || cos_zenith >= edges.back()) return -1;
+    for (std::size_t i = 0; i + 1 < edges.size(); ++i)
+      if (cos_zenith >= edges[i] && cos_zenith < edges[i + 1]) return static_cast<int>(i);
+    return -1;
+  };
+
+  for (double zenith : {0.0, 0.3, 0.8, 1.0, 1.2, 1.5708, 1.9, 2.4, 2.9, 3.14159, 3.2})
+    assert(a.index(zenith) == reference(zenith));
+
+  // Lower edge inclusive, upper edge exclusive, in cos(zenith).
+  assert(a.index(std::acos(-1.0)) == 0);      // cos = -1 -> first bin
+  assert(a.index(std::acos(-0.76)) == 1);     // exactly an interior edge
+  assert(a.index(std::acos(0.999999)) == 6);  // last bin
+  assert(a.index(std::acos(1.0)) == -1);      // cos = +1 == hi -> out of range
+
+  // A non-ascending edge list is a config error, not a silently wrong binning.
+  bool threw = false;
+  try {
+    const Axis descending = io::ic::parse_axis("CosZenith", "[-1.0, 0.5, 0.2]");
+    assert(descending.n_bins == 2);  // unreachable; keeps the parse result used
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+}
+
+// A binning may mix a uniform energy axis with an explicit-edge zenith axis: that
+// is exactly the cscd_cascade grid (21 x 7 = 147 bins). cscd_muon is one bin.
+static void test_mixed_binning_cascade_grid() {
+  const Binning cascade({io::ic::parse_axis("Log10Energy", "(2.8, 7.0, 21)"),
+                         io::ic::parse_axis("CosZenith",
+                                            "[-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0]")});
+  assert(cascade.total_bins() == 147);
+
+  // 10^3 GeV is energy bin 1 ((3.0 - 2.8) / 0.2); cos(zenith) = 0 is zenith bin 4.
+  const double reco[2] = {1000.0, 1.5707963267948966};
+  assert(cascade.bin_index(reco) == 1 * 7 + 4);
+
+  const Binning muon({io::ic::parse_axis("Log10Energy", "(2.6, 4.8, 1)"),
+                      io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  assert(muon.total_bins() == 1);
+  const double inside[2] = {1000.0, 1.5};
+  assert(muon.bin_index(inside) == 0);
+  const double too_soft[2] = {100.0, 1.5};
+  assert(muon.bin_index(too_soft) == -1);
 }
 
 // Exercises the real io::ic::parse_samples() (declared in SampleConfig.h,
@@ -499,10 +569,26 @@ static void test_sample_likelihood_component_masking() {
   assert(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
 }
 
+// Guards against the whole suite silently becoming a no-op: if NDEBUG ever wins
+// again, assert() expands to nothing, `live` stays false and this reports it
+// instead of printing "all passed".
+static bool assertions_are_live() {
+  bool live = false;
+  assert(live = true);
+  return live;
+}
+
 int main() {
+  if (!assertions_are_live()) {
+    std::puts("ICTests: FAILED -- assertions are compiled out (NDEBUG), the suite checks nothing");
+    return 1;
+  }
+
   test_total_bins();
   test_bin_index_matches_legacy();
   test_parse_axis_spec();
+  test_non_uniform_axis_index();
+  test_mixed_binning_cascade_grid();
   test_parse_samples();
   test_parse_samples_rejects_bad_components();
   test_enabled_sample_indices();
