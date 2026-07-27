@@ -142,6 +142,15 @@ namespace ana::ic {
       llh += s->partial_llh(m_Parameter);
     llh += calculate_pulls(m_Parameter);
 
+    if (m_FirstCall) {
+      if (std::isfinite(llh)) {
+        m_LLHBaseLine = llh;
+        m_FirstCall = false;
+      }
+    }
+
+    llh -= m_LLHBaseLine;
+
     return std::isfinite(llh) ? llh : 1.0e25;
   }
 

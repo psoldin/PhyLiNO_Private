@@ -56,6 +56,9 @@ namespace ana::ic {
     // Gaussian pulls: (param_index, central_value, sigma)
     std::vector<std::tuple<int, double, double>> m_Pulls;
 
+    double m_LLHBaseLine{0.0};
+    bool   m_FirstCall{true};
+
     void                 initialize_data(bool use_data);
     void                 setup_pulls();
     [[nodiscard]] double calculate_pulls(const ParameterWrapper& parameter) const noexcept;
