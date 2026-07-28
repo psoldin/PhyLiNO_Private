@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Turn the Phase-2 combined NNMFit config into its Binning_2D_to_3D counterpart.
+
+The result matches /Users/soldin/Downloads/Fit_Configuration_Final.yaml except for the
+astrophysical flux (kept as the single Powerlaw, not AstroBPL) and the MuonGun
+template variant (kept fluctuation-free) -- see the Phase 3a design doc section 8.
+
+Changes, and nothing else:
+  * tracks and cscd_cascade gain reco_ra + class_name Binning_2D_to_3D; cscd_muon
+    stays Binning_2D, exactly as the final config has it (design doc section 7)
+  * those two samples' muon template files are swapped for their _3D variants
+  * the CringeFITS galactic component is added with a free norm, and excluded from
+    cscd_muon
+
+Usage: make_3d_config.py IN.yaml OUT.yaml
+"""
+import sys
+
+import yaml
+
+NF = "/Users/soldin/Downloads/nnmfit_files"
+TRACKS = "IC86_pass2_SnowStorm_v2_tracks"
+CASCADE = "IC86_pass2_SnowStorm_v2_cscd_cascade"
+MUON = "IC86_pass2_SnowStorm_v2_cscd_muon"
+
+# cscd_muon is deliberately absent: it stays 2D.
+RA_BINNING = {
+    TRACKS: "(0,6.28319,181,lin)",
+    CASCADE: "(0,6.28319,19,lin)",
+}
+
+TEMPLATE_3D = {
+    TRACKS: f"{NF}/Tracks_CorsikaMuon_Fullrange_drop_5lowEbins_3D.pickle",
+    CASCADE: f"{NF}/cscd_muongun_ALL_KDE_5up_manual_ssq_no_fluct_3D.pickle",
+}
+
+# component name -> (template file, norm parameter name)
+GALACTIC = {
+    "galactictemplate_cringefits": (
+        f"{NF}/galactic_templates/combined/5up/CringeFITS_5up_3D.pickle",
+        "cringefits_norm",
+    ),
+}
+
+
+def main():
+    in_path, out_path = sys.argv[1], sys.argv[2]
+    with open(in_path) as f:
+        cfg = yaml.safe_load(f)
+
+    for name, dataset in cfg["datasets"].items():
+        excluded = [c.strip() for c in dataset["excluded_components"].split(",") if c.strip()]
+
+        if name in RA_BINNING:
+            binning = dataset["analysis_binning"]
+            binning["class_name"] = "Binning_2D_to_3D"
+            binning["analysis_variables"] = ["reco_energy", "reco_zenith", "reco_ra"]
+            binning["reco_ra_binning"] = RA_BINNING[name]
+        else:
+            # 2D sample: it can carry no galactic template (the component is stored in
+            # the analysis binning and this one has no RA axis).
+            excluded += list(GALACTIC)
+
+        dataset["excluded_components"] = ", ".join(excluded)
+
+    for comp_name, comp in cfg["components"].items():
+        template = comp.get("additional", {}).get("template_file")
+        if template is None:
+            continue
+        # every sample's muon template is one of the two files; pick by basename
+        if "Corsika" in template:
+            comp["additional"]["template_file"] = TEMPLATE_3D[TRACKS]
+        else:
+            comp["additional"]["template_file"] = TEMPLATE_3D[CASCADE]
+
+    for comp_name, (template_file, norm_name) in GALACTIC.items():
+        cfg["components"][comp_name] = {
+            "class": "GalacticTemplate",
+            "baseline_weights": "powerlaw",
+            "additional": {"template_file": template_file},
+            "parameters": {
+                norm_name: {
+                    "class": "Norm",
+                    "default": 1.0,
+                    "interpolate": False,
+                    "range": [0.0, None],
+                }
+            },
+        }
+
+    with open(out_path, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=True, default_flow_style=False)
+    print(f"wrote {out_path}")
+
+
+if __name__ == "__main__":
+    main()
