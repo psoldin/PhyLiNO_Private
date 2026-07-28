@@ -33,6 +33,16 @@ namespace io::ic {
           "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu', 'metal' or 'cuda')");
     }
 
+    const std::string astro_model_str = ic.get<std::string>("AstroModel", "Powerlaw");
+    if (astro_model_str == "Powerlaw") {
+      m_AstroModel = AstroModel::Powerlaw;
+    } else if (astro_model_str == "BrokenPowerlaw") {
+      m_AstroModel = AstroModel::BrokenPowerlaw;
+    } else {
+      throw std::runtime_error(
+          "ICInputOptions: unknown AstroModel '" + astro_model_str + "' (expected 'Powerlaw' or 'BrokenPowerlaw')");
+    }
+
     m_ERefGeV             = ic.get<double>("ERefGeV", m_ERefGeV);
     m_AstroReferenceIndex = ic.get<double>("AstroReferenceIndex", m_AstroReferenceIndex);
     m_AstroPerTypeNorm    = ic.get<bool>("AstroPerTypeNorm", m_AstroPerTypeNorm);

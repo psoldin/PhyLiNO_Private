@@ -29,6 +29,9 @@ namespace params::ic {
    *   GalacticNorm0, GalacticNorm1 -> the galactic-plane templates a sample declares
    *     ("Galactic" subtree); NNMFit names these per model (cringefits_norm,
    *     unresolved_norm, fermi_norm, ...). Fixed in a config with no galactic component.
+   *   AstroGamma1, AstroGamma2, AstroEBreak -> NNMFit's AstroBPL broken power law,
+   *     active only when IceCube.AstroModel is "BrokenPowerlaw" (they replace
+   *     SpectralIndex there). Fixed in a single-power-law config.
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -67,6 +70,14 @@ namespace params::ic {
     // same model scales identically across samples. ---
     GalacticNorm0 = _last_of_DetSys_,
     GalacticNorm1,
+
+    // --- astrophysical broken power law (NNMFit AstroBPL), used when
+    // IceCube.AstroModel is "BrokenPowerlaw". AstroNorm is the shared norm; in
+    // that mode SpectralIndex is unused and the three below take over. Fixed in a
+    // single-power-law config. AstroEBreak is log10(E_break / GeV). ---
+    AstroGamma1,
+    AstroGamma2,
+    AstroEBreak,
     _last_of_General_
   };
 
@@ -87,8 +98,9 @@ namespace params::ic {
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
   static_assert(nDetSysParams == 5,
     "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
-  static_assert(number_of_parameters() == 20,
-    "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms. "
+  static_assert(number_of_parameters() == 23,
+    "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms "
+    "+ 3 astro broken-power-law params. "
     "Update every config's Parameter array and this if the layout changes.");
 
 }  // namespace params::ic

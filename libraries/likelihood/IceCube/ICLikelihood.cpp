@@ -57,6 +57,7 @@ namespace ana::ic {
         .astro_per_type_norm      = input_options.astro_per_type_norm(),
         .veto_anchor_energy       = input_options.veto_anchor_energy(),
         .veto_rescale_energy      = input_options.veto_rescale_energy(),
+        .astro_model              = input_options.astro_model(),
     };
 
     // ICDataBase loaded the enabled configs in config order, using the same

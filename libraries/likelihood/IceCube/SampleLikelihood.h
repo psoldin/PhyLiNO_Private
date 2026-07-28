@@ -25,6 +25,8 @@ namespace ana::ic {
     bool   astro_per_type_norm;
     double veto_anchor_energy;
     double veto_rescale_energy;
+    // Astrophysical spectral model: single power law or NNMFit's AstroBPL.
+    io::ic::AstroModel astro_model = io::ic::AstroModel::Powerlaw;
   };
 
   /**

@@ -243,6 +243,27 @@
       "StepWidth": 0.05,
       "Fixed": true,
       "Constrained": false
+    },
+    {
+      "Name": "AstroGamma1",
+      "StartValue": 1.31,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false
+    },
+    {
+      "Name": "AstroGamma2",
+      "StartValue": 2.74,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false
+    },
+    {
+      "Name": "AstroEBreak",
+      "StartValue": 4.4,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false
     }
   ]
 }

@@ -68,6 +68,9 @@
     { "Name": "HoleIceP0",     "StartValue": 0.24901831812365854,  "StepWidth": 0.05, "Fixed": false, "Constrained": false },
     { "Name": "HoleIceP1",     "StartValue": -0.05678798504997925, "StepWidth": 0.02, "Fixed": false, "Constrained": false },
     { "Name": "GalacticNorm0", "StartValue": 1.0, "StepWidth": 0.05, "Fixed": true, "Constrained": false },
-    { "Name": "GalacticNorm1", "StartValue": 1.0, "StepWidth": 0.05, "Fixed": true, "Constrained": false }
+    { "Name": "GalacticNorm1", "StartValue": 1.0, "StepWidth": 0.05, "Fixed": true, "Constrained": false },
+    { "Name": "AstroGamma1", "StartValue": 1.31, "StepWidth": 0.05, "Fixed": true, "Constrained": false },
+    { "Name": "AstroGamma2", "StartValue": 2.74, "StepWidth": 0.05, "Fixed": true, "Constrained": false },
+    { "Name": "AstroEBreak", "StartValue": 4.4, "StepWidth": 0.05, "Fixed": true, "Constrained": false }
   ]
 }

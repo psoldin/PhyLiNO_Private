@@ -20,6 +20,12 @@ namespace io::ic {
                            Metal,
                            Cuda };
 
+  // Astrophysical spectral model. Powerlaw is NNMFit's Powerlaw + SpectralIndex;
+  // BrokenPowerlaw is its AstroBPL (astro_norm, gamma_1, gamma_2, e_break), the
+  // model the final analysis configuration uses.
+  enum class AstroModel { Powerlaw,
+                          BrokenPowerlaw };
+
   /**
    * @brief Input options of the IceCube diffuse-flux experiment.
    *
@@ -43,6 +49,8 @@ namespace io::ic {
     [[nodiscard]] BackendKind    backend_kind() const noexcept { return m_BackendKind; }
 
     // --- Astro (Powerlaw) ---
+    // Selected astrophysical spectral model (see AstroModel).
+    [[nodiscard]] AstroModel astro_model() const noexcept { return m_AstroModel; }
     [[nodiscard]] double e_ref_gev() const noexcept { return m_ERefGeV; }
     [[nodiscard]] double astro_reference_index() const noexcept { return m_AstroReferenceIndex; }
     [[nodiscard]] bool   astro_per_type_norm() const noexcept { return m_AstroPerTypeNorm; }
@@ -71,6 +79,8 @@ namespace io::ic {
     bool           m_UseData        = false;
     LikelihoodType m_LikelihoodType = LikelihoodType::Poisson;
     BackendKind    m_BackendKind    = BackendKind::Cpu;
+
+    AstroModel m_AstroModel = AstroModel::Powerlaw;
 
     double m_ERefGeV             = 1.0e5;
     double m_AstroReferenceIndex = 2.0;

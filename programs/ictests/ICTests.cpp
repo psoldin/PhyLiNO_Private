@@ -134,7 +134,7 @@ static void test_mixed_binning_cascade_grid() {
 // count and the two contiguous blocks components index into.
 static void test_parameter_layout() {
   using namespace params::ic;
-  assert(number_of_parameters() == 20);
+  assert(number_of_parameters() == 23);
   assert(nBarrParams == 4);
   assert(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -146,6 +146,9 @@ static void test_parameter_layout() {
   assert(MuonNorm != MuonGunNorm);
   // Galactic norms are the last block, one per galactic template a sample can declare.
   assert(GalacticNorm1 == GalacticNorm0 + 1);
+  // Broken-power-law block (NNMFit AstroBPL), contiguous after the galactic norms.
+  assert(AstroGamma2 == AstroGamma1 + 1);
+  assert(AstroEBreak == AstroGamma2 + 1);
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -1101,6 +1104,92 @@ static void test_ra_broadcast_matches_2d() {
   assert(with_ra.partial_llh(perturbed) > at_nominal);
 }
 
+// NNMFit AstroBPL (parameters/astroBPL.py). e_break is log10(E/GeV); `pivot`
+// renormalises so the norm is the flux at 100 TeV whichever side of the break
+// that falls on. Checked here against a hand-evaluated reference rather than
+// against a second implementation of the same formula.
+static void test_astro_broken_powerlaw() {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  // Two events, one either side of the break at 10^4.4 GeV.
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  const double norm = 1.77, g1 = 1.31, g2 = 2.74, log_ebreak = 4.4;
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]    = norm;
+  values[params::ic::AstroGamma1]  = g1;
+  values[params::ic::AstroGamma2]  = g2;
+  values[params::ic::AstroEBreak]  = log_ebreak;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  // per_type_norm = false, so the 0.5 factor applies.
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false,
+                    AstroModel::BrokenPowerlaw);
+  assert(flux.check_and_recalculate(parameter));
+
+  const double e_break = std::pow(10.0, log_ebreak);
+  const double pivot   = 1.0e5 < e_break ? std::pow(1.0e5 / e_break, g1)
+                                         : std::pow(1.0e5 / e_break, g2);
+  double expected = 0.0;
+  for (int i = 0; i < 2; ++i) {
+    const double e     = sample.e_true[i];
+    const double shape = e < e_break ? std::pow(e / e_break, -g1) : std::pow(e / e_break, -g2);
+    expected += sample.astro_baseline[i] * norm * pivot * shape *
+                (e / 1.0e5) * (e / 1.0e5) * 0.5;
+  }
+  assert(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+
+  // The break must actually bite: moving it above both events changes the result.
+  values[params::ic::AstroEBreak] = 7.0;
+  ParameterWrapper moved(params::ic::number_of_parameters());
+  moved.reset_parameter(values.data());
+  assert(flux.check_and_recalculate(moved));
+  assert(std::abs(flux.histogram()[0] - expected) > 1e-6 * expected);
+}
+
+// The single-power-law mode must be untouched by the broken-power-law work:
+// same inputs, same numbers as the formula documented on PowerlawFlux.
+static void test_astro_single_powerlaw_unchanged() {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]     = 1.5;
+  values[params::ic::SpectralIndex] = 2.4;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
+  assert(flux.check_and_recalculate(parameter));
+
+  double expected = 0.0;
+  for (int i = 0; i < 2; ++i)
+    expected += sample.astro_baseline[i] * 0.5 * 1.5 *
+                std::pow(sample.e_true[i] / 1.0e5, 2.0 - 2.4);
+  assert(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+}
+
 // The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
 //   e  = rescale * 10^p - anchor        (both 100 GeV in the combined config)
 //   PF = 10^(a + b*e + c*e^2)           per event, per component
@@ -1576,6 +1665,8 @@ int main() {
   test_metal_say_ssq_matches_cpu();
   test_sample_likelihood_component_masking();
   test_ra_broadcast_matches_2d();
+  test_astro_broken_powerlaw();
+  test_astro_single_powerlaw_unchanged();
   test_veto_reweight();
   test_template_flux();
   test_detector_systematics();

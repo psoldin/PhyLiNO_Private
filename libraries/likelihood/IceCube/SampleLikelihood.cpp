@@ -171,7 +171,8 @@ namespace ana::ic {
                       settings.astro_reference_index,
                       settings.astro_per_type_norm,
                       gpu,
-                      use_say);
+                      use_say,
+                      settings.astro_model);
 
     if (cfg.wants_atmospheric())
       m_Atmo.emplace(sample,

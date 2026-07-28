@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../io/IceCube/Binning.h"
+#include "../../io/IceCube/ICInputOptions.h"  // io::ic::AstroModel
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
 #include "GpuBackend.h"
@@ -10,6 +11,10 @@
 #include <vector>
 
 namespace ana::ic {
+
+  // The astrophysical spectral model this component evaluates, selected by the
+  // IceCube.AstroModel config setting.
+  using AstroModel = io::ic::AstroModel;
 
   /**
    * Astrophysical single power-law flux (NNMFit Powerlaw + SpectralIndex):
@@ -21,9 +26,29 @@ namespace ana::ic {
    * per_type_norm=false halves the per-particle-type normalization).
    *
    * astro_baseline_i is the precomputed per-event "powerlaw" weight from the MC.
-   * Recalculates when AstroNorm or SpectralIndex changed. When a GpuBackend is
-   * supplied the per-event loop runs on the GPU; otherwise the CPU OMP+SIMD path
-   * is used (and serves as the validation oracle).
+   *
+   * With AstroModel::BrokenPowerlaw the component instead evaluates NNMFit's
+   * AstroBPL (parameters/astroBPL.py), driven by AstroNorm, AstroGamma1,
+   * AstroGamma2 and AstroEBreak (the last given as log10(E_break / GeV)):
+   *
+   *   E_break = 10^AstroEBreak
+   *   pivot   = (1e5 < E_break) ? (1e5 / E_break)^gamma_1 : (1e5 / E_break)^gamma_2
+   *   shape   = (E_true_i < E_break) ? (E_true_i / E_break)^(-gamma_1)
+   *                                  : (E_true_i / E_break)^(-gamma_2)
+   *   astro_i = astro_baseline_i * eff_norm * pivot * shape * (E_true_i / 1e5)^2
+   *
+   * `pivot` (positive exponent, unlike `shape`) renormalises the flux so that
+   * AstroNorm is its value at 100 TeV whichever side of the break that falls on.
+   * The trailing (E/1e5)^2 undoes the baseline column's own spectrum: the MC's
+   * "powerlaw" column is fluxless_weight * 1e-18 * (E/1e5)^-2, so AstroBPL's own
+   * 1e-18 cancels and only the (E/1e5)^2 remains. That 1e5 is a property of the
+   * MC column, NOT the configurable ERefGeV, and must not be replaced by it.
+   *
+   * Recalculates when the parameters the active model uses changed (AstroNorm
+   * and SpectralIndex; AstroNorm, AstroGamma1, AstroGamma2 and AstroEBreak in
+   * broken-power-law mode). When a GpuBackend is supplied the per-event loop
+   * runs on the GPU; otherwise the CPU OMP+SIMD path is used (and serves as the
+   * validation oracle).
    */
   class PowerlawFlux {
    public:
@@ -33,7 +58,8 @@ namespace ana::ic {
                  double                         reference_index,
                  bool                           per_type_norm,
                  std::shared_ptr<GpuBackend>    gpu            = nullptr,
-                 bool                           need_per_event = false);
+                 bool                           need_per_event = false,
+                 io::ic::AstroModel             model          = io::ic::AstroModel::Powerlaw);
     ~PowerlawFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -61,6 +87,7 @@ namespace ana::ic {
     double                  m_ReferenceIndex;
     bool                    m_PerTypeNorm;
     bool                    m_NeedPerEvent;
+    io::ic::AstroModel      m_Model;
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
