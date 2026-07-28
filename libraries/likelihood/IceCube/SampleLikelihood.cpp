@@ -3,11 +3,48 @@
 #include "SAYLikelihood.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 
 namespace ana::ic {
 
   namespace {
+
+    // NNMFit's GalacticTemplate defines no fluctuation graph, so it is excluded
+    // from the sigma^2 sum (histogram_builder.py:307) and the exporter writes an
+    // all-zero fluctuation column. SampleLikelihood relies on that: it neither
+    // adds the galactic templates to sigma^2 nor re-runs the ssq reduction when a
+    // galactic norm moves. A file that carried non-zero fluctuations would
+    // silently diverge from the reference, so reject it at construction.
+    //
+    // Checked against the file's own second column rather than
+    // TemplateFlux::fluctuation(), which holds the SQUARED, norm-scaled values
+    // and is still all zeros until the first check_and_recalculate().
+    void require_zero_fluctuation_column(const std::string& path) {
+      std::ifstream in(path);
+      if (!in)
+        throw std::runtime_error("SampleLikelihood: cannot open galactic template file '" + path + "'");
+
+      std::string line;
+      int         bin = 0;
+      while (std::getline(in, line)) {
+        if (line.empty() || line.front() == '#') continue;
+        std::istringstream row(line);
+        double             rate = 0.0, fluctuation = 0.0;
+        if (!(row >> rate >> fluctuation)) continue;
+        if (fluctuation != 0.0)
+          throw std::runtime_error(
+              "SampleLikelihood: galactic template '" + path + "' has a non-zero fluctuation " +
+              std::to_string(fluctuation) + " in bin " + std::to_string(bin) +
+              "; NNMFit's GalacticTemplate defines no fluctuation graph and is excluded from the "
+              "sigma^2 sum, so a non-zero column would silently diverge from the reference");
+        ++bin;
+      }
+    }
 
     template <typename T>
     T square(T&& t) noexcept {
@@ -155,8 +192,10 @@ namespace ana::ic {
 
     // Galactic templates are already 3D: NNMFit's histogram components are never
     // binned, so the exported file carries the analysis binning's RA structure.
-    for (const io::ic::GalacticTemplateConfig& galactic : cfg.galactic)
+    for (const io::ic::GalacticTemplateConfig& galactic : cfg.galactic) {
+      require_zero_fluctuation_column(galactic.file);
       m_Galactic.emplace_back(cfg.binning, galactic.file, galactic.norm_index, cfg.livetime);
+    }
 
     const int total_bins = cfg.binning.total_bins();
     const int mc_bins    = cfg.mc_binning.total_bins();
@@ -189,12 +228,24 @@ namespace ana::ic {
     // parameter, so at most one component is stale per call and running the
     // checks concurrently was measured to gain nothing (Metal) / <5% (CPU).
     // Cross-sample concurrency lives in ICLikelihood::calculate_likelihood.
-    bool changed = false;
-    if (m_Astro) changed |= m_Astro->check_and_recalculate(parameter);
-    if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
-    if (m_Template) changed |= m_Template->check_and_recalculate(parameter);
-    if (m_Systematics) changed |= m_Systematics->check_and_recalculate(parameter);
-    for (TemplateFlux& galactic : m_Galactic) changed |= galactic.check_and_recalculate(parameter);
+    //
+    // The returned flag says whether anything that feeds sigma^2 changed; it is
+    // what partial_llh() uses to decide whether to re-run assemble_fluctuation().
+    bool ssq_changed = false;
+    if (m_Astro) ssq_changed |= m_Astro->check_and_recalculate(parameter);
+    if (m_Atmo) ssq_changed |= m_Atmo->check_and_recalculate(parameter);
+    if (m_Template) ssq_changed |= m_Template->check_and_recalculate(parameter);
+    if (m_Systematics) ssq_changed |= m_Systematics->check_and_recalculate(parameter);
+
+    // The galactic templates recalculate here too -- the prediction below reads
+    // their histograms -- but deliberately do NOT set ssq_changed: NNMFit's
+    // GalacticTemplate defines no fluctuation graph and is excluded from the ssq
+    // sum (histogram_builder.py:307), and the constructor enforces the zero
+    // fluctuation column that guarantees it. A moved galactic norm therefore
+    // provably cannot change sigma^2, and re-running assemble_fluctuation for it
+    // would cost a full reduction (a GPU dispatch over every bin) for nothing.
+    for (TemplateFlux& galactic : m_Galactic)
+      static_cast<void>(galactic.check_and_recalculate(parameter));
 
     const std::span<const double> astro     = m_Astro ? m_Astro->histogram() : std::span<const double>{};
     const std::span<const double> atmo      = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
@@ -230,7 +281,7 @@ namespace ana::ic {
     // pre-gradient sum.
     for (double& value : m_Predicted) value = std::max(0.0, value);
 
-    return changed;
+    return ssq_changed;
   }
 
   void SampleLikelihood::assemble_fluctuation() {
@@ -308,7 +359,16 @@ namespace ana::ic {
 
   std::vector<double> SampleLikelihood::in_analysis_bins(const std::span<const double> values) const {
     if (values.empty()) return {};
+
+    // A component's histogram is binned either in the analysis binning or in the
+    // MC binning, and the two are told apart purely by size. That is exact only
+    // because every caller passes one of this sample's own component histograms:
+    // size == m_Predicted.size() iff analysis-binned, size == m_McTotal.size()
+    // iff MC-binned. (When the sample has no RA axis the two coincide and the
+    // copy branch is taken, which is the same answer the broadcast would give.)
     if (values.size() == m_Predicted.size()) return std::vector<double>(values.begin(), values.end());
+    assert(values.size() == m_McTotal.size() &&
+           "in_analysis_bins: span is binned in neither the analysis nor the MC binning");
 
     std::vector<double> out(m_Predicted.size(), 0.0);
     io::ic::broadcast_over_ra(values, m_RaBins, static_cast<double>(m_RaBins), out);
@@ -341,10 +401,10 @@ namespace ana::ic {
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {
-    const bool changed = assemble_prediction(parameter);
+    const bool ssq_changed = assemble_prediction(parameter);
 
     if (m_UseSAY) {
-      if (changed)
+      if (ssq_changed)
         assemble_fluctuation();
       return calculate_say_likelihood(m_Data, m_Predicted, m_Ssq);
     }

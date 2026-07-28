@@ -966,7 +966,9 @@ static void test_sample_likelihood_component_masking() {
 
 // A sample fitted with an RA axis must predict exactly the 2D prediction spread
 // evenly over the RA bins (NNMFit Binning_2D_to_3D: repeat(mu, n_ra) / n_ra), and
-// its sigma^2 the 2D sigma^2 divided by n_ra^2.
+// its sigma^2 the 2D sigma^2 divided by n_ra^2. A galactic template is the one
+// piece that is genuinely 3D: it is added to mu after the broadcast, undivided,
+// and stays out of sigma^2 entirely.
 static void test_ra_broadcast_matches_2d() {
   using ana::ic::GlobalFluxSettings;
   using ana::ic::SampleLikelihood;
@@ -1015,6 +1017,75 @@ static void test_ra_broadcast_matches_2d() {
   assert(with_ra.predicted().size() == 4);
   for (int r = 0; r < 4; ++r)
     assert(with_ra.predicted()[r] == flat.predicted()[0] / 4.0);
+
+  // sigma^2 is a squared quantity, so its divisor is n_ra^2, not n_ra. Getting
+  // this divisor wrong at the call site would leave mu right and silently scale
+  // every SAY variance by n_ra -- exactly the kind of error that survives to a
+  // published number, so assert it rather than only asserting mu.
+  assert(flat.ssq().size() == 1);
+  assert(with_ra.ssq().size() == 4);
+  assert(flat.ssq()[0] > 0.0);
+  for (int r = 0; r < 4; ++r)
+    assert(with_ra.ssq()[r] == flat.ssq()[0] / 16.0);
+
+  // A galactic template is already in the analysis binning: its per-bin rate is
+  // added to mu UNDIVIDED (no RA broadcast), and it contributes nothing to
+  // sigma^2 -- NNMFit's GalacticTemplate has no fluctuation graph and is left out
+  // of the ssq sum (histogram_builder.py:307).
+  const std::string galactic_path = "ictests_galactic.txt";
+  const double      galactic_rates[4] = {1.0e-8, 2.0e-8, 3.0e-8, 4.0e-8};
+  {
+    std::ofstream out(galactic_path);
+    out << "# template bins 4\n";
+    out << "# columns: template_rate fluctuation_rate (both per second)\n";
+    for (const double rate : galactic_rates) out << rate << " 0\n";
+  }
+
+  io::ic::SampleConfig cfg_gal{.name = "with_galactic", .binning = binning_3d, .mc_binning = binning_2d};
+  cfg_gal.livetime   = 1.0e8;
+  cfg_gal.components = {"astro"};
+  cfg_gal.galactic.push_back({.name = "fermi", .file = galactic_path, .norm_index = params::ic::GalacticNorm0});
+
+  const double galactic_norm = 2.0;
+  values[params::ic::AstroNorm]        = 1.5;
+  values[params::ic::GalacticNorm0]    = galactic_norm;
+  ParameterWrapper with_galactic_parameter(params::ic::number_of_parameters());
+  with_galactic_parameter.reset_parameter(values.data());
+
+  SampleLikelihood with_galactic(sample, cfg_gal, settings, nullptr, true);
+  std::remove(galactic_path.c_str());
+  with_galactic.generate_asimov(with_galactic_parameter);
+
+  for (int r = 0; r < 4; ++r) {
+    const double expected =
+        with_ra.predicted()[r] + galactic_norm * (galactic_rates[r] * cfg_gal.livetime);
+    assert(std::abs(with_galactic.predicted()[r] - expected) < 1e-12 * expected);
+    // Undivided: the galactic part alone must be the full per-bin rate, not a
+    // quarter of it.
+    assert(std::abs(with_galactic.galactic_histogram()[r] -
+                    galactic_norm * (galactic_rates[r] * cfg_gal.livetime)) < 1e-12);
+    // sigma^2 is untouched by the galactic template.
+    assert(with_galactic.ssq()[r] == with_ra.ssq()[r]);
+  }
+
+  // A galactic file with a non-zero fluctuation column contradicts that exclusion
+  // and must be rejected rather than silently ignored.
+  const std::string bad_galactic = "ictests_galactic_bad.txt";
+  {
+    std::ofstream out(bad_galactic);
+    out << "# template bins 4\n";
+    for (int b = 0; b < 4; ++b) out << galactic_rates[b] << " 1.0e-9\n";
+  }
+  io::ic::SampleConfig cfg_bad = cfg_gal;
+  cfg_bad.galactic[0].file     = bad_galactic;
+  bool threw = false;
+  try {
+    SampleLikelihood rejected(sample, cfg_bad, settings, nullptr, true);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  std::remove(bad_galactic.c_str());
+  assert(threw);
 
   // Asimov data is the prediction, so the partial -2lnL of the two must agree to
   // the extent SAY allows: the 3D bins are the 2D bin split four ways, with sigma^2

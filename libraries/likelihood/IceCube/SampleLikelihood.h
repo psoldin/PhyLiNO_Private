@@ -55,6 +55,9 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> predicted() const noexcept { return m_Predicted; }
     [[nodiscard]] std::span<const double> data() const noexcept { return m_Data; }
 
+    /** Per-bin sigma^2 in the analysis binning (SAY only; zero under Poisson). */
+    [[nodiscard]] std::span<const double> ssq() const noexcept { return m_Ssq; }
+
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
 
@@ -128,7 +131,9 @@ namespace ana::ic {
     // ICLikelihood's m_Parameter) -- the caller resets one shared ParameterWrapper
     // and passes it into partial_llh()/generate_asimov(). assemble_prediction()
     // therefore takes it explicitly so it can call check_and_recalculate() and
-    // report whether any flux changed. assemble_fluctuation() needs no parameter:
+    // report whether any flux that feeds sigma^2 changed -- which excludes the
+    // galactic templates, see the comment at its definition.
+    // assemble_fluctuation() needs no parameter:
     // it only re-sums the per-event weights the flux components already
     // recalculated.
     bool assemble_prediction(const ParameterWrapper& parameter);
