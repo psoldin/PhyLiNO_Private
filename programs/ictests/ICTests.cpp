@@ -1254,6 +1254,25 @@ static void test_drop_ra_axis() {
   const int flat_3d = analysis.bin_index(reco);
   const int flat_2d = mc.bin_index(reco_2d);
   assert(flat_3d == flat_2d * 4 + analysis.axes()[2].index(0.1));
+
+  auto throws = [](auto&& f) {
+    try {
+      f();
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // Ra axis present but not last: row-major flattening would not give the
+  // (2D index * n_ra + ra index) layout the broadcast assumes.
+  const Binning ra_first({io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)"),
+                          io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)")});
+  assert(throws([&] { (void)io::ic::drop_ra_axis(ra_first); }));
+
+  // A binning cannot consist of the Ra axis alone.
+  const Binning ra_only({io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
+  assert(throws([&] { (void)io::ic::drop_ra_axis(ra_only); }));
 }
 
 // mu is spread uniformly over RA (divisor n_ra), sigma^2 with divisor n_ra^2 --
@@ -1279,6 +1298,25 @@ static void test_broadcast_over_ra() {
   std::vector<double> identity(3, -1.0);
   io::ic::broadcast_over_ra(mc_bins, 1, 1.0, identity);
   for (int b = 0; b < 3; ++b) assert(identity[b] == mc_bins[b]);
+
+  auto throws = [](auto&& f) {
+    try {
+      f();
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // A wrong-size out span must throw rather than write out of bounds.
+  std::vector<double> wrong_size(8, -1.0);
+  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, 3, 3.0, wrong_size); }));
+
+  // n_ra <= 0 must throw with an actionable message, not underflow to a huge
+  // size_t and produce a nonsense "expected 3 * 18446744073709551614".
+  std::vector<double> negative_n_ra(3, -1.0);
+  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, -1, 3.0, negative_n_ra); }));
+  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, 0, 3.0, negative_n_ra); }));
 }
 
 // Data is binned truly 3D (NNMFit make_binned_data), so the counting helper needs

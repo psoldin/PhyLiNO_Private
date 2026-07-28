@@ -66,7 +66,14 @@ namespace io::ic {
    */
   [[nodiscard]] Binning drop_ra_axis(const Binning& binning);
 
-  /** Number of bins on the trailing Ra axis, or 1 when the binning has none. */
+  /**
+   * Number of bins on the trailing Ra axis, or 1 when the binning has none.
+   *
+   * Assumes a well-formed binning: it only inspects the last axis, so a malformed
+   * binning with a non-trailing Ra axis returns 1 instead of throwing, unlike
+   * drop_ra_axis(). parse_samples validates every binning via drop_ra_axis() before
+   * anything calls this, so that case should not reach here in practice.
+   */
   [[nodiscard]] int ra_bin_count(const Binning& binning) noexcept;
 
   /**
@@ -75,7 +82,8 @@ namespace io::ic {
    *
    * `divisor` is n_ra for mu and n_ra * n_ra for sigma^2, matching NNMFit's
    * Binning_2D_to_3D (make_binned_flux divides the repeated weights by n_ra, so their
-   * square picks up n_ra^2). n_ra == 1 with divisor 1.0 is an exact copy.
+   * square picks up n_ra^2). n_ra == 1 with divisor 1.0 is an exact copy. The caller is
+   * responsible for passing a nonzero divisor.
    *
    * `out` must have exactly mc_bins.size() * n_ra entries.
    */

@@ -141,6 +141,9 @@ namespace io::ic {
 
   void broadcast_over_ra(const std::span<const double> mc_bins, const int n_ra, const double divisor,
                          const std::span<double> out) {
+    if (n_ra <= 0)
+      throw std::runtime_error("broadcast_over_ra: n_ra must be positive, got " + std::to_string(n_ra));
+
     if (out.size() != mc_bins.size() * static_cast<std::size_t>(n_ra))
       throw std::runtime_error("broadcast_over_ra: output has " + std::to_string(out.size()) +
                                " bins, expected " + std::to_string(mc_bins.size()) + " * " +
