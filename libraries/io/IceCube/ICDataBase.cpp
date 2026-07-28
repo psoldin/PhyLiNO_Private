@@ -78,13 +78,13 @@ namespace io::ic {
   }  // namespace
 
   arrow::Status ICDataBase::read_sample(const SampleConfig& cfg, ICSample& out) {
-    // read_sample builds a fixed 2-element {e_reco, reco_zenith} reco array
-    // below; Binning::bin_index reads reco[d] for d < n_axes(), so a binning
-    // with more axes (e.g. a future RA axis) would read past the array.
-    // Phase 3 will extend this deliberately; guard against it until then.
-    if (cfg.binning.n_axes() != 2)
+    // read_sample builds a fixed 2-element {e_reco, reco_zenith} reco array below, and
+    // MC is always binned in the RA-free mc_binning: NNMFit's Binning_2D_to_3D bins the
+    // events in 2D and spreads the result over RA (see SampleLikelihood), so the
+    // per-event path never sees an RA axis.
+    if (cfg.mc_binning.n_axes() != 2)
       return arrow::Status::Invalid(
-          "ICDataBase::read_sample: only 2-axis binnings supported in Phase 1 (sample '" + cfg.name + "')");
+          "ICDataBase::read_sample: only 2-axis MC binnings are supported (sample '" + cfg.name + "')");
 
     std::cout << "Reading IceCube sample '" << cfg.name << "': " << cfg.parquet << '\n';
     ARROW_ASSIGN_OR_RAISE(auto table, read_parquet_file(cfg.parquet));
@@ -179,15 +179,16 @@ namespace io::ic {
     out.bin_idx.resize(N);
     for (std::size_t i = 0; i < N; ++i) {
       const std::array<double, 2> reco{e_reco[i], reco_zenith[i]};
-      out.bin_idx[i] = cfg.binning.bin_index(reco);
+      out.bin_idx[i] = cfg.mc_binning.bin_index(reco);
     }
 
     // Compact to in-range events, group by bin, build the CSR index.
-    out.sort_into_bins(cfg.binning.total_bins());
+    out.sort_into_bins(cfg.mc_binning.total_bins());
 
     std::cout << "IceCube sample '" << cfg.name << "' loaded: " << N << " rows, "
               << out.size() << " in analysis range ("
-              << cfg.binning.total_bins() << " bins)\n";
+              << cfg.mc_binning.total_bins() << " MC bins, "
+              << cfg.binning.total_bins() << " analysis bins)\n";
 
     return arrow::Status::OK();
   }
@@ -206,6 +207,14 @@ namespace io::ic {
     ARROW_ASSIGN_OR_RAISE(auto zenith, get_double_column(*table, b.reco_zenith));
     const std::size_t n_rows = energy.size();
 
+    // Data is binned in the full analysis binning (NNMFit Binning_2D_to_3D bins data
+    // truly 3D), so a sample with an RA axis needs its reco RA column too.
+    const bool needs_ra = cfg.ra_bins() > 1;
+    std::vector<double> ra;
+    if (needs_ra) {
+      ARROW_ASSIGN_OR_RAISE(ra, get_double_column(*table, b.reco_ra));
+    }
+
     // NNMFit's standard mask: apply it to real data (the MC baselines are
     // measured pre-cut and read_sample does not apply it there). Compact to the
     // passing rows rather than poisoning failing ones with a sentinel: NaN would
@@ -214,12 +223,15 @@ namespace io::ic {
     ARROW_ASSIGN_OR_RAISE(auto passes, standard_mask(*table, b.reco_energy));
     std::vector<double> masked_energy;
     std::vector<double> masked_zenith;
+    std::vector<double> masked_ra;
     masked_energy.reserve(n_rows);
     masked_zenith.reserve(n_rows);
+    if (needs_ra) masked_ra.reserve(n_rows);
     for (std::size_t i = 0; i < n_rows; ++i) {
       if (passes[i]) {
         masked_energy.push_back(energy[i]);
         masked_zenith.push_back(zenith[i]);
+        if (needs_ra) masked_ra.push_back(ra[i]);
       }
     }
     if (masked_energy.size() != n_rows)
@@ -228,7 +240,8 @@ namespace io::ic {
                 << (100.0 * static_cast<double>(n_rows - masked_energy.size()) / static_cast<double>(n_rows))
                 << "%)\n";
 
-    out = bin_event_counts(cfg.binning, masked_energy, masked_zenith);
+    out = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)
+                   : bin_event_counts(cfg.binning, masked_energy, masked_zenith);
     double total = 0.0;
     for (const double v : out) total += v;
     std::cout << "IceCube data '" << cfg.name << "': " << n_rows << " rows, " << total

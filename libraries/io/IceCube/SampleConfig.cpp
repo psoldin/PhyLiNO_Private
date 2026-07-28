@@ -36,6 +36,7 @@ namespace io::ic {
         const auto& br           = *branches_node;
         branches.reco_energy     = br.get<std::string>("RecoEnergy", branches.reco_energy);
         branches.reco_zenith     = br.get<std::string>("RecoZenith", branches.reco_zenith);
+        branches.reco_ra         = br.get<std::string>("RecoRa", branches.reco_ra);
         branches.true_energy     = br.get<std::string>("TrueEnergy", branches.true_energy);
         branches.astro_baseline  = br.get<std::string>("AstroBaseline", branches.astro_baseline);
         branches.conv_baseline   = br.get<std::string>("ConvBaseline", branches.conv_baseline);

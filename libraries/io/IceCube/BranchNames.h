@@ -16,6 +16,10 @@ namespace io::ic {
   struct BranchNames {
     std::string reco_energy     = "energy_truncated";
     std::string reco_zenith     = "zenith_MPEFit";
+    // Reconstructed right ascension in radians. Only read for samples whose analysis
+    // binning has an Ra axis; the tracks dataset calls it ra_MPEFit, the cascade
+    // datasets ra_monopod.
+    std::string reco_ra = "ra_MPEFit";
     std::string true_energy     = "MCPrimaryEnergy";
     std::string astro_baseline  = "powerlaw";
     std::string conv_baseline   = "mceq_conv_H4a_SIBYLL23c";
