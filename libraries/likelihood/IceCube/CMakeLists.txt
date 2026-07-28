@@ -77,4 +77,10 @@ target_link_libraries(icecube PUBLIC io likelihood utilities ${Boost_LIBRARIES}
 target_link_libraries(icecube PRIVATE nlohmann_json::nlohmann_json
                       Arrow::arrow_shared Parquet::parquet_shared)
 
+# The per-bin flux and SAY ssq loops carry omp pragmas; without this target they
+# are silently compiled away.
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(icecube PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 set_target_properties(icecube PROPERTIES LINKER_LANGUAGE CXX)

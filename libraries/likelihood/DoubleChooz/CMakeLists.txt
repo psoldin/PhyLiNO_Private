@@ -56,4 +56,9 @@ target_link_libraries(doublechooz PUBLIC io likelihood utilities ${Boost_LIBRARI
                       ROOT::Core ROOT::Tree ROOT::TreePlayer)
 target_link_libraries(doublechooz PRIVATE nlohmann_json::nlohmann_json)
 
+# ThreeFlavorOscillation carries omp simd pragmas.
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(doublechooz PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 set_target_properties(doublechooz PROPERTIES LINKER_LANGUAGE CXX)

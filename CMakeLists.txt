@@ -18,8 +18,24 @@ find_package(ROOT REQUIRED COMPONENTS Minuit2 Minuit)
 # Boost.System is header only since 1.69 and is no longer shipped as a separate component.
 find_package(Boost COMPONENTS filesystem iostreams program_options log timer REQUIRED)
 
-# Find OpenMP
+# Find OpenMP. AppleClang ships without the runtime and without the headers on the
+# default search paths, so the plain find_package() probe fails even when Homebrew's
+# libomp is installed. Feed it the brew prefix and probe again.
 find_package(OpenMP)
+if(NOT OpenMP_CXX_FOUND AND APPLE)
+  execute_process(COMMAND brew --prefix libomp
+                  OUTPUT_VARIABLE LIBOMP_PREFIX
+                  OUTPUT_STRIP_TRAILING_WHITESPACE
+                  ERROR_QUIET)
+  if(LIBOMP_PREFIX AND EXISTS "${LIBOMP_PREFIX}/lib/libomp.dylib")
+    set(OpenMP_C_FLAGS "-Xclang -fopenmp -I${LIBOMP_PREFIX}/include")
+    set(OpenMP_CXX_FLAGS "-Xclang -fopenmp -I${LIBOMP_PREFIX}/include")
+    set(OpenMP_C_LIB_NAMES omp)
+    set(OpenMP_CXX_LIB_NAMES omp)
+    set(OpenMP_omp_LIBRARY "${LIBOMP_PREFIX}/lib/libomp.dylib")
+    find_package(OpenMP)
+  endif()
+endif()
 find_package(Arrow REQUIRED CONFIG)
 find_package(Parquet REQUIRED CONFIG)
 
@@ -27,10 +43,14 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-if(OPENMP_FOUND)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+# The OpenMP::OpenMP_CXX imported target carries both the compile flag and the
+# runtime library. The old CMAKE_*_FLAGS route relied on OpenMP_EXE_LINKER_FLAGS,
+# which modern FindOpenMP no longer sets, so the pragmas would compile but never
+# link. Targets that contain omp pragmas link the imported target instead.
+if(OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP enabled: ${OpenMP_CXX_FLAGS}")
+else()
+  message(STATUS "OpenMP not found -- omp pragmas will be ignored")
 endif()
 
 macro(remove_flag_from_file _target _file _flag)
