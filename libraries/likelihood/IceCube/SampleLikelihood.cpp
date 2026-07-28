@@ -129,7 +129,7 @@ namespace ana::ic {
     , m_UseSAY(use_say) {
     if (cfg.wants_astro())
       m_Astro.emplace(sample,
-                      cfg.binning,
+                      cfg.mc_binning,
                       settings.e_ref_gev,
                       settings.astro_reference_index,
                       settings.astro_per_type_norm,
@@ -138,7 +138,7 @@ namespace ana::ic {
 
     if (cfg.wants_atmospheric())
       m_Atmo.emplace(sample,
-                     cfg.binning,
+                     cfg.mc_binning,
                      settings.conv_delta_gamma_e_ref,
                      settings.prompt_delta_gamma_e_ref,
                      gpu,
@@ -148,15 +148,26 @@ namespace ana::ic {
                      settings.veto_rescale_energy);
 
     if (cfg.wants_template())
-      m_Template.emplace(cfg.binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
+      m_Template.emplace(cfg.mc_binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
 
     if (!cfg.gradient_file.empty())
-      m_Systematics.emplace(cfg.binning, cfg.gradient_file);
+      m_Systematics.emplace(cfg.mc_binning, cfg.gradient_file);
+
+    // Galactic templates are already 3D: NNMFit's histogram components are never
+    // binned, so the exported file carries the analysis binning's RA structure.
+    for (const io::ic::GalacticTemplateConfig& galactic : cfg.galactic)
+      m_Galactic.emplace_back(cfg.binning, galactic.file, galactic.norm_index, cfg.livetime);
 
     const int total_bins = cfg.binning.total_bins();
+    const int mc_bins    = cfg.mc_binning.total_bins();
+    m_RaBins             = cfg.ra_bins();
+
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
     m_Ssq.assign(total_bins, 0.0);
+    m_GalacticTotal.assign(total_bins, 0.0);
+    m_McTotal.assign(mc_bins, 0.0);
+    m_McSsq.assign(mc_bins, 0.0);
 
     // SAY-on-GPU setup. Both flux kernels leave their per-event weights in GPU
     // buffers; the say_ssq kernel reduces them to the per-bin ssq without a
@@ -169,7 +180,7 @@ namespace ana::ic {
       const char* src = m_Gpu->language() == GpuLanguage::Cuda ? kSsqKernelCuda : kSsqKernelMetal;
       m_Gpu->ensure_kernel("say_ssq", src);
       m_hSsqOffsets = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
-      m_hSsq        = m_Gpu->alloc_output(total_bins);
+      m_hSsq        = m_Gpu->alloc_output(mc_bins);
     }
   }
 
@@ -183,23 +194,41 @@ namespace ana::ic {
     if (m_Atmo) changed |= m_Atmo->check_and_recalculate(parameter);
     if (m_Template) changed |= m_Template->check_and_recalculate(parameter);
     if (m_Systematics) changed |= m_Systematics->check_and_recalculate(parameter);
+    for (TemplateFlux& galactic : m_Galactic) changed |= galactic.check_and_recalculate(parameter);
 
     const std::span<const double> astro     = m_Astro ? m_Astro->histogram() : std::span<const double>{};
     const std::span<const double> atmo      = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
     const std::span<const double> tmpl      = m_Template ? m_Template->histogram() : std::span<const double>{};
     const std::span<const double> mu_delta  = m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
 
-    for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) {
+    for (std::size_t b = 0, n = m_McTotal.size(); b < n; ++b) {
       double total = 0.0;
       if (!astro.empty()) total += astro[b];
       if (!atmo.empty()) total += atmo[b];
       if (!tmpl.empty()) total += tmpl[b];
       if (!mu_delta.empty()) total += mu_delta[b];
-      // Clip at zero to avoid unphysical predictions (matches NNMFit mu clip),
-      // applied after the gradient delta -- NNMFit clips mu_tot, not the
-      // pre-gradient sum.
-      m_Predicted[b] = std::max(0.0, total);
+      m_McTotal[b] = total;
     }
+
+    // Spread the MC-binned total over the RA axis (NNMFit Binning_2D_to_3D:
+    // repeat(mu, n_ra) / n_ra). n_ra == 1 is an exact copy.
+    io::ic::broadcast_over_ra(m_McTotal, m_RaBins, static_cast<double>(m_RaBins), m_Predicted);
+
+    // Galactic templates are already in the analysis binning, so they are added
+    // after the broadcast and are NOT divided.
+    if (!m_Galactic.empty()) {
+      std::ranges::fill(m_GalacticTotal, 0.0);
+      for (TemplateFlux& galactic : m_Galactic) {
+        const std::span<const double> h = galactic.histogram();
+        for (std::size_t b = 0, n = m_GalacticTotal.size(); b < n; ++b) m_GalacticTotal[b] += h[b];
+      }
+      for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) m_Predicted[b] += m_GalacticTotal[b];
+    }
+
+    // Clip at zero to avoid unphysical predictions (matches NNMFit's mu clip),
+    // applied to the final bin content -- NNMFit clips mu_tot, not the
+    // pre-gradient sum.
+    for (double& value : m_Predicted) value = std::max(0.0, value);
 
     return changed;
   }
@@ -209,7 +238,7 @@ namespace ana::ic {
     // -- matches NNMFit's rule that same-event components must be summed
     // *before* squaring (NNMFit/core/histogram_builder.py:229-329), since
     // (w1+w2)^2 != w1^2 + w2^2.
-    const int n_bins = static_cast<int>(m_Predicted.size());
+    const int n_bins = static_cast<int>(m_McSsq.size());
 
     if (m_hSsq >= 0) {
       // GPU path: reduce the flux kernels' per-event weight buffers in place.
@@ -226,7 +255,7 @@ namespace ana::ic {
 
       const float* ssq = m_Gpu->contents(m_hSsq);
       for (int b = 0; b < n_bins; ++b)
-        m_Ssq[b] = static_cast<double>(ssq[b]);
+        m_McSsq[b] = static_cast<double>(ssq[b]);
     } else {
       const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
       const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
@@ -242,7 +271,7 @@ namespace ana::ic {
           for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
             acc += square(event_weight(i));
           }
-          m_Ssq[b] = acc;
+          m_McSsq[b] = acc;
         }
       };
 
@@ -253,21 +282,37 @@ namespace ana::ic {
       else if (!atmo.empty())
         accumulate([&](const std::size_t i) { return atmo[i]; });
       else
-        std::ranges::fill(m_Ssq, 0.0);
+        std::ranges::fill(m_McSsq, 0.0);
     }
 
     // Histogram-level fluctuation from the template component, added after the
     // per-event sum (NNMFit: ssq += (hist_fluctuation * livetime)**2).
     if (m_Template) {
       const std::span<const double> tmpl_ssq = m_Template->fluctuation();
-      for (int b = 0; b < n_bins; ++b) m_Ssq[b] += tmpl_ssq[b];
+      for (int b = 0; b < n_bins; ++b) m_McSsq[b] += tmpl_ssq[b];
     }
 
     // Histogram-level fluctuation from the SnowStorm detector gradients.
     if (m_Systematics) {
       const std::span<const double> sys_ssq = m_Systematics->ssq_delta();
-      for (int b = 0; b < n_bins; ++b) m_Ssq[b] += sys_ssq[b];
+      for (int b = 0; b < n_bins; ++b) m_McSsq[b] += sys_ssq[b];
     }
+
+    // sigma^2 is a squared quantity, so the RA divisor is squared too (NNMFit
+    // Binning_2D_to_3D.make_binned_flux with is_ssq_calc=True). The galactic
+    // templates contribute nothing here: NNMFit's GalacticTemplate defines no
+    // fluctuation graph and is excluded from the ssq sum.
+    io::ic::broadcast_over_ra(m_McSsq, m_RaBins,
+                              static_cast<double>(m_RaBins) * static_cast<double>(m_RaBins), m_Ssq);
+  }
+
+  std::vector<double> SampleLikelihood::in_analysis_bins(const std::span<const double> values) const {
+    if (values.empty()) return {};
+    if (values.size() == m_Predicted.size()) return std::vector<double>(values.begin(), values.end());
+
+    std::vector<double> out(m_Predicted.size(), 0.0);
+    io::ic::broadcast_over_ra(values, m_RaBins, static_cast<double>(m_RaBins), out);
+    return out;
   }
 
   void SampleLikelihood::set_data(const std::span<const double> counts) {

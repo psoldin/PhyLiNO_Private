@@ -964,6 +964,72 @@ static void test_sample_likelihood_component_masking() {
   assert(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
 }
 
+// A sample fitted with an RA axis must predict exactly the 2D prediction spread
+// evenly over the RA bins (NNMFit Binning_2D_to_3D: repeat(mu, n_ra) / n_ra), and
+// its sigma^2 the 2D sigma^2 divided by n_ra^2.
+static void test_ra_broadcast_matches_2d() {
+  using ana::ic::GlobalFluxSettings;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e5, 2.0e5};
+  sample.astro_baseline = {1.0e-8, 2.0e-8};
+  sample.bin_idx        = {0, 0};
+  sample.sort_into_bins(1);
+
+  const GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                    .astro_reference_index    = 2.0,
+                                    .conv_delta_gamma_e_ref   = 1000.0,
+                                    .prompt_delta_gamma_e_ref = 3800.0,
+                                    .astro_per_type_norm      = false,
+                                    .veto_anchor_energy       = 100.0,
+                                    .veto_rescale_energy      = 100.0};
+
+  const Binning binning_2d({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                            io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  const Binning binning_3d({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                            io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)"),
+                            io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
+
+  io::ic::SampleConfig cfg_2d{.name = "flat", .binning = binning_2d, .mc_binning = binning_2d};
+  cfg_2d.livetime   = 1.0e8;
+  cfg_2d.components = {"astro"};
+
+  io::ic::SampleConfig cfg_3d{.name = "with_ra", .binning = binning_3d, .mc_binning = binning_2d};
+  cfg_3d.livetime   = 1.0e8;
+  cfg_3d.components = {"astro"};
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]     = 1.5;
+  values[params::ic::SpectralIndex] = 2.4;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  SampleLikelihood flat(sample, cfg_2d, settings, nullptr, true);
+  SampleLikelihood with_ra(sample, cfg_3d, settings, nullptr, true);
+  flat.generate_asimov(parameter);
+  with_ra.generate_asimov(parameter);
+
+  assert(flat.predicted().size() == 1);
+  assert(with_ra.predicted().size() == 4);
+  for (int r = 0; r < 4; ++r)
+    assert(with_ra.predicted()[r] == flat.predicted()[0] / 4.0);
+
+  // Asimov data is the prediction, so the partial -2lnL of the two must agree to
+  // the extent SAY allows: the 3D bins are the 2D bin split four ways, with sigma^2
+  // split by 4^2, which is the split SAY's per-bin term is invariant under only
+  // approximately -- so compare the predictions, not the likelihood, and just
+  // require the 3D likelihood to be finite and at its minimum.
+  const double at_nominal = with_ra.partial_llh(parameter);
+  assert(std::isfinite(at_nominal));
+
+  values[params::ic::AstroNorm] = 1.8;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(values.data());
+  assert(with_ra.partial_llh(perturbed) > at_nominal);
+}
+
 // The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
 //   e  = rescale * 10^p - anchor        (both 100 GeV in the combined config)
 //   PF = 10^(a + b*e + c*e^2)           per event, per component
@@ -1368,6 +1434,7 @@ int main() {
   test_sample_likelihood_asimov_is_minimum();
   test_metal_say_ssq_matches_cpu();
   test_sample_likelihood_component_masking();
+  test_ra_broadcast_matches_2d();
   test_veto_reweight();
   test_template_flux();
   test_detector_systematics();

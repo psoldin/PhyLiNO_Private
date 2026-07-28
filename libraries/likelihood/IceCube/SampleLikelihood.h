@@ -68,9 +68,18 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> template_histogram() const noexcept {
       return m_Template ? m_Template->histogram() : std::span<const double>{};
     }
+    /** Summed per-bin prediction of this sample's galactic templates (analysis binning). */
+    [[nodiscard]] std::span<const double> galactic_histogram() const noexcept { return m_GalacticTotal; }
     [[nodiscard]] std::span<const double> systematics_mu_delta() const noexcept {
       return m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
     }
+
+    /**
+     * Re-express a component's per-bin histogram in the analysis binning. Components
+     * binned in mc_binning are spread over the RA axis exactly as the prediction is;
+     * a span already in the analysis binning (or an empty one) is returned as a copy.
+     */
+    [[nodiscard]] std::vector<double> in_analysis_bins(std::span<const double> values) const;
 
     /** Replace the Asimov expectation with measured counts (UseData). */
     void set_data(std::span<const double> counts);
@@ -87,9 +96,25 @@ namespace ana::ic {
     std::optional<TemplateFlux>         m_Template;
     std::optional<DetectorSystematics>  m_Systematics;
 
+    // Galactic-plane templates (NNMFit GalacticTemplate). Structurally identical to
+    // the muon TemplateFlux -- a per-bin rate times a norm times the livetime -- but
+    // stored in the analysis binning and exported with a zero fluctuation column,
+    // since NNMFit's GalacticTemplate defines no fluctuation graph and is excluded
+    // from sigma^2 (histogram_builder.py:307).
+    std::vector<TemplateFlux> m_Galactic;
+    std::vector<double>       m_GalacticTotal;  // sum over m_Galactic, analysis binning
+
+    // Analysis-binning buffers (RA axis included when the sample has one).
     std::vector<double> m_Predicted;
     std::vector<double> m_Data;
     std::vector<double> m_Ssq;
+
+    // MC-binning scratch: the per-event components and the 2D templates/gradients
+    // are summed here, then spread over the RA axis (mu / n_ra, sigma^2 / n_ra^2 --
+    // NNMFit Binning_2D_to_3D). n_ra == 1 makes both broadcasts exact copies.
+    std::vector<double> m_McTotal;
+    std::vector<double> m_McSsq;
+    int                 m_RaBins = 1;
 
     // SAY-on-GPU: the per-event ssq reduction runs as the say_ssq kernel over
     // the flux components' GPU-resident per-event weight buffers. Set up in the
