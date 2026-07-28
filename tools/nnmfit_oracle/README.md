@@ -228,3 +228,72 @@ tools/nnmfit_oracle/dump_histograms.sh /tmp/nnmfit_fitted_point.yaml  /tmp/nnmfi
 
 The two fitted-point configs are generated from `Output.pickle` (see the plan, Task 1 Steps 4); the
 dumps live under `/tmp` and are cheap to recreate.
+
+## Phase 3a: the 3D (right-ascension + galactic plane) gate
+
+The 3D configuration adds a right-ascension axis to `tracks` and `cscd_cascade`, a `CringeFITS`
+galactic template on those two samples, and NNMFit's `AstroBPL` broken power law on all three.
+`cscd_muon` deliberately stays 2D, so one fit mixes 2D and 3D samples.
+
+```bash
+V=/Users/soldin/Projects/IceCube/NNMFit/.venv/bin/python
+
+# NNMFit side: generate the 3D analysis config from the Phase-2 one, then dump
+"$V" tools/nnmfit_oracle/make_3d_config.py \
+    /Users/soldin/Downloads/Fit_Configuration_Combined_macOS.yaml \
+    /Users/soldin/Downloads/Fit_Configuration_Combined_3D_macOS.yaml
+tools/nnmfit_oracle/dump_histograms.sh \
+    /Users/soldin/Downloads/Fit_Configuration_Combined_3D_macOS.yaml /tmp/nnmfit_dumps_3d
+
+# our side: evaluate at the same fixed point, then compare
+tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined_3d.json /tmp/probe_3d_defaults.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_3d_defaults.json --silent
+cp Output.json /tmp/probe_3d_defaults_output.json
+tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_3d_defaults_output.json /tmp/nnmfit_dumps_3d --tolerance 1e-8
+```
+
+Result at the defaults point (AstroNorm 1.77, gamma_1 1.31, gamma_2 2.74, e_break 4.4,
+cringefits_norm 1.0, everything else as in the 2D defaults point):
+
+```
+ok     tracks         astro              max rel dev 1.931e-15
+ok     tracks         atmospheric        max rel dev 1.321e-14
+ok     tracks         galactic           max rel dev 1.701e-14
+ok     cscd_cascade   astro              max rel dev 1.636e-15
+ok     cscd_cascade   atmospheric_veto   max rel dev 4.432e-15
+ok     cscd_cascade   galactic           max rel dev 6.834e-15
+ok     cscd_muon      astro              max rel dev 1.270e-15
+ok     cscd_muon      atmospheric_veto   max rel dev 1.693e-13
+all compared components agree
+```
+
+### Recorded µ sums (events), 3D defaults point
+
+| sample | astro | atmospheric(_veto) | galactic |
+|---|---|---|---|
+| tracks | 2887.1783 | 698578.9545 | 351.4272 |
+| cscd_cascade | 697.6832 | 9902.7309 | 76.2660 |
+| cscd_muon | 123.1199 | 8251.9248 | — (2D, no galactic component) |
+
+The atmospheric sums are unchanged from the Phase-2 defaults point, as they must be: the RA
+broadcast divides by `n_ra` and repeats `n_ra` times, which conserves the total exactly.
+
+### Three harness traps this gate walked into, in order
+
+Each produced a plausible-looking few-percent disagreement rather than an obvious failure, so
+they are worth knowing about before trusting any future run of this comparison:
+
+1. **Comparing a fitted prediction against a defaults-point dump.** `LLHFit` always minimises, so
+   the comparison MUST go through `make_probe_config.py`. Skipping it showed up as a uniform
+   sub-percent offset on every component, including samples the change under test never touched.
+2. **A component defined but not activated.** `make_3d_config.py` added the galactic template
+   under `components:` but not to `analysis.components`, which is the list NNMFit actually builds.
+   Every galactic dump was then identically zero and `total - no_galactictemplate_cringefits`
+   compared our real prediction against 0.0.
+3. **A stale component name in `dump_histograms.sh`'s `ALL`.** After the astrophysical component
+   was renamed `astro` -> `astro_brokenPL`, `excluded_except()` no longer excluded it, so every
+   per-component dump silently carried the astrophysical flux on top. The tell was arithmetic:
+   the `cscd_muon` `conventional_veto` dump came out at exactly its own value plus the astro sum.
+
+The general lesson is that this harness fails quietly. Recording the µ sums above is what makes
+the next regression detectable at a glance.

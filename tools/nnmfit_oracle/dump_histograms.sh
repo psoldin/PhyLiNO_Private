@@ -25,29 +25,32 @@ CASCADE="IC86_pass2_SnowStorm_v2_cscd_cascade"
 MUON="IC86_pass2_SnowStorm_v2_cscd_muon"
 components_of() {
   case "$1" in
-    "$TRACKS")  echo "astro conventional prompt muontemplate" ;;
-    "$CASCADE") echo "astro conventional_veto prompt_veto muon" ;;
-    "$MUON")    echo "astro conventional_veto prompt_veto muon" ;;
+    "$TRACKS")  echo "astro_brokenPL conventional prompt muontemplate galactictemplate_cringefits" ;;
+    "$CASCADE") echo "astro_brokenPL conventional_veto prompt_veto muon galactictemplate_cringefits" ;;
+    "$MUON")    echo "astro_brokenPL conventional_veto prompt_veto muon" ;;
     *) echo "unknown sample '$1'" >&2; return 1 ;;
   esac
 }
 
-# The muon templates are histogram components (TemplateFlux, IS_HIST_COMP). NNMFit
-# cannot build a sample whose ONLY component is a histogram component: its ssq path
-# (histogram_builder.__make_total_fluctuation) leaves `weights` as the scalar 0.0
-# and aesara's bincount then fails with "'float' object has no attribute 'dtype'".
-# So instead of dumping the template alone, we dump everything EXCEPT the template
-# ("<sample>_no_template.pickle"); the template contribution is
-#   total - no_template
-# and, as a cross-check, no_template must equal the sum of the per-event dumps.
-template_of() {
+# Histogram components (TemplateFlux / GalacticTemplate, IS_HIST_COMP) cannot be
+# dumped alone: the ssq path (histogram_builder.__make_total_fluctuation) leaves
+# `weights` as the scalar 0.0 and aesara's bincount then fails with "'float' object
+# has no attribute 'dtype'". So we dump everything EXCEPT the histogram components
+# ("<sample>_no_hist.pickle"); their combined contribution is total - no_hist, and,
+# as a cross-check, no_hist must equal the sum of the per-event dumps.
+hist_components_of() {
   case "$1" in
-    "$TRACKS") echo "muontemplate" ;;
-    *)         echo "muon" ;;
+    "$TRACKS") echo "muontemplate galactictemplate_cringefits" ;;
+    "$MUON")   echo "muon" ;;
+    *)         echo "muon galactictemplate_cringefits" ;;
   esac
 }
 
-ALL="conventional conventional_veto prompt prompt_veto muon muontemplate astro"
+# NOTE: the astrophysical component is named astro_brokenPL in the generated 3D
+# config (NNMFit AstroBPL). It MUST appear here: excluded_except() only excludes
+# names in this list, so a stale "astro" would leave the real component active in
+# every per-component dump, silently adding the astrophysical flux to each one.
+ALL="conventional conventional_veto prompt prompt_veto muon muontemplate astro_brokenPL galactictemplate_cringefits"
 SAMPLES=("$@")
 if [ ${#SAMPLES[@]} -eq 0 ]; then
   SAMPLES=("$TRACKS" "$CASCADE" "$MUON")
@@ -76,26 +79,46 @@ for sample in "${SAMPLES[@]}"; do
   "$PY" "$MAKE_HIST" --configs "$OUT/cfg_${sample}_total.yaml" \
         -o "$OUT/${sample}_total.pickle"
 
-  template="$(template_of "$sample")"
+  hist="$(hist_components_of "$sample")"
 
   # one dump per per-event component, everything else excluded
   for keep in $used; do
-    [ "$keep" = "$template" ] && continue  # see template_of(): NNMFit cannot do this alone
+    case " $hist " in *" $keep "*) continue ;; esac
     "$PY" "$HERE/nnmfit_set_excluded.py" "$BASE" "$OUT/cfg_${sample}_${keep}.yaml" \
           "$sample" "$(excluded_except "$keep")"
     "$PY" "$MAKE_HIST" --configs "$OUT/cfg_${sample}_${keep}.yaml" \
           -o "$OUT/${sample}_${keep}.pickle"
   done
 
-  # everything except the template, so the template = total - no_template
-  keep_no_template=""
+  # everything except the histogram components, so their sum = total - no_hist
+  keep_no_hist=""
   for component in $used; do
-    [ "$component" = "$template" ] || keep_no_template="${keep_no_template:+$keep_no_template }$component"
+    case " $hist " in
+      *" $component "*) ;;
+      *) keep_no_hist="${keep_no_hist:+$keep_no_hist }$component" ;;
+    esac
   done
-  "$PY" "$HERE/nnmfit_set_excluded.py" "$BASE" "$OUT/cfg_${sample}_no_template.yaml" \
-        "$sample" "$(excluded_except "$keep_no_template")"
-  "$PY" "$MAKE_HIST" --configs "$OUT/cfg_${sample}_no_template.yaml" \
-        -o "$OUT/${sample}_no_template.pickle"
+  "$PY" "$HERE/nnmfit_set_excluded.py" "$BASE" "$OUT/cfg_${sample}_no_hist.yaml" \
+        "$sample" "$(excluded_except "$keep_no_hist")"
+  "$PY" "$MAKE_HIST" --configs "$OUT/cfg_${sample}_no_hist.yaml" \
+        -o "$OUT/${sample}_no_hist.pickle"
+
+  # ...and, for the galactic template, everything except that one component, so that
+  # it can be isolated on its own as total - no_galactictemplate_cringefits. Keeping
+  # the other per-event components alongside it is what makes the ssq path work.
+  # (no_hist alone would only give muon template + galactic lumped together, which is
+  # not enough to gate the galactic prediction on its own.)
+  for drop in $hist; do
+    [ "$drop" = "galactictemplate_cringefits" ] || continue
+    keep_but_one=""
+    for component in $used; do
+      [ "$component" = "$drop" ] || keep_but_one="${keep_but_one:+$keep_but_one }$component"
+    done
+    "$PY" "$HERE/nnmfit_set_excluded.py" "$BASE" "$OUT/cfg_${sample}_no_${drop}.yaml" \
+          "$sample" "$(excluded_except "$keep_but_one")"
+    "$PY" "$MAKE_HIST" --configs "$OUT/cfg_${sample}_no_${drop}.yaml" \
+          -o "$OUT/${sample}_no_${drop}.pickle"
+  done
 done
 
 echo "dumps in $OUT"

@@ -34,36 +34,62 @@ SAMPLES = {
 # own framework, so the correction is applied here instead, to NNMFit's side.
 ZENITH_BINS = {"tracks": 33, "cscd_cascade": 7, "cscd_muon": 1}
 
+# PhyLiNO sample name -> number of RA bins in the analysis binning (1 = no RA axis).
+# With an RA axis the zenith axis is no longer the fast one, so the mirror applies to
+# the MIDDLE axis of the (energy, zenith, RA) row-major array; flipping the last axis
+# would mirror RA instead and leave zenith wrong. cscd_muon is 1: the analysis keeps
+# that sample two-dimensional. This map must be edited alongside the config -- if a
+# sample's RA binning changes, this map changes with it.
+RA_BINS = {"tracks": 180, "cscd_cascade": 18, "cscd_muon": 1}
 
-def reverse_zenith_axis(values, zenith_bins):
-    """Relabel a flat (energy-outer, NNMFit-zenith-inner) array into our order."""
+
+def reverse_zenith_axis(values, zenith_bins, ra_bins=1):
+    """Relabel a flat (energy, zenith, RA) row-major array into our bin order."""
     if zenith_bins <= 1:
         return values
-    return np.flip(values.reshape(-1, zenith_bins), axis=1).reshape(-1)
+    return np.flip(values.reshape(-1, zenith_bins, ra_bins), axis=1).reshape(-1)
 
-# PhyLiNO componentBins key -> the NNMFit components it sums over. PhyLiNO's
+# PhyLiNO componentBins key -> the signed NNMFit dumps it is built from. PhyLiNO's
 # AtmosphericFlux computes conventional and prompt in one pass, so it is compared
 # against the sum of NNMFit's two components (veto variants for the cascades).
+# Histogram components cannot be dumped on their own (see dump_histograms.sh), so the
+# galactic template is reconstructed as total - no_galactictemplate_cringefits.
 COMPONENTS = {
-    "astro": ["astro"],
-    "atmospheric": ["conventional", "prompt"],
-    "atmospheric_veto": ["conventional_veto", "prompt_veto"],
-    "template": ["muontemplate", "muon"],
+    "astro": [(1, "astro_brokenPL")],
+    "atmospheric": [(1, "conventional"), (1, "prompt")],
+    "atmospheric_veto": [(1, "conventional_veto"), (1, "prompt_veto")],
+    "template": [(1, "muontemplate"), (1, "muon")],
+    "galactic": [(1, "total"), (-1, "no_galactictemplate_cringefits")],
 }
 
 
-def nnmfit_mu(dump_dir, det_conf, components):
+def read_mu(dump_dir, det_conf, dump):
+    path = Path(dump_dir) / f"{det_conf}_{dump}.pickle"
+    if not path.exists():
+        return None
+    with open(path, "rb") as f:
+        d = pickle.load(f)
+    h = d["histograms"]
+    mu = h[det_conf] if isinstance(h, dict) else h
+    return np.asarray(mu, dtype=float).reshape(-1)
+
+
+def nnmfit_mu(dump_dir, det_conf, terms):
+    """Sum the signed dumps of `terms`, or None if the combination is unavailable.
+
+    A missing additive dump just drops out of the sum (a sample that does not use
+    that component), but a missing subtractive one would silently turn a difference
+    into its minuend, so it makes the whole combination unavailable.
+    """
     total = None
-    for component in components:
-        path = Path(dump_dir) / f"{det_conf}_{component}.pickle"
-        if not path.exists():
+    for sign, dump in terms:
+        mu = read_mu(dump_dir, det_conf, dump)
+        if mu is None:
+            if sign < 0:
+                return None
             continue
-        with open(path, "rb") as f:
-            d = pickle.load(f)
-        h = d["histograms"]
-        mu = h[det_conf] if isinstance(h, dict) else h
-        mu = np.asarray(mu, dtype=float).reshape(-1)
-        total = mu if total is None else total + mu
+        term = mu if sign > 0 else -mu
+        total = term if total is None else total + term
     return total
 
 
@@ -84,15 +110,17 @@ def main():
             print(f"skip {sample['name']}: no NNMFit detector config mapped")
             continue
 
-        for key, components in COMPONENTS.items():
+        for key, terms in COMPONENTS.items():
             ours = sample.get("componentBins", {}).get(key)
             if not ours:
                 continue
-            theirs = nnmfit_mu(args.dump_dir, det_conf, components)
+            theirs = nnmfit_mu(args.dump_dir, det_conf, terms)
             if theirs is None:
                 print(f"skip {sample['name']}/{key}: no NNMFit dump")
                 continue
-            theirs = reverse_zenith_axis(theirs, ZENITH_BINS[sample["name"]])
+            theirs = reverse_zenith_axis(
+                theirs, ZENITH_BINS[sample["name"]], RA_BINS.get(sample["name"], 1)
+            )
 
             ours = np.asarray(ours, dtype=float)
             if ours.shape != theirs.shape:

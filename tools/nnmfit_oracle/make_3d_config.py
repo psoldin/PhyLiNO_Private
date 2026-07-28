@@ -130,9 +130,13 @@ def main():
     analysis_components = [
         ASTRO_BPL_COMPONENT if c == ASTRO_COMPONENT else c for c in analysis_components
     ]
-    cfg["analysis"]["components"] = ", ".join(analysis_components)
-
     for comp_name, (template_file, norm_name) in GALACTIC.items():
+        # Defining the component is not enough: NNMFit only builds what
+        # analysis.components lists, so a galactic template left out of that list
+        # contributes exactly zero and every dump silently agrees with itself.
+        if comp_name not in analysis_components:
+            analysis_components.append(comp_name)
+
         cfg["components"][comp_name] = {
             "class": "GalacticTemplate",
             "baseline_weights": "powerlaw",
@@ -146,6 +150,8 @@ def main():
                 }
             },
         }
+
+    cfg["analysis"]["components"] = ", ".join(analysis_components)
 
     with open(out_path, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=True, default_flow_style=False)

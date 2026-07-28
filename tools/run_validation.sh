@@ -21,6 +21,11 @@
 # Output.ic_cascades_baseline.json (also untracked; needs the local NNMFit input files under
 # ~/Downloads/nnmfit_files, so it is expected to skip on a machine without them).
 #
+# The IceCube 3D (galactic plane) part is the same idea again, for
+# configs/config_icecube_combined_3d.json and Output.ic_combined_3d_baseline.json (also
+# untracked): the three-sample fit with a right-ascension axis and the galactic templates. It
+# needs the same local NNMFit input files, so it too is expected to skip without them.
+#
 # Usage: tools/run_validation.sh [--no-build]
 #   DC_CONFIG       path to the Double Chooz config       (default ../PhyLiNO/config.json)
 #   BASELINE        path to the recorded DC output        (default Output.baseline.json)
@@ -28,6 +33,8 @@
 #   IC_BASELINE     path to the recorded IC output         (default Output.ic_baseline.json)
 #   IC_CASCADE_CONFIG   path to the IceCube cascade config (default configs/config_icecube_cascades.json)
 #   IC_CASCADE_BASELINE path to the recorded cascade output (default Output.ic_cascades_baseline.json)
+#   IC_3D_CONFIG    path to the IceCube 3D config          (default configs/config_icecube_combined_3d.json)
+#   IC_3D_BASELINE  path to the recorded 3D output         (default Output.ic_combined_3d_baseline.json)
 
 set -u -o pipefail
 
@@ -40,6 +47,8 @@ IC_CONFIG=${IC_CONFIG:-configs/config_icecube_tracks_cpu.json}
 IC_BASELINE=${IC_BASELINE:-Output.ic_baseline.json}
 IC_CASCADE_CONFIG=${IC_CASCADE_CONFIG:-configs/config_icecube_cascades.json}
 IC_CASCADE_BASELINE=${IC_CASCADE_BASELINE:-Output.ic_cascades_baseline.json}
+IC_3D_CONFIG=${IC_3D_CONFIG:-configs/config_icecube_combined_3d.json}
+IC_3D_BASELINE=${IC_3D_BASELINE:-Output.ic_combined_3d_baseline.json}
 LLHFIT=build/programs/LLHFit/LLHFit
 
 failures=0
@@ -138,6 +147,21 @@ elif python3 tools/compare_output.py "$IC_CASCADE_BASELINE" Output.json > /tmp/p
 else
   head -20 /tmp/phylino_ic_cascade_cmp.log >&2
   fail "output differs from $IC_CASCADE_BASELINE"
+fi
+
+echo "IceCube 3D (galactic) reproduces the baseline"
+if [ ! -f "$IC_3D_CONFIG" ]; then
+  skip "no IceCube 3D config at $IC_3D_CONFIG (set IC_3D_CONFIG)"
+elif [ ! -f "$IC_3D_BASELINE" ]; then
+  skip "no baseline at $IC_3D_BASELINE (see the header of this script)"
+elif ! "$LLHFIT" -c "$IC_3D_CONFIG" --silent > /tmp/phylino_ic_3d.log 2>&1; then
+  tail -20 /tmp/phylino_ic_3d.log >&2
+  fail "the fit did not run"
+elif python3 tools/compare_output.py "$IC_3D_BASELINE" Output.json > /tmp/phylino_ic_3d_cmp.log 2>&1; then
+  pass "output identical to $IC_3D_BASELINE"
+else
+  head -20 /tmp/phylino_ic_3d_cmp.log >&2
+  fail "output differs from $IC_3D_BASELINE"
 fi
 
 echo "An unusable Experiment key is reported clearly"
