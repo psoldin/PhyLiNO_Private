@@ -229,6 +229,20 @@
       "StepWidth": 0.02,
       "Fixed": false,
       "Constrained": false
+    },
+    {
+      "Name": "GalacticNorm0",
+      "StartValue": 1.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false
+    },
+    {
+      "Name": "GalacticNorm1",
+      "StartValue": 1.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false
     }
   ]
 }

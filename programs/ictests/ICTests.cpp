@@ -144,6 +144,8 @@ static void test_parameter_layout() {
   assert(HoleIceP0 == DOMEff + 3 && HoleIceP1 == DOMEff + 4);
   // The two template norms are distinct: tracks Corsika vs cascade MuonGun.
   assert(MuonNorm != MuonGunNorm);
+  // Galactic norms are the last block, one per galactic template a sample can declare.
+  assert(GalacticNorm1 == GalacticNorm0 + 1);
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -512,7 +514,7 @@ static void test_parse_samples_rejects_bad_galactic() {
     std::istringstream          in(json);
     boost::property_tree::ptree tree;
     boost::property_tree::read_json(in, tree);
-    io::ic::parse_samples(tree);
+    static_cast<void>(io::ic::parse_samples(tree));
   };
 
   const std::string b3d = R"JSON({ "b3d": { "axes": "Log10Energy, CosZenith, Ra",
