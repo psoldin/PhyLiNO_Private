@@ -107,7 +107,7 @@ namespace io::ic {
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' has a \"Template\" entry but declares neither 'muontemplate' nor 'muon'");
 
-      if (!sample.galactic.empty() && sample.ra_bins() == 1)
+      if (!sample.galactic.empty() && !has_ra_axis(sample.binning))
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' declares a galactic template but its binning has no Ra axis; the "
                                  "template is stored in the analysis binning and would not fit");

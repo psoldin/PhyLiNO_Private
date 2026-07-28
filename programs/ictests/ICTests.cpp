@@ -1343,6 +1343,74 @@ static void test_drop_ra_axis() {
   assert(throws([&] { (void)io::ic::drop_ra_axis(ra_only); }));
 }
 
+// "Has an Ra axis" is a property of the axis list, not of the RA bin count: a
+// one-bin Ra axis is a legitimate binning (the 2D cross-check of a 3D fit) and
+// must still be treated as three-dimensional everywhere -- reading its data with
+// only two reco columns would run off the end of the reco array.
+static void test_has_ra_axis() {
+  const Binning three_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
+                         io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
+  const Binning two_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                       io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
+  assert(io::ic::has_ra_axis(three_d));
+  assert(!io::ic::has_ra_axis(two_d));
+
+  // One RA bin: ra_bin_count() is 1 exactly as for the 2D binning, so only
+  // has_ra_axis() tells the two apart.
+  const Binning one_ra_bin({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                            io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
+                            io::ic::parse_axis("Ra", "(0.0, 6.28319, 1)")});
+  assert(io::ic::has_ra_axis(one_ra_bin));
+  assert(io::ic::ra_bin_count(one_ra_bin) == 1);
+  assert(io::ic::ra_bin_count(two_d) == 1);
+  assert(one_ra_bin.n_axes() == 3);
+  assert(one_ra_bin.total_bins() == 6);
+
+  const Binning mc = io::ic::drop_ra_axis(one_ra_bin);
+  assert(mc.n_axes() == 2);
+  assert(mc.total_bins() == 6);
+  assert(!io::ic::has_ra_axis(mc));
+}
+
+// A one-bin RA axis plus a galactic template is a valid configuration: the
+// template is stored in the (3-axis) analysis binning and fits it. The old
+// `ra_bins() == 1` test rejected it with a "has no Ra axis" message.
+static void test_parse_samples_one_ra_bin_galactic() {
+  const std::string json = R"JSON({
+    "Binnings": {
+      "b3d1": {
+        "axes": "Log10Energy, CosZenith, Ra",
+        "Log10Energy": "(2.0, 5.0, 3)",
+        "CosZenith": "(-1.0, 1.0, 2)",
+        "Ra": "(0.0, 6.28319, 1)"
+      }
+    },
+    "Samples": {
+      "s": {
+        "binning": "b3d1",
+        "parquet": "mc.parquet",
+        "components": "astro",
+        "Galactic": { "fermi": { "File": "fermi.txt", "Norm": "GalacticNorm0" } }
+      }
+    }
+  })JSON";
+
+  std::istringstream          in(json);
+  boost::property_tree::ptree tree;
+  boost::property_tree::read_json(in, tree);
+  const auto samples = io::ic::parse_samples(tree);
+
+  assert(samples.size() == 1);
+  const io::ic::SampleConfig& s = samples[0];
+  assert(io::ic::has_ra_axis(s.binning));
+  assert(s.binning.n_axes() == 3);
+  assert(s.mc_binning.n_axes() == 2);
+  assert(s.ra_bins() == 1);
+  assert(s.binning.total_bins() == s.mc_binning.total_bins());
+  assert(s.galactic.size() == 1);
+}
+
 // mu is spread uniformly over RA (divisor n_ra), sigma^2 with divisor n_ra^2 --
 // NNMFit Binning_2D_to_3D.make_binned_flux divides the repeated weights, so the
 // square of those weights picks up the square of the divisor.
@@ -1419,6 +1487,7 @@ int main() {
   test_non_uniform_axis_index();
   test_mixed_binning_cascade_grid();
   test_drop_ra_axis();
+  test_has_ra_axis();
   test_broadcast_over_ra();
   test_parameter_layout();
   test_prior_defaults_and_overrides();
@@ -1429,6 +1498,7 @@ int main() {
   test_parse_samples_ra_binning();
   test_parse_samples_without_ra();
   test_parse_samples_rejects_bad_galactic();
+  test_parse_samples_one_ra_bin_galactic();
   test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <ios>
@@ -96,6 +97,7 @@ namespace io::ic {
   }
 
   int Binning::bin_index(const std::span<const double> reco) const noexcept {
+    assert(reco.size() >= m_Axes.size() && "bin_index: one reco value per axis is required");
     int flat = 0;
     for (std::size_t d = 0; d < m_Axes.size(); ++d) {
       const int i = m_Axes[d].index(reco[d]);
@@ -125,7 +127,7 @@ namespace io::ic {
         throw std::runtime_error("drop_ra_axis: the Ra axis must be the last one (found it at index " +
                                  std::to_string(d) + " of " + std::to_string(axes.size()) + ")");
 
-    if (axes.back().kind != Axis::Kind::Ra)
+    if (!has_ra_axis(binning))
       return binning;
 
     if (axes.size() < 2)
@@ -134,9 +136,12 @@ namespace io::ic {
     return Binning(std::vector<Axis>(axes.begin(), axes.end() - 1));
   }
 
+  bool has_ra_axis(const Binning& binning) noexcept {
+    return binning.axes().back().kind == Axis::Kind::Ra;
+  }
+
   int ra_bin_count(const Binning& binning) noexcept {
-    const std::span<const Axis> axes = binning.axes();
-    return axes.back().kind == Axis::Kind::Ra ? axes.back().n_bins : 1;
+    return has_ra_axis(binning) ? binning.axes().back().n_bins : 1;
   }
 
   void broadcast_over_ra(const std::span<const double> mc_bins, const int n_ra, const double divisor,

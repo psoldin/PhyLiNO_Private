@@ -208,8 +208,11 @@ namespace io::ic {
     const std::size_t n_rows = energy.size();
 
     // Data is binned in the full analysis binning (NNMFit Binning_2D_to_3D bins data
-    // truly 3D), so a sample with an RA axis needs its reco RA column too.
-    const bool needs_ra = cfg.ra_bins() > 1;
+    // truly 3D), so a sample with an RA axis needs its reco RA column too. The test
+    // is on the axis structure, not on the RA bin count: a one-bin RA axis is still
+    // an RA axis, and feeding bin_index only two of three reco values would read
+    // past the end of the array it is handed.
+    const bool needs_ra = io::ic::has_ra_axis(cfg.binning);
     std::vector<double> ra;
     if (needs_ra) {
       ARROW_ASSIGN_OR_RAISE(ra, get_double_column(*table, b.reco_ra));

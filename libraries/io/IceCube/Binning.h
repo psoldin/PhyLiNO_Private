@@ -48,6 +48,14 @@ namespace io::ic {
     [[nodiscard]] std::size_t n_axes() const noexcept { return m_Axes.size(); }
     [[nodiscard]] std::span<const Axis> axes() const noexcept { return m_Axes; }
 
+    /**
+     * Flat bin of one event, or -1 when it falls outside any axis.
+     *
+     * Precondition: `reco` holds one raw value per axis, in axis order --
+     * `reco.size() >= n_axes()`. A shorter span is a programming error and is
+     * caught by an assert; this is the hot per-event path, so the check is
+     * compiled out in the Release fit build.
+     */
     [[nodiscard]] int bin_index(std::span<const double> reco) const noexcept;
 
    private:
@@ -65,6 +73,16 @@ namespace io::ic {
    * layout the RA broadcast and NNMFit's repeat() both assume -- if RA is innermost.
    */
   [[nodiscard]] Binning drop_ra_axis(const Binning& binning);
+
+  /**
+   * True when the binning's last axis is the right-ascension axis.
+   *
+   * This -- not `ra_bin_count(binning) > 1` -- is the test for "the sample is
+   * binned in RA": an Ra axis with a single bin is a legitimate binning (a
+   * cross-check against the 2D result) and still needs the RA column read and
+   * the third reco value supplied.
+   */
+  [[nodiscard]] bool has_ra_axis(const Binning& binning) noexcept;
 
   /**
    * Number of bins on the trailing Ra axis, or 1 when the binning has none.
