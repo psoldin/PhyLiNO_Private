@@ -24,6 +24,11 @@ CASCADE = "IC86_pass2_SnowStorm_v2_cscd_cascade"
 MUON = "IC86_pass2_SnowStorm_v2_cscd_muon"
 
 # cscd_muon is deliberately absent: it stays 2D.
+#
+# Invariant (not enforced by either script): these bin counts must match the
+# --ra-bins value passed to make_3d_muon_templates.py for the same detector
+# config (e.g. TRACKS here is 181 edges / 180 bins, matching --ra-bins 180 for
+# the tracks template).
 RA_BINNING = {
     TRACKS: "(0,6.28319,181,lin)",
     CASCADE: "(0,6.28319,19,lin)",
@@ -32,6 +37,14 @@ RA_BINNING = {
 TEMPLATE_3D = {
     TRACKS: f"{NF}/Tracks_CorsikaMuon_Fullrange_drop_5lowEbins_3D.pickle",
     CASCADE: f"{NF}/cscd_muongun_ALL_KDE_5up_manual_ssq_no_fluct_3D.pickle",
+}
+
+# component name -> 3D template file. Keyed off the component name rather than a
+# substring match on the template path, so an unrecognized component raises
+# immediately instead of being silently misassigned.
+TEMPLATE_BY_COMPONENT = {
+    "muontemplate": TEMPLATE_3D[TRACKS],
+    "muon": TEMPLATE_3D[CASCADE],
 }
 
 # component name -> (template file, norm parameter name)
@@ -47,6 +60,12 @@ def main():
     in_path, out_path = sys.argv[1], sys.argv[2]
     with open(in_path) as f:
         cfg = yaml.safe_load(f)
+
+    expected = {TRACKS, CASCADE, MUON}
+    if set(cfg["datasets"]) != expected:
+        raise SystemExit(
+            f"unexpected datasets {sorted(cfg['datasets'])}, expected {sorted(expected)}"
+        )
 
     for name, dataset in cfg["datasets"].items():
         excluded = [c.strip() for c in dataset["excluded_components"].split(",") if c.strip()]
@@ -67,11 +86,7 @@ def main():
         template = comp.get("additional", {}).get("template_file")
         if template is None:
             continue
-        # every sample's muon template is one of the two files; pick by basename
-        if "Corsika" in template:
-            comp["additional"]["template_file"] = TEMPLATE_3D[TRACKS]
-        else:
-            comp["additional"]["template_file"] = TEMPLATE_3D[CASCADE]
+        comp["additional"]["template_file"] = TEMPLATE_BY_COMPONENT[comp_name]
 
     for comp_name, (template_file, norm_name) in GALACTIC.items():
         cfg["components"][comp_name] = {

@@ -13,10 +13,14 @@ also writes an ra_bins field -- without it, the model validates the 3D array aga
 the 2D expected shape and fails.
 
 Usage:
-  make_3d_muon_templates.py IN.pickle OUT.pickle --ra-bins N [--ra-upper X] [--det-conf NAME ...]
+  make_3d_muon_templates.py IN.pickle OUT.pickle --ra-bins N [--ra-upper X]
+                            [--det-conf NAME [--det-conf NAME ...]]
 
-With no --det-conf, every detector-config key in a multi-dataset pickle is converted
-(and a single-dataset pickle is converted as-is).
+A single-dataset pickle is converted as-is, with no --det-conf needed. A multi-dataset
+pickle requires --det-conf naming exactly the keys to convert: some of those keys may
+be sharing the file with samples that must stay 2D (e.g. a "_muon" sample binned in
+2D alongside a "_cascade" sample binned in 3D), so converting every key unconditionally
+would silently corrupt the ones that must not change.
 """
 import argparse
 import pickle
@@ -41,6 +45,10 @@ def repeat_entry(entry, ra_bins, ra_upper):
         del out["template_2d"]
     elif "template_2d" in out:
         out["template"] = out.pop("template_2d")
+    # template_2d_scipy is a pre-flatten duplicate of "template" (kept for scipy
+    # consumers that want the 2D shape); it is not in TEMPLATE_KEYS so it would
+    # otherwise survive untouched and go stale once "template" is 3D. Drop it too.
+    out.pop("template_2d_scipy", None)
     # Without this the Template model validates the 3D array against the 2D expected
     # shape and rejects it. Edges match the config's reco_ra_binning literally
     # (e.g. "(0,6.28319,19,lin)" -> 19 edges, 18 bins).
@@ -69,8 +77,15 @@ def main():
         isinstance(v, dict) and any(k in v for k in TEMPLATE_KEYS) for v in obj.values()
     )
 
+    if is_multi and not args.det_conf:
+        raise SystemExit(
+            f"{args.in_path} is a multi-dataset template; pass --det-conf explicitly. "
+            "Converting every entry would also convert samples that must stay 2D "
+            f"(available: {sorted(obj)})"
+        )
+
     if is_multi:
-        keys = args.det_conf or list(obj)
+        keys = args.det_conf
         out = dict(obj)
         for key in keys:
             if key not in obj:
