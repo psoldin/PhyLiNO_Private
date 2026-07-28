@@ -36,6 +36,18 @@ namespace io::ic {
   }  // namespace component
 
   /**
+   * One galactic-plane template a sample declares (NNMFit GalacticTemplate): an
+   * exported per-bin rate file in the sample's *analysis* binning and the norm
+   * parameter scaling it. Unlike the muon template these are already 3D -- NNMFit's
+   * histogram components are never binned, so the file carries the RA structure.
+   */
+  struct GalacticTemplateConfig {
+    std::string name;        // config key, for diagnostics and the results output
+    std::string file;
+    int         norm_index = -1;
+  };
+
+  /**
    * Config for one analysis sample: which parquet file backs it, its analysis
    * binning, which flux components it includes, its livetime, and per-sample
    * branch-name overrides. Populated by parse_samples() from the
@@ -50,6 +62,13 @@ namespace io::ic {
     std::string name;
     bool        enabled = true;
     Binning     binning;
+
+    // The binning MC events are assigned to: `binning` without its trailing Ra axis
+    // (identical to `binning` when there is none). Per-event fluxes, the muon
+    // template and the SnowStorm gradients all live here; SampleLikelihood spreads
+    // them over the RA axis. Set by parse_samples() via drop_ra_axis().
+    Binning     mc_binning;
+
     std::string parquet;
     std::string data_path;
     double      livetime = 1.0;
@@ -63,6 +82,10 @@ namespace io::ic {
 
     // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
     std::string gradient_file;
+
+    // Galactic-plane templates, in config order. Empty unless the analysis binning
+    // has an Ra axis (parse_samples rejects the combination otherwise).
+    std::vector<GalacticTemplateConfig> galactic;
 
     // Per-event nu_mu survival factor (NNMFit OscillationsHook), exported by
     // tools/export_oscillation_factors.py. Row-aligned with `parquet`; applied to
@@ -100,6 +123,9 @@ namespace io::ic {
     [[nodiscard]] bool wants_template() const noexcept {
       return has_component(component::MuonTemplate) || has_component(component::MuonGun);
     }
+
+    /** Bins on the analysis binning's trailing Ra axis, or 1 when it has none. */
+    [[nodiscard]] int ra_bins() const noexcept { return ra_bin_count(binning); }
   };
 
   /**
@@ -124,8 +150,9 @@ namespace io::ic {
    * "data" (default ""), "livetime" (default 1.0), "components" (comma-split,
    * required and validated against io::ic::component), an optional per-sample
    * "Branches" subtree, an optional "Template" subtree ("File" required, "Norm"
-   * one of MuonNorm|MuonGunNorm, default MuonNorm) and an optional "Gradients"
-   * subtree ("File").
+   * one of MuonNorm|MuonGunNorm, default MuonNorm), an optional "Gradients"
+   * subtree ("File") and an optional "Galactic" subtree (one child per template,
+   * each with "File" and "Norm" in GalacticNorm0|GalacticNorm1).
    */
   [[nodiscard]] std::vector<SampleConfig> parse_samples(const boost::property_tree::ptree& ic);
 

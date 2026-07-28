@@ -134,7 +134,7 @@ static void test_mixed_binning_cascade_grid() {
 // count and the two contiguous blocks components index into.
 static void test_parameter_layout() {
   using namespace params::ic;
-  assert(number_of_parameters() == 18);
+  assert(number_of_parameters() == 20);
   assert(nBarrParams == 4);
   assert(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -433,6 +433,125 @@ static void test_parse_samples_oscillation_entry() {
   assert(samples[1].oscillation_branch == "osc_survival");
 }
 
+// A sample whose analysis binning carries an RA axis keeps a second, RA-free
+// binning for the MC: per-event weights, the muon template and the SnowStorm
+// gradients all stay 2D and are broadcast over RA at prediction time.
+static void test_parse_samples_ra_binning() {
+  const std::string json = R"JSON({
+    "Binnings": {
+      "b3d": {
+        "axes": "Log10Energy, CosZenith, Ra",
+        "Log10Energy": "(2.0, 5.0, 3)",
+        "CosZenith": "(-1.0, 1.0, 2)",
+        "Ra": "(0.0, 6.28319, 4)"
+      }
+    },
+    "Samples": {
+      "s": {
+        "binning": "b3d",
+        "parquet": "mc.parquet",
+        "components": "astro",
+        "Galactic": {
+          "fermi": { "File": "fermi.txt", "Norm": "GalacticNorm0" },
+          "unresolved": { "File": "unresolved.txt", "Norm": "GalacticNorm1" }
+        }
+      }
+    }
+  })JSON";
+
+  std::istringstream            in(json);
+  boost::property_tree::ptree   tree;
+  boost::property_tree::read_json(in, tree);
+  const auto samples = io::ic::parse_samples(tree);
+
+  assert(samples.size() == 1);
+  const io::ic::SampleConfig& s = samples[0];
+  assert(s.binning.total_bins() == 24);
+  assert(s.mc_binning.total_bins() == 6);
+  assert(s.mc_binning.n_axes() == 2);
+  assert(s.ra_bins() == 4);
+
+  assert(s.galactic.size() == 2);
+  assert(s.galactic[0].name == "fermi");
+  assert(s.galactic[0].file == "fermi.txt");
+  assert(s.galactic[0].norm_index == params::ic::GalacticNorm0);
+  assert(s.galactic[1].norm_index == params::ic::GalacticNorm1);
+}
+
+// A 2-axis sample gets mc_binning == binning and ra_bins() == 1, so nothing about
+// the existing configs changes.
+static void test_parse_samples_without_ra() {
+  const std::string json = R"JSON({
+    "Binnings": {
+      "b2d": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.0, 5.0, 3)",
+        "CosZenith": "(-1.0, 1.0, 2)"
+      }
+    },
+    "Samples": {
+      "s": { "binning": "b2d", "parquet": "mc.parquet", "components": "astro" }
+    }
+  })JSON";
+
+  std::istringstream            in(json);
+  boost::property_tree::ptree   tree;
+  boost::property_tree::read_json(in, tree);
+  const auto samples = io::ic::parse_samples(tree);
+
+  assert(samples[0].mc_binning.total_bins() == samples[0].binning.total_bins());
+  assert(samples[0].ra_bins() == 1);
+  assert(samples[0].galactic.empty());
+}
+
+// Configurations the prediction path cannot express must fail at startup.
+static void test_parse_samples_rejects_bad_galactic() {
+  auto parse = [](const std::string& binnings, const std::string& sample_body) {
+    const std::string json = "{ \"Binnings\": " + binnings + ", \"Samples\": { \"s\": { " +
+                             sample_body + " } } }";
+    std::istringstream          in(json);
+    boost::property_tree::ptree tree;
+    boost::property_tree::read_json(in, tree);
+    io::ic::parse_samples(tree);
+  };
+
+  const std::string b3d = R"JSON({ "b3d": { "axes": "Log10Energy, CosZenith, Ra",
+      "Log10Energy": "(2.0, 5.0, 3)", "CosZenith": "(-1.0, 1.0, 2)", "Ra": "(0.0, 6.28319, 4)" } })JSON";
+  const std::string b2d = R"JSON({ "b2d": { "axes": "Log10Energy, CosZenith",
+      "Log10Energy": "(2.0, 5.0, 3)", "CosZenith": "(-1.0, 1.0, 2)" } })JSON";
+  const std::string ra_first = R"JSON({ "bad": { "axes": "Ra, Log10Energy",
+      "Ra": "(0.0, 6.28319, 4)", "Log10Energy": "(2.0, 5.0, 3)" } })JSON";
+
+  auto throws = [&](const std::string& binnings, const std::string& body) {
+    try {
+      parse(binnings, body);
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // The RA axis must be last.
+  assert(throws(ra_first, R"("binning": "bad", "parquet": "m.parquet", "components": "astro")"));
+
+  // A galactic template needs an RA axis to be binned against.
+  assert(throws(b2d, R"("binning": "b2d", "parquet": "m.parquet", "components": "astro",
+      "Galactic": { "fermi": { "File": "f.txt", "Norm": "GalacticNorm0" } })"));
+
+  // Unknown norm name.
+  assert(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+      "Galactic": { "fermi": { "File": "f.txt", "Norm": "MuonNorm" } })"));
+
+  // Two templates sharing one norm would be indistinguishable in the fit.
+  assert(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+      "Galactic": { "a": { "File": "a.txt", "Norm": "GalacticNorm0" },
+                    "b": { "File": "b.txt", "Norm": "GalacticNorm0" } })"));
+
+  // A valid 3D sample with one galactic template parses.
+  assert(!throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+      "Galactic": { "fermi": { "File": "f.txt", "Norm": "GalacticNorm0" } })"));
+}
+
 // The composite pairs its SampleLikelihoods with the ICSamples that ICDataBase
 // loaded, relying on both walking the enabled configs in the same order --
 // the riskiest line in the multi-sample refactor. Both sides call
@@ -443,7 +562,7 @@ static void test_enabled_sample_indices() {
   const Binning grid = tracks_binning();
 
   auto make = [&grid](const std::string& name, const bool enabled) {
-    return SampleConfig{.name = name, .enabled = enabled, .binning = grid};
+    return SampleConfig{.name = name, .enabled = enabled, .binning = grid, .mc_binning = grid};
   };
 
   // Middle sample disabled: the loaded sample at load-index 1 must pair with
@@ -675,6 +794,7 @@ static void test_sample_likelihood_asimov_is_minimum() {
 
   const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
                                  .binning    = binning,
+                                 .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
   SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
@@ -724,6 +844,7 @@ static void test_metal_say_ssq_matches_cpu() {
 
   const io::ic::SampleConfig cfg{.name       = "metal_ssq_sample",
                                  .binning    = binning,
+                                 .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
   SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
@@ -787,9 +908,10 @@ static void test_sample_likelihood_component_masking() {
   assert(astro_only.size() == full.size());
 
   const io::ic::SampleConfig astro_cfg{
-      .name = "astro_only", .binning = binning, .components = {"astro"}};
+      .name = "astro_only", .binning = binning, .mc_binning = binning, .components = {"astro"}};
   const io::ic::SampleConfig full_cfg{.name       = "all_components",
                                       .binning    = binning,
+                                      .mc_binning = binning,
                                       .components = {"astro", "conventional", "prompt"}};
 
   SampleLikelihood astro_llh(astro_only, astro_cfg, synthetic_settings(), nullptr, /*use_say=*/true);
@@ -1198,6 +1320,9 @@ int main() {
   test_parse_samples_rejects_bad_components();
   test_parse_samples_cascade_entry();
   test_parse_samples_oscillation_entry();
+  test_parse_samples_ra_binning();
+  test_parse_samples_without_ra();
+  test_parse_samples_rejects_bad_galactic();
   test_enabled_sample_indices();
   test_sort_into_bins_csr_invariant();
   test_sample_likelihood_asimov_is_minimum();

@@ -105,6 +105,18 @@ namespace io::ic {
       if (!sample.wants_template() && !sample.template_file.empty())
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' has a \"Template\" entry but declares neither 'muontemplate' nor 'muon'");
+
+      if (!sample.galactic.empty() && sample.ra_bins() == 1)
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' declares a galactic template but its binning has no Ra axis; the "
+                                 "template is stored in the analysis binning and would not fit");
+
+      for (std::size_t i = 0; i < sample.galactic.size(); ++i)
+        for (std::size_t j = i + 1; j < sample.galactic.size(); ++j)
+          if (sample.galactic[i].norm_index == sample.galactic[j].norm_index)
+            throw std::runtime_error("parse_samples: sample '" + sample.name + "' galactic templates '" +
+                                     sample.galactic[i].name + "' and '" + sample.galactic[j].name +
+                                     "' share one norm parameter; the fit could not tell them apart");
     }
 
     // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
@@ -130,6 +142,25 @@ namespace io::ic {
       if (const auto osc = node.get_child_optional("Oscillations")) {
         sample.oscillation_file   = osc->get<std::string>("File");
         sample.oscillation_branch = osc->get<std::string>("Branch", sample.oscillation_branch);
+      }
+
+      if (const auto galactic = node.get_child_optional("Galactic")) {
+        for (const auto& [template_name, template_node] : *galactic) {
+          GalacticTemplateConfig entry{.name = template_name,
+                                       .file = template_node.get<std::string>("File")};
+
+          const std::string norm = template_node.get<std::string>("Norm");
+          if (norm == "GalacticNorm0")
+            entry.norm_index = params::ic::GalacticNorm0;
+          else if (norm == "GalacticNorm1")
+            entry.norm_index = params::ic::GalacticNorm1;
+          else
+            throw std::runtime_error("parse_samples: sample '" + sample.name + "' galactic template '" +
+                                     template_name + "' has Norm '" + norm +
+                                     "' (expected GalacticNorm0 or GalacticNorm1)");
+
+          sample.galactic.push_back(std::move(entry));
+        }
       }
     }
 
@@ -167,6 +198,7 @@ namespace io::ic {
           .name       = sample_name,
           .enabled    = sample_node.get<bool>("enabled", true),
           .binning    = it->second,
+          .mc_binning = drop_ra_axis(it->second),
           .parquet    = sample_node.get<std::string>("parquet"),
           .data_path  = sample_node.get<std::string>("data", ""),
           .livetime   = sample_node.get<double>("livetime", 1.0),

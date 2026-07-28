@@ -26,6 +26,9 @@ namespace params::ic {
    *   VetoThreshold-> effective_veto, shared by every veto-reweighted sample
    *   DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -> SnowStorm detector gradients
    *     (shared parameter names; the gradient file itself is per sample)
+   *   GalacticNorm0, GalacticNorm1 -> the galactic-plane templates a sample declares
+   *     ("Galactic" subtree); NNMFit names these per model (cringefits_norm,
+   *     unresolved_norm, fermi_norm, ...). Fixed in a config with no galactic component.
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -57,6 +60,13 @@ namespace params::ic {
     IceScat,    // bulk ice scattering
     HoleIceP0,  // hole-ice forward p0
     HoleIceP1,  // hole-ice forward p1
+    _last_of_DetSys_,
+
+    // --- galactic plane (NNMFit GalacticTemplate): one norm per declared template,
+    // in the sample's config order. Global like every other flux parameter, so the
+    // same model scales identically across samples. ---
+    GalacticNorm0 = _last_of_DetSys_,
+    GalacticNorm1,
     _last_of_General_
   };
 
@@ -64,7 +74,7 @@ namespace params::ic {
     static_cast<int>(_last_of_Barr_) - static_cast<int>(BarrH);  // = 4 (H, W, Y, Z)
 
   inline constexpr int nDetSysParams =
-    static_cast<int>(_last_of_General_) - static_cast<int>(DOMEff);  // = 5
+    static_cast<int>(_last_of_DetSys_) - static_cast<int>(DOMEff);  // = 5
 
   constexpr int number_of_general_parameters() noexcept {
     return static_cast<int>(_last_of_General_);
@@ -77,8 +87,8 @@ namespace params::ic {
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
   static_assert(nDetSysParams == 5,
     "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
-  static_assert(number_of_parameters() == 18,
-    "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params. "
+  static_assert(number_of_parameters() == 20,
+    "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms. "
     "Update every config's Parameter array and this if the layout changes.");
 
 }  // namespace params::ic
