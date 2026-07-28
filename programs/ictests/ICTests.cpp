@@ -1108,6 +1108,77 @@ static void test_data_histogram_counts() {
   for (std::size_t b = 1; b < counts.size(); ++b) assert(counts[b] == 0.0);
 }
 
+// The analysis binning may carry a trailing RA axis; the MC binning is the same
+// binning without it. Row-major flattening makes the 3D index the 2D index times
+// n_ra plus the RA index, which is what makes the broadcast a block write.
+static void test_drop_ra_axis() {
+  const Binning analysis({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
+                          io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
+  assert(analysis.total_bins() == 24);
+
+  const Binning mc = io::ic::drop_ra_axis(analysis);
+  assert(mc.n_axes() == 2);
+  assert(mc.total_bins() == 6);
+
+  // A binning with no RA axis is returned unchanged.
+  const Binning two_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                       io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
+  assert(io::ic::drop_ra_axis(two_d).total_bins() == 6);
+
+  // The flat index of (e, zen, ra) is the 2D index * n_ra + ra index.
+  const std::array<double, 3> reco{316.0, 2.0, 0.1};
+  const std::array<double, 2> reco_2d{316.0, 2.0};
+  const int flat_3d = analysis.bin_index(reco);
+  const int flat_2d = mc.bin_index(reco_2d);
+  assert(flat_3d == flat_2d * 4 + analysis.axes()[2].index(0.1));
+}
+
+// mu is spread uniformly over RA (divisor n_ra), sigma^2 with divisor n_ra^2 --
+// NNMFit Binning_2D_to_3D.make_binned_flux divides the repeated weights, so the
+// square of those weights picks up the square of the divisor.
+static void test_broadcast_over_ra() {
+  const std::vector<double> mc_bins{10.0, 20.0, 30.0};
+
+  std::vector<double> mu(9, -1.0);
+  io::ic::broadcast_over_ra(mc_bins, 3, 3.0, mu);
+  for (int b = 0; b < 3; ++b)
+    for (int r = 0; r < 3; ++r)
+      assert(mu[b * 3 + r] == mc_bins[b] / 3.0);
+
+  std::vector<double> ssq(9, -1.0);
+  io::ic::broadcast_over_ra(mc_bins, 3, 9.0, ssq);
+  for (int b = 0; b < 3; ++b)
+    for (int r = 0; r < 3; ++r)
+      assert(ssq[b * 3 + r] == mc_bins[b] / 9.0);
+
+  // n_ra == 1 with divisor 1.0 is an exact copy: x / 1.0 == x in IEEE-754, so a
+  // 2-axis sample going through this path is bit-for-bit unchanged.
+  std::vector<double> identity(3, -1.0);
+  io::ic::broadcast_over_ra(mc_bins, 1, 1.0, identity);
+  for (int b = 0; b < 3; ++b) assert(identity[b] == mc_bins[b]);
+}
+
+// Data is binned truly 3D (NNMFit make_binned_data), so the counting helper needs
+// a three-column overload.
+static void test_data_histogram_counts_3d() {
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)"),
+                         io::ic::parse_axis("Ra", "(0.0, 4.0, 2)")});
+  assert(binning.total_bins() == 6);
+
+  // Two events in RA bin 0 of energy bin 0, one in RA bin 1, one out of RA range.
+  const std::vector<double> energies{316.0, 316.0, 316.0, 316.0};
+  const std::vector<double> zeniths{2.0, 2.0, 2.0, 2.0};
+  const std::vector<double> ras{0.5, 1.5, 3.0, 4.5};
+
+  const std::vector<double> counts = io::ic::bin_event_counts(binning, energies, zeniths, ras);
+  assert(counts.size() == 6);
+  assert(counts[0] == 2.0);
+  assert(counts[1] == 1.0);
+  for (std::size_t b = 2; b < counts.size(); ++b) assert(counts[b] == 0.0);
+}
+
 int main() {
   if (!assertions_are_live()) {
     std::puts("ICTests: FAILED -- assertions are compiled out (NDEBUG), the suite checks nothing");
@@ -1119,6 +1190,8 @@ int main() {
   test_parse_axis_spec();
   test_non_uniform_axis_index();
   test_mixed_binning_cascade_grid();
+  test_drop_ra_axis();
+  test_broadcast_over_ra();
   test_parameter_layout();
   test_prior_defaults_and_overrides();
   test_parse_samples();
@@ -1134,6 +1207,7 @@ int main() {
   test_template_flux();
   test_detector_systematics();
   test_data_histogram_counts();
+  test_data_histogram_counts_3d();
   std::puts("ICTests: all passed");
   return 0;
 }

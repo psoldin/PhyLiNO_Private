@@ -56,6 +56,33 @@ namespace io::ic {
   };
 
   /**
+   * The analysis binning without its trailing Ra axis -- the binning MC events are
+   * assigned to. Returns `binning` unchanged when it has no Ra axis, so a 2-axis
+   * sample gets an identical binning back.
+   *
+   * Throws when the binning has an Ra axis that is not the last one: row-major
+   * flattening only makes the 3D index equal (2D index * n_ra + ra index) -- the
+   * layout the RA broadcast and NNMFit's repeat() both assume -- if RA is innermost.
+   */
+  [[nodiscard]] Binning drop_ra_axis(const Binning& binning);
+
+  /** Number of bins on the trailing Ra axis, or 1 when the binning has none. */
+  [[nodiscard]] int ra_bin_count(const Binning& binning) noexcept;
+
+  /**
+   * Spread a quantity binned in the MC binning uniformly over the analysis binning's
+   * RA axis:  out[b * n_ra + r] = mc_bins[b] / divisor  for every r.
+   *
+   * `divisor` is n_ra for mu and n_ra * n_ra for sigma^2, matching NNMFit's
+   * Binning_2D_to_3D (make_binned_flux divides the repeated weights by n_ra, so their
+   * square picks up n_ra^2). n_ra == 1 with divisor 1.0 is an exact copy.
+   *
+   * `out` must have exactly mc_bins.size() * n_ra entries.
+   */
+  void broadcast_over_ra(std::span<const double> mc_bins, int n_ra, double divisor,
+                         std::span<double> out);
+
+  /**
    * Per-bin event counts for a data sample: bins each (reco energy, reco zenith)
    * pair with `binning` and counts, dropping out-of-range events. No weights and
    * no livetime scaling -- real data is a count.
@@ -63,5 +90,11 @@ namespace io::ic {
   [[nodiscard]] std::vector<double> bin_event_counts(const Binning&             binning,
                                                     const std::vector<double>& reco_energy,
                                                     const std::vector<double>& reco_zenith);
+
+  /** As above, for an analysis binning whose third axis is Ra. */
+  [[nodiscard]] std::vector<double> bin_event_counts(const Binning&             binning,
+                                                     const std::vector<double>& reco_energy,
+                                                     const std::vector<double>& reco_zenith,
+                                                     const std::vector<double>& reco_ra);
 
 }  // namespace io::ic

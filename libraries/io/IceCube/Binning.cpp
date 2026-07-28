@@ -117,4 +117,53 @@ namespace io::ic {
     return counts;
   }
 
+  Binning drop_ra_axis(const Binning& binning) {
+    const std::span<const Axis> axes = binning.axes();
+
+    for (std::size_t d = 0; d + 1 < axes.size(); ++d)
+      if (axes[d].kind == Axis::Kind::Ra)
+        throw std::runtime_error("drop_ra_axis: the Ra axis must be the last one (found it at index " +
+                                 std::to_string(d) + " of " + std::to_string(axes.size()) + ")");
+
+    if (axes.back().kind != Axis::Kind::Ra)
+      return binning;
+
+    if (axes.size() < 2)
+      throw std::runtime_error("drop_ra_axis: a binning cannot consist of the Ra axis alone");
+
+    return Binning(std::vector<Axis>(axes.begin(), axes.end() - 1));
+  }
+
+  int ra_bin_count(const Binning& binning) noexcept {
+    const std::span<const Axis> axes = binning.axes();
+    return axes.back().kind == Axis::Kind::Ra ? axes.back().n_bins : 1;
+  }
+
+  void broadcast_over_ra(const std::span<const double> mc_bins, const int n_ra, const double divisor,
+                         const std::span<double> out) {
+    if (out.size() != mc_bins.size() * static_cast<std::size_t>(n_ra))
+      throw std::runtime_error("broadcast_over_ra: output has " + std::to_string(out.size()) +
+                               " bins, expected " + std::to_string(mc_bins.size()) + " * " +
+                               std::to_string(n_ra));
+
+    for (std::size_t b = 0, n = mc_bins.size(); b < n; ++b) {
+      const double value = mc_bins[b] / divisor;
+      const std::size_t base = b * static_cast<std::size_t>(n_ra);
+      for (int r = 0; r < n_ra; ++r) out[base + r] = value;
+    }
+  }
+
+  std::vector<double> bin_event_counts(const Binning&             binning,
+                                       const std::vector<double>& reco_energy,
+                                       const std::vector<double>& reco_zenith,
+                                       const std::vector<double>& reco_ra) {
+    std::vector<double> counts(binning.total_bins(), 0.0);
+    for (std::size_t i = 0, n = reco_energy.size(); i < n; ++i) {
+      const std::array<double, 3> reco{reco_energy[i], reco_zenith[i], reco_ra[i]};
+      const int                   bin = binning.bin_index(reco);
+      if (bin >= 0) counts[bin] += 1.0;
+    }
+    return counts;
+  }
+
 }  // namespace io::ic
