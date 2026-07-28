@@ -5,7 +5,6 @@
 #include "CudaBackend.h"
 #include "MetalBackend.h"
 
-#include <algorithm>
 #include <cmath>
 #include <future>
 #include <iostream>
@@ -147,21 +146,29 @@ namespace ana::ic {
     // is only read after the reset above), so their partial_llh calls run
     // concurrently. The shared GPU backend takes concurrent dispatches: its
     // pipeline/buffer maps are only mutated during construction and the Metal
-    // command queue is thread-safe. Summing the futures in sample-index order
-    // keeps the result bit-identical to the sequential loop.
+    // command queue is thread-safe. The first sample runs inline on this thread
+    // (so a single-sample fit spawns none) and the rest are joined in
+    // sample-index order, keeping the result bit-identical to a sequential loop.
     double llh = 0.0;
-    if (m_Samples.size() > 1) {
-      std::vector<std::future<double>> partial;
-      partial.reserve(m_Samples.size());
-      for (auto& s : m_Samples)
-        partial.push_back(std::async(std::launch::async,
-                                     [this, &s] { return s->partial_llh(m_Parameter); }));
-      for (auto& f : partial)
-        llh += f.get();
-    } else {
-      for (auto& s : m_Samples)
-        llh += s->partial_llh(m_Parameter);
+
+    if (m_Samples.empty())
+      throw std::runtime_error("ICLikelihood: No samples available");
+
+    std::vector<std::future<double>> partial;
+    partial.reserve(m_Samples.size() - 1);
+
+    for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
+      partial.push_back(
+        std::async(std::launch::async, [this, &sample = m_Samples[i]] {
+          return sample->partial_llh(m_Parameter);
+        }));
     }
+
+    llh = m_Samples[0]->partial_llh(m_Parameter);
+
+    for (auto& f : partial)
+      llh += f.get();
+
     llh += calculate_pulls(m_Parameter);
 
     if (m_FirstCall) {
