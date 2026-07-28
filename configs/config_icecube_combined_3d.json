@@ -4,6 +4,7 @@
     "Backend": "cpu",
     "Likelihood": "SAY",
     "UseData": false,
+    "AstroModel": "BrokenPowerlaw",
     "ERefGeV": 100000.0,
     "AstroReferenceIndex": 2.0,
     "AstroPerTypeNorm": false,
@@ -110,7 +111,7 @@
   "Parameter": [
     {
       "Name": "AstroNorm",
-      "StartValue": 1.5,
+      "StartValue": 1.77,
       "StepWidth": 0.1,
       "Fixed": false,
       "Constrained": false
@@ -119,7 +120,7 @@
       "Name": "SpectralIndex",
       "StartValue": 2.4,
       "StepWidth": 0.1,
-      "Fixed": false,
+      "Fixed": true,
       "Constrained": false
     },
     {
@@ -264,21 +265,21 @@
       "Name": "AstroGamma1",
       "StartValue": 1.31,
       "StepWidth": 0.05,
-      "Fixed": true,
+      "Fixed": false,
       "Constrained": false
     },
     {
       "Name": "AstroGamma2",
       "StartValue": 2.74,
       "StepWidth": 0.05,
-      "Fixed": true,
+      "Fixed": false,
       "Constrained": false
     },
     {
       "Name": "AstroEBreak",
       "StartValue": 4.4,
       "StepWidth": 0.05,
-      "Fixed": true,
+      "Fixed": false,
       "Constrained": false
     }
   ]

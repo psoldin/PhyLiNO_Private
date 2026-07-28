@@ -2,8 +2,8 @@
 """Turn the Phase-2 combined NNMFit config into its Binning_2D_to_3D counterpart.
 
 The result matches /Users/soldin/Downloads/Fit_Configuration_Final.yaml except for the
-astrophysical flux (kept as the single Powerlaw, not AstroBPL) and the MuonGun
-template variant (kept fluctuation-free) -- see the Phase 3a design doc section 8.
+MuonGun template variant (kept fluctuation-free) -- see the Phase 3a design doc
+section 8.
 
 Changes, and nothing else:
   * tracks and cscd_cascade gain reco_ra + class_name Binning_2D_to_3D; cscd_muon
@@ -11,6 +11,9 @@ Changes, and nothing else:
   * those two samples' muon template files are swapped for their _3D variants
   * the CringeFITS galactic component is added with a free norm, and excluded from
     cscd_muon
+  * the single-power-law "astro" component is replaced by "astro_brokenPL", copied
+    verbatim from Fit_Configuration_Final.yaml (AstroBPL), and the analysis
+    component list is updated to match
 
 Usage: make_3d_config.py IN.yaml OUT.yaml
 """
@@ -55,6 +58,34 @@ GALACTIC = {
     ),
 }
 
+# Broken power law astrophysical component, copied verbatim from
+# /Users/soldin/Downloads/Fit_Configuration_Final.yaml (components.astro_brokenPL),
+# replacing the single-power-law "astro" component.
+ASTRO_COMPONENT = "astro"
+ASTRO_BPL_COMPONENT = "astro_brokenPL"
+ASTRO_BPL = {
+    "class": "FluxlessBase",
+    "parameters": {
+        "astro_BPL": {
+            "additional": {
+                "per_type_norm": False,
+                "variable_mapping": {
+                    "e_break": "e_break",
+                    "index_1": "gamma_1",
+                    "index_2": "gamma_2",
+                    "norm": "astro_norm",
+                },
+            },
+            "class": "AstroBPL",
+            "default": [1.77, 1.31, 2.74, 4.4],
+            "parameters": ["astro_norm", "gamma_1", "gamma_2", "e_break"],
+            "prior": [None, None, None, None],
+            "prior_width": [None, None, None, None],
+            "range": [[0.0, 5.0], [-10.0, 3.0], [2.0, 4.0], [3.6, 5.0]],
+        }
+    },
+}
+
 
 def main():
     in_path, out_path = sys.argv[1], sys.argv[2]
@@ -69,6 +100,7 @@ def main():
 
     for name, dataset in cfg["datasets"].items():
         excluded = [c.strip() for c in dataset["excluded_components"].split(",") if c.strip()]
+        excluded = [ASTRO_BPL_COMPONENT if c == ASTRO_COMPONENT else c for c in excluded]
 
         if name in RA_BINNING:
             binning = dataset["analysis_binning"]
@@ -87,6 +119,18 @@ def main():
         if template is None:
             continue
         comp["additional"]["template_file"] = TEMPLATE_BY_COMPONENT[comp_name]
+
+    # Swap the single-power-law astro component for the broken power law.
+    del cfg["components"][ASTRO_COMPONENT]
+    cfg["components"][ASTRO_BPL_COMPONENT] = ASTRO_BPL
+
+    analysis_components = [
+        c.strip() for c in cfg["analysis"]["components"].split(",") if c.strip()
+    ]
+    analysis_components = [
+        ASTRO_BPL_COMPONENT if c == ASTRO_COMPONENT else c for c in analysis_components
+    ]
+    cfg["analysis"]["components"] = ", ".join(analysis_components)
 
     for comp_name, (template_file, norm_name) in GALACTIC.items():
         cfg["components"][comp_name] = {
