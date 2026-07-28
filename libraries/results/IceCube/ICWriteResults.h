@@ -64,33 +64,42 @@ namespace result::ic {
                         {"nBins", axis.n_bins}});
       }
 
-      // Per-component breakdown, both summed and per-bin: a mis-scaled template
-      // or gradient is visible here instead of hidden inside the sample total.
-      // The atmospheric component is keyed by whichever variant the sample
-      // actually declared, so a diff against an external reference (e.g. NNMFit)
-      // can tell a veto-reweighted sample from a plain one.
-      auto sum_of = [](const std::span<const double> values) {
+      // Per-component breakdown, both summed and per-bin: a mis-scaled template or
+      // gradient is visible here instead of hidden inside the sample total. Every
+      // component is reported in the sample's ANALYSIS binning -- the per-event and
+      // 2D-template components are spread over the RA axis exactly as the prediction
+      // is -- so an external per-bin diff (tools/nnmfit_oracle/compare_to_nnmfit.py)
+      // needs no reshaping. The atmospheric component is keyed by whichever variant
+      // the sample declared, so the diff can tell a veto-reweighted sample from a
+      // plain one.
+      auto sum_of = [](const std::vector<double>& values) {
         double total = 0.0;
         for (const double v : values) total += v;
         return total;
       };
       const std::string atmo_key = config.wants_veto() ? "atmospheric_veto" : "atmospheric";
 
+      const std::vector<double> astro_bins    = sample.in_analysis_bins(sample.astro_histogram());
+      const std::vector<double> atmo_bins     = sample.in_analysis_bins(sample.atmospheric_histogram());
+      const std::vector<double> template_bins = sample.in_analysis_bins(sample.template_histogram());
+      const std::vector<double> systematics_bins =
+          sample.in_analysis_bins(sample.systematics_mu_delta());
+      const std::vector<double> galactic_bins = sample.in_analysis_bins(sample.galactic_histogram());
+
       nlohmann::json component_totals = {
-          {"astro", sum_of(sample.astro_histogram())},
-          {atmo_key, sum_of(sample.atmospheric_histogram())},
-          {"template", sum_of(sample.template_histogram())},
-          {"systematicsDelta", sum_of(sample.systematics_mu_delta())},
+          {"astro", sum_of(astro_bins)},
+          {atmo_key, sum_of(atmo_bins)},
+          {"template", sum_of(template_bins)},
+          {"systematicsDelta", sum_of(systematics_bins)},
+          {"galactic", sum_of(galactic_bins)},
       };
 
-      auto as_vector = [](const std::span<const double> values) {
-        return std::vector<double>(values.begin(), values.end());
-      };
       nlohmann::json component_bins = {
-          {"astro", as_vector(sample.astro_histogram())},
-          {atmo_key, as_vector(sample.atmospheric_histogram())},
-          {"template", as_vector(sample.template_histogram())},
-          {"systematicsDelta", as_vector(sample.systematics_mu_delta())},
+          {"astro", astro_bins},
+          {atmo_key, atmo_bins},
+          {"template", template_bins},
+          {"systematicsDelta", systematics_bins},
+          {"galactic", galactic_bins},
       };
 
       j["samples"].push_back({
