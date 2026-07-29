@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Calculate_Spectrum.h"
 #include "Oscillator.h"
 
 namespace ana::dc {
@@ -25,7 +26,13 @@ namespace ana::dc {
     uo_map<std::array<double, 80>>           m_Cache;
     uo_map<std::shared_ptr<Eigen::MatrixXd>> m_CovMatrix;
 
-    void recalculate_spectra(const ParameterWrapper& parameter) noexcept;
+    // Caches the eigendecomposition of the de-fractionalised covariance matrix per detector. Only
+    // valid for the oscillated spectrum it was built from, so it is rebuilt whenever the oscillator
+    // recalculates (i.e. SinSqT13/DeltaM41 changed); it can be reused as-is when only the NuShape
+    // nuisance parameters changed, since those do not affect the spectrum that is de-fractionalised.
+    uo_map<ShapeShiftCache> m_ShapeShiftCache;
+
+    void recalculate_spectra(const ParameterWrapper& parameter, bool spectrum_changed) noexcept;
   };
 
 }  // namespace ana::dc

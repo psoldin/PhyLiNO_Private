@@ -104,6 +104,8 @@ namespace ana::dc {
 
     m_BackgroundTemplate[type] = background_spectrum;
     m_AccSpectrum[type]        = std::array<double, 44>{};
+
+    m_ShapeShiftCache[type] = ShapeShiftCache(background_spectrum, *m_CovMatrix.at(type));
   }
 
   void AccidentalBackground::recalculate_spectra(const ParameterWrapper& parameter) {
@@ -124,13 +126,13 @@ namespace ana::dc {
 
       assert(m_CovMatrix[detector] != nullptr);
 
-      const Eigen::MatrixXd&  covMatrix = *m_CovMatrix[detector];
-      std::array<double, 44>& result    = m_AccSpectrum[detector];
+      const ShapeShiftCache&  cache  = m_ShapeShiftCache.at(detector);
+      std::array<double, 44>& result = m_AccSpectrum[detector];
 
       calculate_spectrum(rate,
                          background_template,
                          shape_parameter,
-                         covMatrix,
+                         cache,
                          result);
     }
   }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Calculate_Spectrum.h"
 #include "Definitions.h"
 #include "SpectrumBase.h"
 #include "Options.h"
@@ -32,6 +33,7 @@ namespace ana::dc {
     map_t<array_t> m_LiSpectrum;
 
     map_t<std::shared_ptr<Eigen::MatrixXd>> m_CovMatrix;
+    map_t<ShapeShiftCache>                  m_ShapeShiftCache;
 
     void recalculate_spectra(const ParameterWrapper& parameter);
 

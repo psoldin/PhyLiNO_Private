@@ -56,7 +56,7 @@ namespace ana::dc {
 
       assert(m_CovMatrix[detector] != nullptr);
 
-      const auto& covMatrix = *m_CovMatrix[detector];
+      const ShapeShiftCache& cache = m_ShapeShiftCache.at(detector);
 
       auto& result = m_LiSpectrum[detector];
 
@@ -64,7 +64,7 @@ namespace ana::dc {
       calculate_spectrum(rate,
                          background_template,
                          shape_parameter,
-                         covMatrix,
+                         cache,
                          result,
                          /* clip_result = */ true);
     }
@@ -109,5 +109,7 @@ namespace ana::dc {
     m_BackgroundTemplate[type] = background_spectrum;
     m_LiSpectrum[type]         = std::array<double, 44>{};
     m_CovMatrix[type]          = db.covariance_matrix(type, params::dc::SpectrumType::lithium);
+
+    m_ShapeShiftCache[type] = ShapeShiftCache(background_spectrum, *m_CovMatrix.at(type));
   }
 }  // namespace ana::dc

@@ -97,13 +97,13 @@ namespace ana::dc {
     const bool recalculate   = previous_step | this_step;
 
     if (recalculate) {
-      recalculate_spectra(parameter);
+      recalculate_spectra(parameter, previous_step);
     }
 
     return recalculate;
   }
 
-  void ShapeCorrection::recalculate_spectra(const ParameterWrapper& parameter) noexcept {
+  void ShapeCorrection::recalculate_spectra(const ParameterWrapper& parameter, bool spectrum_changed) noexcept {
     using enum params::dc::DetectorType;
     using namespace params::dc;
 
@@ -123,13 +123,19 @@ namespace ana::dc {
 
       std::array<double, 80>& result = m_Cache[detector];
 
-      // The covariance matrix is de-fractionalised with the spectrum starting at bin zero, ...
-      const Eigen::VectorXd shifts = calculate_shifts(rate,
-                                                      oscillated_spectrum,
-                                                      shape_parameter,
+      // The de-fractionalised covariance matrix (and its eigensolve) only depends on the oscillated
+      // spectrum, not on the shape nuisance parameters, so it is only rebuilt when the spectrum
+      // actually changed. This turns the dominant O(n^3) eigensolve from "every likelihood call
+      // that touches any NuShape parameter" into "every call that touches SinSqT13/DeltaM41".
+      if (spectrum_changed || !m_ShapeShiftCache.contains(detector)) {
+        m_ShapeShiftCache[detector] = ShapeShiftCache(oscillated_spectrum,
                                                       covMatrix,
                                                       &equidistant_bin_to_official_bin,
                                                       0);
+      }
+
+      // The covariance matrix is de-fractionalised with the spectrum starting at bin zero, ...
+      const Eigen::VectorXd shifts = m_ShapeShiftCache.at(detector).shifts(rate, shape_parameter);
 
       // ... but the resulting shifts are applied starting at the first bin, because the
       // normalisation shifts do not cover the whole spline support.

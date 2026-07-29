@@ -65,6 +65,7 @@ namespace ana::dc {
     map_t<array_t> m_AccSpectrum;
 
     map_t<std::shared_ptr<Eigen::MatrixXd>> m_CovMatrix;
+    map_t<ShapeShiftCache>                  m_ShapeShiftCache;
 
     void fill_data(params::dc::DetectorType);
 

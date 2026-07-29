@@ -63,7 +63,7 @@ namespace ana::dc {
 
       assert(m_CovMatrix[detector] != nullptr);
 
-      const Eigen::MatrixXd& covMatrix = *m_CovMatrix[detector];
+      const ShapeShiftCache& cache = m_ShapeShiftCache.at(detector);
 
       std::array<double, 44>& result = m_FastNSpectrum[detector];
 
@@ -71,7 +71,7 @@ namespace ana::dc {
       calculate_spectrum(rate,
                          background_template,
                          shape_parameter,
-                         covMatrix,
+                         cache,
                          result,
                          /* clip_result = */ true);
     }
@@ -111,6 +111,8 @@ namespace ana::dc {
     }
 
     m_BackgroundTemplate[type] = background_spectrum;
+
+    m_ShapeShiftCache[type] = ShapeShiftCache(background_spectrum, *m_CovMatrix.at(type));
   }
 
 }  // namespace ana::dc
