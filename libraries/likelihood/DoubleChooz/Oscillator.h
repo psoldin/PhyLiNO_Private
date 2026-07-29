@@ -44,6 +44,8 @@ namespace ana::dc {
 
     std::unordered_map<params::dc::DetectorType, std::array<double, 80>> m_Cache; /**< The cache for the calculated spectra. */
 
+    bool m_UseMultiThreading;
+
     void add_reactor_data(const io::ReactorData& reactorData, params::dc::DetectorType type);
 
     void perform_cpu_oscillation(const ParameterWrapper& parameter) noexcept;

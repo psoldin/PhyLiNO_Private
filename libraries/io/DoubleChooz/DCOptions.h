@@ -11,7 +11,8 @@ namespace io::dc {
   public:
     explicit DCOptions(const InputOptions& inputOptions, const DCInputOptions& dc_input_options)
       : m_DataBase(inputOptions, dc_input_options)
-      , m_StartingParameter(inputOptions) { }
+      , m_StartingParameter(inputOptions)
+      , m_UseMultiThreading(inputOptions.use_multi_threading()) { }
 
     ~DCOptions() = default;
 
@@ -23,9 +24,14 @@ namespace io::dc {
       return m_StartingParameter;
     }
 
+    [[nodiscard]] bool use_multi_threading() const noexcept {
+      return m_UseMultiThreading;
+    }
+
   private:
     DataBase m_DataBase;
     StartingParameter m_StartingParameter;
+    bool m_UseMultiThreading;
   };
 
 } // namespace io::dc
