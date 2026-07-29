@@ -1,11 +1,11 @@
 #pragma once
 
 #include "../Likelihood.h"
+#include "DoubleChooz/DCInputOptions.h"
+#include "DoubleChooz/DCOptions.h"
 #include "Options.h"
 #include "ParameterWrapper.h"
 #include "TVectorD.h"
-#include "DoubleChooz/DCInputOptions.h"
-#include "DoubleChooz/DCOptions.h"
 
 #include "AccidentalBackground.h"
 #include "DNCBackground.h"
@@ -181,6 +181,9 @@ namespace ana::dc {
      * @return The summed correlated pull contribution.
      */
     [[nodiscard]] double calculate_correlated_pulls(const ParameterWrapper& parameter) const noexcept;
+
+    bool   m_FirstCall{true};
+    double m_LikelihoodBase{0.0};
 
     std::shared_ptr<const io::dc::DCInputOptions> m_DCInputOptions;  ///< The Double Chooz input options.
     std::shared_ptr<const io::dc::DCOptions>      m_DCOptions;       ///< Double Chooz options, shared with all spectrum components.

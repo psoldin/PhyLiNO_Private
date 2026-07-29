@@ -219,8 +219,7 @@ namespace ana::dc {
                              int                                           nParameter,
                              std::shared_ptr<const io::dc::DCOptions>      dc_options,
                              std::shared_ptr<const io::dc::DCInputOptions> dc_input_options)
-    : Likelihood(options, nParameter,
-                 [dc_options](std::span<double> parameter) { correlate_parameters(*dc_options, parameter); })
+    : Likelihood(options, nParameter, [dc_options](std::span<double> parameter) { correlate_parameters(*dc_options, parameter); })
     , m_DCInputOptions(std::move(dc_input_options))
     , m_DCOptions(dc_options)
     , m_Accidental(dc_options)
@@ -399,10 +398,23 @@ namespace ana::dc {
 
   double DCLikelihood::calculate_likelihood(const double* parameter) {
     check_and_recalculate(parameter);
+
+    double likelihood = 0.0;
+
     if (m_DCInputOptions->reactor_split()) {
-      return calculate_reactor_split_likelihood(m_Parameter);
+      likelihood = calculate_reactor_split_likelihood(m_Parameter);
+    } else {
+      likelihood = calculate_default_likelihood(m_Parameter);
     }
-    return calculate_default_likelihood(m_Parameter);
+
+    if (m_FirstCall && std::isfinite(likelihood)) {
+      m_LikelihoodBase = likelihood;
+      m_FirstCall      = false;
+    }
+
+    likelihood -= m_LikelihoodBase;
+
+    return likelihood;
   }
 
   double DCLikelihood::calculate_off_off_likelihood(const Eigen::Array<double, 44, 1>& bkg, params::dc::DetectorType detector) const {
