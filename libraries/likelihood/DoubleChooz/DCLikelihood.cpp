@@ -169,13 +169,13 @@ namespace ana::dc {
                                                      index(ND, EnergyC),
                                                      index(FDII, EnergyC)};
 
-      TVectorD energy_correlations(7);
+      Eigen::VectorXd energy_correlations(7);
 
       for (std::size_t i = 0; i < energy_indices.size(); ++i) {
         energy_correlations[i] = parameters[energy_indices[i]];
       }
 
-      energy_correlations *= dco.energy_correlation_matrix();
+      energy_correlations = dco.energy_correlation_matrix() * energy_correlations;
 
       for (std::size_t i = 0; i < energy_indices.size(); ++i) {
         parameters[energy_indices[i]] = energy_correlations[i];
@@ -187,26 +187,26 @@ namespace ana::dc {
                                              index(ND, MCNorm),
                                              index(FDII, MCNorm)};
 
-      TVectorD mcNorm_correlations(3);
+      Eigen::VectorXd mcNorm_correlations(3);
       for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
         mcNorm_correlations[i] = parameters[mcNorm_indices[i]];
       }
 
-      mcNorm_correlations *= dco.mcNorm_correlation_matrix();
+      mcNorm_correlations = dco.mcNorm_correlation_matrix() * mcNorm_correlations;
 
       for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
         parameters[mcNorm_indices[i]] = mcNorm_correlations[i];
       }
     }
     {
-      const auto& covMatrix = dco.interDetector_correlation_matrix();
-      TVectorD    reactor_correlations(3);
+      const auto&     covMatrix = dco.interDetector_correlation_matrix();
+      Eigen::VectorXd reactor_correlations(3);
       for (int i = NuShape01; i <= NuShape43; ++i) {
         reactor_correlations[0] = parameters[index(FDI, i)];
         reactor_correlations[1] = parameters[index(ND, i)];
         reactor_correlations[2] = parameters[index(FDII, i)];
 
-        reactor_correlations *= covMatrix;
+        reactor_correlations = covMatrix * reactor_correlations;
 
         parameters[index(FDI, i)]  = reactor_correlations[0];
         parameters[index(ND, i)]   = reactor_correlations[1];
@@ -326,12 +326,12 @@ namespace ana::dc {
                                                  index(ND, EnergyC),
                                                  index(FDII, EnergyC)};
 
-      TVectorD difference(7);
+      Eigen::VectorXd difference(7);
       for (std::size_t i = 0; i < energy_indices.size(); ++i) {
         difference[i] = parameter[energy_indices[i]] - m_EnergyCV[i];
       }
 
-      result += dco.energy_inverse_correlation_matrix().Similarity(difference);
+      result += difference.dot(dco.energy_inverse_correlation_matrix() * difference);
     }
 
     {  // MC normalisation pull
@@ -339,12 +339,12 @@ namespace ana::dc {
                                                  index(ND, MCNorm),
                                                  index(FDII, MCNorm)};
 
-      TVectorD difference(3);
+      Eigen::VectorXd difference(3);
       for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
         difference[i] = parameter[mcNorm_indices[i]] - m_MCNormCV[i];
       }
 
-      result += dco.mcNorm_inverse_correlation_matrix().Similarity(difference);
+      result += difference.dot(dco.mcNorm_inverse_correlation_matrix() * difference);
     }
 
     return result;

@@ -11,8 +11,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <TMatrixD.h>
-
 #include <Eigen/Core>
 
 namespace io::dc {
@@ -74,25 +72,25 @@ namespace io::dc {
      * Used to transform the uncorrelated fit parameters into correlated ones.
      * Parameter order: EnergyA, EnergyB(FDI, ND, FDII), EnergyC(FDI, ND, FDII).
      */
-    [[nodiscard]] const TMatrixD& energy_correlation_matrix() const { return m_EnergyCorrelationMatrix; }
+    [[nodiscard]] const Eigen::MatrixXd& energy_correlation_matrix() const { return m_EnergyCorrelationMatrix; }
 
     /**
      * Spectral matrix V * sqrt(Lambda) of the 3x3 MC normalisation correlation matrix.
      * Parameter order: FDI, ND, FDII.
      */
-    [[nodiscard]] const TMatrixD& mcNorm_correlation_matrix() const { return m_MCNormCorrelationMatrix; }
+    [[nodiscard]] const Eigen::MatrixXd& mcNorm_correlation_matrix() const { return m_MCNormCorrelationMatrix; }
 
     /**
      * Spectral matrix V * sqrt(Lambda) of the 3x3 inter detector reactor shape correlation matrix.
      * Parameter order: FDI, ND, FDII.
      */
-    [[nodiscard]] const TMatrixD& interDetector_correlation_matrix() const { return m_InterDetectorCorrelationMatrix; }
+    [[nodiscard]] const Eigen::MatrixXd& interDetector_correlation_matrix() const { return m_InterDetectorCorrelationMatrix; }
 
     /** Inverse of the 7x7 energy scale correlation matrix, used for the correlated energy pull. */
-    [[nodiscard]] const TMatrixD& energy_inverse_correlation_matrix() const { return m_EnergyInverseMatrix; }
+    [[nodiscard]] const Eigen::MatrixXd& energy_inverse_correlation_matrix() const { return m_EnergyInverseMatrix; }
 
     /** Inverse of the 3x3 MC normalisation correlation matrix, used for the correlated MCNorm pull. */
-    [[nodiscard]] const TMatrixD& mcNorm_inverse_correlation_matrix() const { return m_MCNormInverseMatrix; }
+    [[nodiscard]] const Eigen::MatrixXd& mcNorm_inverse_correlation_matrix() const { return m_MCNormInverseMatrix; }
 
     [[nodiscard]] double off_lifetime(params::dc::DetectorType type) const noexcept { return m_OffLifeTime.at(type); }
 
@@ -185,11 +183,11 @@ namespace io::dc {
     using cov_matrix_t = std::shared_ptr<Eigen::MatrixXd>;
     std::unordered_map<tuple_t, cov_matrix_t, KeyHash>        m_CovarianceMatrices;
     std::unordered_map<tuple_t, std::vector<double>, KeyHash> m_BackgroundData;
-    TMatrixD                                                  m_EnergyCorrelationMatrix;         // TODO Replace with Eigen Matrix
-    TMatrixD                                                  m_MCNormCorrelationMatrix;         // TODO Replace with Eigen Matrix
-    TMatrixD                                                  m_InterDetectorCorrelationMatrix;  // TODO Replace with Eigen Matrix
-    TMatrixD                                                  m_EnergyInverseMatrix;             // TODO Replace with Eigen Matrix
-    TMatrixD                                                  m_MCNormInverseMatrix;             // TODO Replace with Eigen Matrix
+    Eigen::MatrixXd                                           m_EnergyCorrelationMatrix;
+    Eigen::MatrixXd                                           m_MCNormCorrelationMatrix;
+    Eigen::MatrixXd                                           m_InterDetectorCorrelationMatrix;
+    Eigen::MatrixXd                                           m_EnergyInverseMatrix;
+    Eigen::MatrixXd                                           m_MCNormInverseMatrix;
   };
 
 }  // namespace io::dc

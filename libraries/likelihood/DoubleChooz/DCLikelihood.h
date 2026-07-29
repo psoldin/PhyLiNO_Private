@@ -5,7 +5,8 @@
 #include "DoubleChooz/DCOptions.h"
 #include "Options.h"
 #include "ParameterWrapper.h"
-#include "TVectorD.h"
+
+#include <Eigen/Core>
 
 #include "AccidentalBackground.h"
 #include "DNCBackground.h"

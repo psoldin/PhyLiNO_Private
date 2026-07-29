@@ -16,12 +16,13 @@
 #include <TFile.h>
 #include <TH1D.h>
 #include <TMatrixD.h>
-#include <TMatrixDSym.h>
 #include <TTree.h>
 #include <TTreeReader.h>
 #include <TTreeReaderValue.h>
 #include <TVector.h>
-#include <TVectorD.h>
+
+// Eigen includes
+#include <Eigen/Eigenvalues>
 
 namespace io::dc {
 
@@ -41,48 +42,46 @@ namespace io::dc {
     double Ntot  = cv->Integral(0, Nbins);
 
     // For ease of handling, make N_i vector
-    TVectorD N(Nbins);
+    Eigen::VectorXd N(Nbins);
     for (int b = 0; b < Nbins; b++) {
       N[b] = cv->GetBinContent(b + 1);
     }
 
     // Construct total, normalization, and shape matrices
-    auto Mtot = std::make_unique<TMatrixD>(Nbins, Nbins);
-    Mtot->Zero();
+    Eigen::MatrixXd Mtot = Eigen::MatrixXd::Zero(Nbins, Nbins);
 
     for (int i = 0; i < Nbins; i++) {
-      (*Mtot)(i, i) = std::pow(cv->GetBinError(i + 1), 2);
+      Mtot(i, i) = std::pow(cv->GetBinError(i + 1), 2);
     }
 
-    const double Msum = Mtot->Sum();
+    const double Msum = Mtot.sum();
 
-    auto Mnorm  = std::make_unique<TMatrixD>(Nbins, Nbins);
-    auto Mshape = std::make_unique<TMatrixD>(Nbins, Nbins);
-    auto Mmixed = std::make_unique<TMatrixD>(Nbins, Nbins);
+    Eigen::MatrixXd Mnorm(Nbins, Nbins);
+    Eigen::MatrixXd Mshape(Nbins, Nbins);
+    Eigen::MatrixXd Mmixed(Nbins, Nbins);
 
     for (int i = 0; i < Nbins; i++) {
       for (int j = 0; j < Nbins; j++) {
-        (*Mnorm)(i, j) = N[i] * N[j] / pow(Ntot, 2) * Msum;
+        Mnorm(i, j) = N[i] * N[j] / pow(Ntot, 2) * Msum;
 
-        (*Mshape)(i, j) = (*Mtot)(i, j) - N[j] / Ntot * (*Mtot)(i, i) - N[i] / Ntot * (*Mtot)(j, j) + N[i] * N[j] / pow(Ntot, 2) * Msum;
+        Mshape(i, j) = Mtot(i, j) - N[j] / Ntot * Mtot(i, i) - N[i] / Ntot * Mtot(j, j) + N[i] * N[j] / pow(Ntot, 2) * Msum;
 
-        (*Mmixed)(i, j) = N[j] / Ntot * (*Mtot)(i, i) + N[i] / Ntot * (*Mtot)(j, j) - 2 * N[i] * N[j] / pow(Ntot, 2) * Msum;
+        Mmixed(i, j) = N[j] / Ntot * Mtot(i, i) + N[i] / Ntot * Mtot(j, j) - 2 * N[i] * N[j] / pow(Ntot, 2) * Msum;
       }
     }
 
     // Shape+mixed actually is the "shape matrix" for final fit
-    auto Mffit = std::make_unique<TMatrixD>(*Mshape);
-    (*Mffit) += (*Mmixed);
+    Eigen::MatrixXd Mffit = Mshape + Mmixed;
 
-    auto Mffit_frac = std::make_unique<TMatrixD>(*Mffit);
+    Eigen::MatrixXd Mffit_frac = Mffit;
 
     // Fractionalize the ffit matrix
     for (int i = 0; i < Nbins; i++) {
       for (int j = 0; j < Nbins; j++) {
         if (N[i] == 0 || N[j] == 0)
-          (*Mffit_frac)(i, j) = 0;
+          Mffit_frac(i, j) = 0;
         else
-          (*Mffit_frac)(i, j) *= 1. / (N[i] * N[j]);
+          Mffit_frac(i, j) *= 1. / (N[i] * N[j]);
       }
     }
 
@@ -90,7 +89,7 @@ namespace io::dc {
 
     for (unsigned int i = 0; i < nBins; ++i) {
       for (unsigned int j = 0; j < nBins; ++j) {
-        (*fracCovMatrix)(i, j) = (*Mffit_frac)(i, j);
+        (*fracCovMatrix)(i, j) = Mffit_frac(i, j);
       }
     }
 
@@ -319,9 +318,8 @@ namespace io::dc {
    * @param entries Off-diagonal correlations as (row, column, value).
    * @return The symmetric correlation matrix.
    */
-  TMatrixDSym build_correlation_matrix(int dimension, std::span<const std::tuple<int, int, double>> entries) {
-    TMatrixDSym matrix(dimension);
-    matrix.UnitMatrix();
+  Eigen::MatrixXd build_correlation_matrix(int dimension, std::span<const std::tuple<int, int, double>> entries) {
+    Eigen::MatrixXd matrix = Eigen::MatrixXd::Identity(dimension, dimension);
 
     for (const auto& [i, j, value] : entries) {
       matrix(i, j) = value;
@@ -340,41 +338,32 @@ namespace io::dc {
    * @param correlation The symmetric correlation matrix.
    * @return Pair of (spectral matrix, inverse correlation matrix).
    */
-  std::pair<TMatrixD, TMatrixD> decompose_correlation_matrix(const TMatrixDSym& correlation) {
-    const int dimension = correlation.GetNrows();
+  std::pair<Eigen::MatrixXd, Eigen::MatrixXd> decompose_correlation_matrix(const Eigen::MatrixXd& correlation) {
+    const int dimension = static_cast<int>(correlation.rows());
 
-    TMatrixDSym working(correlation);
+    // Eigen::SelfAdjointEigenSolver returns eigenvalues/-vectors in ascending order, ROOT's
+    // TMatrixDSym::EigenVectors returns them in descending order. The physics is invariant under
+    // the ordering (it is just a relabelling of the uncorrelated fit parameters), but the
+    // ordering is reversed here to mirror the reference implementation as closely as possible.
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(correlation);
 
-    TVectorD eigenValues(dimension);
-    TMatrixD eigenVectors(working.EigenVectors(eigenValues));
+    const Eigen::VectorXd eigenValues  = solver.eigenvalues().reverse();
+    const Eigen::MatrixXd eigenVectors = solver.eigenvectors().rowwise().reverse();
 
-    TMatrixDSym eigenValueMatrix(dimension);
+    Eigen::VectorXd sqrtEigenValues(dimension);
     for (int i = 0; i < dimension; ++i) {
       if (eigenValues(i) < 0.0) {
         std::cout << "Warning: correlation matrix is not positive definite, eigenvalue "
                   << i << " = " << eigenValues(i) << " is clipped to zero\n";
       }
-      eigenValueMatrix(i, i) = std::sqrt(std::max(eigenValues(i), 0.0));
+      sqrtEigenValues(i) = std::sqrt(std::max(eigenValues(i), 0.0));
     }
 
-    TMatrixD spectral(dimension, dimension);
-    spectral.Mult(eigenVectors, eigenValueMatrix);
+    const Eigen::MatrixXd spectral = eigenVectors * sqrtEigenValues.asDiagonal();
 
-    TMatrixD inverse(correlation);
-    inverse.Invert();
+    const Eigen::MatrixXd inverse = correlation.inverse();
 
     return {spectral, inverse};
-  }
-
-  /**
-   * @brief Assigns a matrix to a target, resizing the target first.
-   *
-   * TMatrixD::operator= requires both operands to have the same shape and does not resize, so the
-   * default constructed 0x0 members have to be resized before they can be filled.
-   */
-  void assign_matrix(TMatrixD& target, const TMatrixD& source) {
-    target.ResizeTo(source.GetNrows(), source.GetNcols());
-    target = source;
   }
 
   void DataBase::construct_correlation_matrices() {
@@ -398,8 +387,8 @@ namespace io::dc {
     const auto [energy_spectral, energy_inverse] =
         decompose_correlation_matrix(build_correlation_matrix(7, energy_entries));
 
-    assign_matrix(m_EnergyCorrelationMatrix, energy_spectral);
-    assign_matrix(m_EnergyInverseMatrix, energy_inverse);
+    m_EnergyCorrelationMatrix = energy_spectral;
+    m_EnergyInverseMatrix     = energy_inverse;
 
     // ---- MC normalisation correlations ----
     // Parameter order: FDI, ND, FDII
@@ -412,8 +401,8 @@ namespace io::dc {
     const auto [mcNorm_spectral, mcNorm_inverse] =
         decompose_correlation_matrix(build_correlation_matrix(3, mcNorm_entries));
 
-    assign_matrix(m_MCNormCorrelationMatrix, mcNorm_spectral);
-    assign_matrix(m_MCNormInverseMatrix, mcNorm_inverse);
+    m_MCNormCorrelationMatrix = mcNorm_spectral;
+    m_MCNormInverseMatrix     = mcNorm_inverse;
 
     // ---- Inter detector reactor shape correlations ----
     // Parameter order: FDI, ND, FDII.
@@ -428,7 +417,7 @@ namespace io::dc {
     const auto [reactor_spectral, reactor_inverse] =
         decompose_correlation_matrix(build_correlation_matrix(3, reactor_entries));
 
-    assign_matrix(m_InterDetectorCorrelationMatrix, reactor_spectral);
+    m_InterDetectorCorrelationMatrix = reactor_spectral;
   }
 
   std::vector<double> generate_lithium_background(std::default_random_engine& gen, std::size_t num_samples) {
