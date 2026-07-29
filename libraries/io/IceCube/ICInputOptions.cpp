@@ -33,6 +33,19 @@ namespace io::ic {
           "ICInputOptions: unknown Backend '" + backend_str + "' (expected 'cpu', 'metal' or 'cuda')");
     }
 
+    const std::string precision_str = ic.get<std::string>("GpuPrecision", "fp32");
+    if (precision_str == "fp32") {
+      m_GpuPrecision = GpuPrecision::Fp32;
+    } else if (precision_str == "fp64") {
+      m_GpuPrecision = GpuPrecision::Fp64;
+    } else {
+      throw std::runtime_error(
+          "ICInputOptions: unknown GpuPrecision '" + precision_str + "' (expected 'fp32' or 'fp64')");
+    }
+    if (m_GpuPrecision == GpuPrecision::Fp64 && m_BackendKind == BackendKind::Metal)
+      throw std::runtime_error(
+          "ICInputOptions: GpuPrecision 'fp64' is not supported by the Metal backend (Apple GPUs have no double precision)");
+
     const std::string astro_model_str = ic.get<std::string>("AstroModel", "Powerlaw");
     if (astro_model_str == "Powerlaw") {
       m_AstroModel = AstroModel::Powerlaw;

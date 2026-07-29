@@ -41,32 +41,42 @@ namespace ana::ic {
 
     // One device allocation plus, for outputs, a host mirror dispatch() refreshes
     // so contents() can hand back a CPU pointer like the Metal shared-memory path.
+    // Scalar columns/outputs are 4 B (float) in FP32 mode or 8 B (double) in FP64
+    // mode; CSR offsets are always 4 B (uint32). Only the host mirror matching the
+    // active precision is populated.
     struct Buffer {
-      CUdeviceptr        dptr    = 0;
-      std::size_t        n_elems = 0;  // element count (float or uint32, both 4 B)
-      std::vector<float> host;         // non-empty only for outputs
+      CUdeviceptr         dptr       = 0;
+      std::size_t         n_elems    = 0;  // element count
+      std::size_t         elem_bytes = 4;  // 4 = float/uint32, 8 = double
+      std::vector<float>  host32;          // output mirror in FP32 mode
+      std::vector<double> host64;          // output mirror in FP64 mode
     };
 
     struct CudaState {
-      CUdevice  dev = 0;
-      CUcontext ctx = nullptr;
+      CUdevice  dev  = 0;
+      CUcontext ctx  = nullptr;
+      bool      fp64 = false;  // FP64 compute path when true
 
       std::vector<Buffer>                         buffers;   // handle -> buffer
       std::unordered_map<const void*, int>        colCache;  // source ptr -> handle
       std::unordered_map<std::string, CUfunction> funcs;     // kernel name -> fn
       std::vector<CUmodule>                       modules;   // kept alive for funcs
+
+      // Byte size of a scalar column/output element in the active precision.
+      [[nodiscard]] std::size_t scalar_bytes() const noexcept { return fp64 ? 8 : 4; }
     };
 
   }  // namespace
 
-  CudaBackend::CudaBackend() {
+  CudaBackend::CudaBackend(bool fp64) : m_Fp64(fp64) {
     cu_check(cuInit(0), "cuInit");
     int count = 0;
     cu_check(cuDeviceGetCount(&count), "cuDeviceGetCount");
     if (count == 0)
       throw std::runtime_error("CudaBackend: no CUDA device available");
 
-    auto* s = new CudaState;
+    auto* s  = new CudaState;
+    s->fp64  = fp64;
     try {
       cu_check(cuDeviceGet(&s->dev, 0), "cuDeviceGet");
       cu_check(cuCtxCreate(&s->ctx, 0, s->dev), "cuCtxCreate");
@@ -143,13 +153,18 @@ namespace ana::ic {
     if (auto it = s->colCache.find(data); it != s->colCache.end())
       return it->second;
 
-    std::vector<float> f(n);
-    for (std::size_t i = 0; i < n; ++i) f[i] = static_cast<float>(data[i]);
-
     Buffer b;
-    b.n_elems = n;
-    cu_check(cuMemAlloc(&b.dptr, n * sizeof(float)), "cuMemAlloc(column)");
-    cu_check(cuMemcpyHtoD(b.dptr, f.data(), n * sizeof(float)), "cuMemcpyHtoD(column)");
+    b.n_elems    = n;
+    b.elem_bytes = s->scalar_bytes();
+    cu_check(cuMemAlloc(&b.dptr, n * b.elem_bytes), "cuMemAlloc(column)");
+    if (s->fp64) {
+      // Already double: upload straight from the source column, no conversion.
+      cu_check(cuMemcpyHtoD(b.dptr, data, n * sizeof(double)), "cuMemcpyHtoD(column)");
+    } else {
+      std::vector<float> f(n);
+      for (std::size_t i = 0; i < n; ++i) f[i] = static_cast<float>(data[i]);
+      cu_check(cuMemcpyHtoD(b.dptr, f.data(), n * sizeof(float)), "cuMemcpyHtoD(column)");
+    }
 
     const int handle = static_cast<int>(s->buffers.size());
     s->buffers.push_back(std::move(b));
@@ -166,7 +181,8 @@ namespace ana::ic {
     for (std::size_t i = 0; i < n; ++i) u[i] = static_cast<std::uint32_t>(data[i]);
 
     Buffer b;
-    b.n_elems = n;
+    b.n_elems    = n;
+    b.elem_bytes = sizeof(std::uint32_t);  // offsets stay uint32 in both precisions
     cu_check(cuMemAlloc(&b.dptr, n * sizeof(std::uint32_t)), "cuMemAlloc(offsets)");
     cu_check(cuMemcpyHtoD(b.dptr, u.data(), n * sizeof(std::uint32_t)), "cuMemcpyHtoD(offsets)");
 
@@ -179,10 +195,12 @@ namespace ana::ic {
   int CudaBackend::alloc_output(std::size_t n) {
     auto* s = static_cast<CudaState*>(m_State);
     Buffer b;
-    b.n_elems = n;
-    b.host.assign(n, 0.0f);
-    cu_check(cuMemAlloc(&b.dptr, n * sizeof(float)), "cuMemAlloc(output)");
-    cu_check(cuMemsetD8(b.dptr, 0, n * sizeof(float)), "cuMemsetD8(output)");
+    b.n_elems    = n;
+    b.elem_bytes = s->scalar_bytes();
+    if (s->fp64) b.host64.assign(n, 0.0);
+    else         b.host32.assign(n, 0.0f);
+    cu_check(cuMemAlloc(&b.dptr, n * b.elem_bytes), "cuMemAlloc(output)");
+    cu_check(cuMemsetD8(b.dptr, 0, n * b.elem_bytes), "cuMemsetD8(output)");
 
     const int handle = static_cast<int>(s->buffers.size());
     s->buffers.push_back(std::move(b));
@@ -227,20 +245,27 @@ namespace ana::ic {
              "cuLaunchKernel");
     cu_check(cuCtxSynchronize(), "cuCtxSynchronize");
 
-    // Refresh host mirrors of the outputs so contents() returns a CPU pointer.
-    // The per-event copy is skipped by the caller passing per_event < 0 when the
-    // weights are not needed (e.g. the Poisson path).
-    Buffer& h = s->buffers[hist];
-    cu_check(cuMemcpyDtoH(h.host.data(), h.dptr, h.n_elems * sizeof(float)), "cuMemcpyDtoH(hist)");
-    if (per_event >= 0) {
-      Buffer& pe = s->buffers[per_event];
-      cu_check(cuMemcpyDtoH(pe.host.data(), pe.dptr, pe.n_elems * sizeof(float)), "cuMemcpyDtoH(pe)");
-    }
+    // Refresh host mirrors of the outputs so contents()/contents_f64() return a
+    // CPU pointer. The per-event copy is skipped by the caller passing
+    // per_event < 0 when the weights are not needed (e.g. the Poisson path).
+    auto refresh = [&](int handle) {
+      Buffer& b = s->buffers[handle];
+      void* dst = s->fp64 ? static_cast<void*>(b.host64.data())
+                          : static_cast<void*>(b.host32.data());
+      cu_check(cuMemcpyDtoH(dst, b.dptr, b.n_elems * b.elem_bytes), "cuMemcpyDtoH(output)");
+    };
+    refresh(hist);
+    if (per_event >= 0) refresh(per_event);
   }
 
   const float* CudaBackend::contents(int handle) const noexcept {
     auto* s = static_cast<CudaState*>(m_State);
-    return s->buffers[handle].host.data();
+    return s->buffers[handle].host32.data();
+  }
+
+  const double* CudaBackend::contents_f64(int handle) const noexcept {
+    auto* s = static_cast<CudaState*>(m_State);
+    return s->buffers[handle].host64.data();
   }
 
 }  // namespace ana::ic

@@ -22,10 +22,17 @@ namespace ana::ic {
    * A non-CUDA stub (CudaBackend_stub.cpp) provides the same symbols with
    * available()==false so the library builds and links where no CUDA toolkit is
    * present.
+   *
+   * Precision is fixed per instance: fp64==false uses FP32 columns/weights/
+   * reduction (the fast default, matching Metal); fp64==true uses FP64
+   * throughout (columns, kernels, tree reduction, readback) so the GPU fit
+   * reproduces the FP64 CPU reference to full double precision, at the cost of
+   * roughly half the arithmetic throughput and double the memory traffic.
    */
   class CudaBackend final : public GpuBackend {
    public:
-    CudaBackend();  // throws std::runtime_error if no CUDA device is present
+    // fp64 selects the double-precision compute path (see class comment).
+    explicit CudaBackend(bool fp64 = false);  // throws if no CUDA device is present
     ~CudaBackend() override;
 
     CudaBackend(const CudaBackend&)            = delete;
@@ -35,6 +42,7 @@ namespace ana::ic {
     [[nodiscard]] static bool available() noexcept;
 
     [[nodiscard]] GpuLanguage language() const noexcept override { return GpuLanguage::Cuda; }
+    [[nodiscard]] bool        is_fp64() const noexcept override { return m_Fp64; }
 
     void ensure_kernel(const char* name, const char* source) override;
     int  upload_column(const double* data, std::size_t n) override;
@@ -48,10 +56,12 @@ namespace ana::ic {
                   int         hist,
                   int         per_event,
                   std::size_t n_groups) override;
-    [[nodiscard]] const float* contents(int handle) const noexcept override;
+    [[nodiscard]] const float*  contents(int handle) const noexcept override;
+    [[nodiscard]] const double* contents_f64(int handle) const noexcept override;
 
    private:
-    void* m_State = nullptr;  // opaque CudaState*, nullptr in the stub
+    void* m_State = nullptr;   // opaque CudaState*, nullptr in the stub
+    bool  m_Fp64  = false;     // FP64 compute path when true
   };
 
 }  // namespace ana::ic

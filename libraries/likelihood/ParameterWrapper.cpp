@@ -1,6 +1,8 @@
 #include "ParameterWrapper.h"
 
+#include <algorithm>
 #include <numeric>
+#include <stdexcept>
 
 #include "../utilities/FuzzyCompare.h"
 

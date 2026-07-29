@@ -18,7 +18,8 @@ namespace ana::ic {
 
     // One shared GPU backend for all samples' flux components; nullptr => CPU path. A
     // requested GPU backend falls back to CPU if no matching device is present.
-    std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind kind) {
+    std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind    kind,
+                                                 const io::ic::GpuPrecision   precision) {
       switch (kind) {
         case io::ic::BackendKind::Cpu:
           return nullptr;
@@ -28,12 +29,15 @@ namespace ana::ic {
             return nullptr;
           }
           return std::make_shared<MetalBackend>();
-        case io::ic::BackendKind::Cuda:
+        case io::ic::BackendKind::Cuda: {
           if (!CudaBackend::available()) {
             std::cout << "ICLikelihood: CUDA backend requested but no device available; using CPU\n";
             return nullptr;
           }
-          return std::make_shared<CudaBackend>();
+          const bool fp64 = precision == io::ic::GpuPrecision::Fp64;
+          std::cout << "ICLikelihood: CUDA backend using " << (fp64 ? "FP64" : "FP32") << " kernels\n";
+          return std::make_shared<CudaBackend>(fp64);
+        }
       }
       return nullptr;
     }
@@ -45,7 +49,7 @@ namespace ana::ic {
                              const io::ic::ICInputOptions&             input_options)
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
-    , m_GpuBackend(make_gpu_backend(input_options.backend_kind()))
+    , m_GpuBackend(make_gpu_backend(input_options.backend_kind(), input_options.gpu_precision()))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
     const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
     std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";

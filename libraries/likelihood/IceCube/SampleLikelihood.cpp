@@ -98,29 +98,34 @@ namespace ana::ic {
       }
     )METAL";
 
-    constexpr const char* kSsqKernelCuda = R"CUDA(
+    // Written against a generic scalar `real`; cuda_kernel_source() prepends the
+    // typedef selecting float (FP32) or double (FP64). SsqParams is int-only, so
+    // it needs no precision variant. The per-event input buffers (astro_pe,
+    // atmo_pe) are the flux kernels' outputs, so they are already in the active
+    // precision.
+    constexpr const char* kSsqKernelCudaBody = R"CUDA(
       struct SsqParams { int has_astro; int has_atmo; };
 
       extern "C" __global__ void say_ssq(
-          const float*        astro_pe,
-          const float*        atmo_pe,
+          const real*         astro_pe,
+          const real*         atmo_pe,
           const unsigned int* bin_offsets,
           SsqParams           p,
-          float*              ssq)
+          real*               ssq)
       {
         const unsigned int bin      = blockIdx.x;
         const unsigned int tid      = threadIdx.x;
         const unsigned int nthreads = blockDim.x;
         const unsigned int start    = bin_offsets[bin];
         const unsigned int end      = bin_offsets[bin + 1];
-        float acc = 0.0f;
+        real acc = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
-          float w = 0.0f;
+          real w = 0.0;
           if (p.has_astro) w += astro_pe[i];
           if (p.has_atmo)  w += atmo_pe[i];
           acc += w * w;
         }
-        __shared__ float sdata[256];
+        __shared__ real sdata[256];
         sdata[tid] = acc;
         __syncthreads();
         for (unsigned int s = nthreads / 2; s > 0; s >>= 1) {
@@ -220,7 +225,9 @@ namespace ana::ic {
         (m_Astro && m_Astro->per_event_handle() >= 0) || (m_Atmo && m_Atmo->per_event_handle() >= 0);
     if (gpu && use_say && gpu_per_event) {
       m_Gpu = std::move(gpu);
-      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? kSsqKernelCuda : kSsqKernelMetal;
+      const std::string cuda_src =
+          m_Gpu->language() == GpuLanguage::Cuda ? cuda_kernel_source(m_Gpu->is_fp64(), kSsqKernelCudaBody) : std::string{};
+      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kSsqKernelMetal;
       m_Gpu->ensure_kernel("say_ssq", src);
       m_hSsqOffsets = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
       m_hSsq        = m_Gpu->alloc_output(mc_bins);
@@ -308,9 +315,13 @@ namespace ana::ic {
                                   m_hSsqOffsets};
       m_Gpu->dispatch("say_ssq", inputs, 3, &p, sizeof(p), m_hSsq, -1, static_cast<std::size_t>(n_bins));
 
-      const float* ssq = m_Gpu->contents(m_hSsq);
-      for (int b = 0; b < n_bins; ++b)
-        m_McSsq[b] = static_cast<double>(ssq[b]);
+      if (m_Gpu->is_fp64()) {
+        const double* ssq = m_Gpu->contents_f64(m_hSsq);
+        for (int b = 0; b < n_bins; ++b) m_McSsq[b] = ssq[b];
+      } else {
+        const float* ssq = m_Gpu->contents(m_hSsq);
+        for (int b = 0; b < n_bins; ++b) m_McSsq[b] = static_cast<double>(ssq[b]);
+      }
     } else {
       const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
       const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};

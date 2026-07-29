@@ -1,4 +1,5 @@
 #include "ThreeFlavorOscillation.h"
+#include <cmath>
 #include <iostream>
 
 namespace ana::dc {

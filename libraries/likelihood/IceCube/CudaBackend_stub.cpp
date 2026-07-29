@@ -9,7 +9,7 @@
 
 namespace ana::ic {
 
-  CudaBackend::CudaBackend() {
+  CudaBackend::CudaBackend(bool) {
     throw std::runtime_error("CudaBackend: CUDA backend not available in this build");
   }
 
@@ -22,6 +22,7 @@ namespace ana::ic {
   int  CudaBackend::upload_offsets(const std::size_t*, std::size_t) { return -1; }
   int  CudaBackend::alloc_output(std::size_t) { return -1; }
   void CudaBackend::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
-  const float* CudaBackend::contents(int) const noexcept { return nullptr; }
+  const float*  CudaBackend::contents(int) const noexcept { return nullptr; }
+  const double* CudaBackend::contents_f64(int) const noexcept { return nullptr; }
 
 }  // namespace ana::ic

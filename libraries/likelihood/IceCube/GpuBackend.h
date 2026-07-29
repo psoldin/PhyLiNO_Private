@@ -1,8 +1,22 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 namespace ana::ic {
+
+  /**
+   * Build a complete CUDA-C kernel source from a body written against a generic
+   * scalar type `real` and a power macro `RPOW`, by prefixing the typedef that
+   * selects the precision. One body then serves both the FP32 and FP64 CUDA
+   * paths, so the two can never drift apart. (Metal is FP32-only and keeps its
+   * own float source.)
+   */
+  inline std::string cuda_kernel_source(bool fp64, const char* body) {
+    return std::string(fp64 ? "typedef double real;\n#define RPOW pow\n"
+                            : "typedef float real;\n#define RPOW powf\n") +
+           body;
+  }
 
   /**
    * Kernel-source dialect a backend consumes. Flux components ship one source
@@ -63,8 +77,21 @@ namespace ana::ic {
                           std::size_t n_groups) = 0;
 
     /** CPU-readable pointer to an output buffer's contents; valid after the
-        dispatch that produced it. */
+        dispatch that produced it. FP32 mirror -- use contents_f64() on an FP64
+        backend. */
     [[nodiscard]] virtual const float* contents(int handle) const noexcept = 0;
+
+    /** True when this backend computes in FP64 (double) instead of FP32. Only
+        the CUDA backend can return true -- Apple GPUs have no double support, so
+        Metal is always FP32. Flux components read this to pick the FP64 kernel
+        dialect, build a double-typed params struct, and read results back via
+        contents_f64(). Defaults to false so Metal and the stubs need no change. */
+    [[nodiscard]] virtual bool is_fp64() const noexcept { return false; }
+
+    /** FP64 analogue of contents(): CPU-readable doubles of an output buffer,
+        valid after the producing dispatch. Only meaningful on an FP64 backend;
+        returns nullptr otherwise. */
+    [[nodiscard]] virtual const double* contents_f64(int /*handle*/) const noexcept { return nullptr; }
   };
 
 }  // namespace ana::ic

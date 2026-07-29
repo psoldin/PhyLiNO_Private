@@ -20,6 +20,13 @@ namespace io::ic {
                            Metal,
                            Cuda };
 
+  // Floating-point precision for the GPU flux/ssq kernels. Fp32 is the fast
+  // default (and the only option Metal supports); Fp64 is a CUDA-only path that
+  // computes in double throughout, reproducing the FP64 CPU reference exactly at
+  // the cost of throughput. Ignored by the Cpu backend (always double).
+  enum class GpuPrecision { Fp32,
+                            Fp64 };
+
   // Astrophysical spectral model. Powerlaw is NNMFit's Powerlaw + SpectralIndex;
   // BrokenPowerlaw is its AstroBPL (astro_norm, gamma_1, gamma_2, e_break), the
   // model the final analysis configuration uses.
@@ -47,6 +54,8 @@ namespace io::ic {
     [[nodiscard]] LikelihoodType likelihood_type() const noexcept { return m_LikelihoodType; }
     // Selected compute backend for the flux histograms (see BackendKind).
     [[nodiscard]] BackendKind    backend_kind() const noexcept { return m_BackendKind; }
+    // GPU kernel precision (see GpuPrecision); only consulted for the Cuda backend.
+    [[nodiscard]] GpuPrecision   gpu_precision() const noexcept { return m_GpuPrecision; }
 
     // --- Astro (Powerlaw) ---
     // Selected astrophysical spectral model (see AstroModel).
@@ -79,6 +88,7 @@ namespace io::ic {
     bool           m_UseData        = false;
     LikelihoodType m_LikelihoodType = LikelihoodType::Poisson;
     BackendKind    m_BackendKind    = BackendKind::Cpu;
+    GpuPrecision   m_GpuPrecision   = GpuPrecision::Fp32;
 
     AstroModel m_AstroModel = AstroModel::Powerlaw;
 
