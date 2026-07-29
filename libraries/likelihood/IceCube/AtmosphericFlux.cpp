@@ -217,7 +217,8 @@ namespace ana::ic {
                                    const bool                    need_per_event,
                                    const bool                    use_veto,
                                    const double                  veto_anchor_energy,
-                                   const double                  veto_rescale_energy)
+                                   const double                  veto_rescale_energy,
+                                   const bool                    use_multi_threading)
     : m_Sample(sample)
     , m_ConvDeltaGammaERef(conv_delta_gamma_e_ref)
     , m_PromptDeltaGammaERef(prompt_delta_gamma_e_ref)
@@ -225,6 +226,7 @@ namespace ana::ic {
     , m_UseVeto(use_veto)
     , m_VetoAnchorEnergy(veto_anchor_energy)
     , m_VetoRescaleEnergy(veto_rescale_energy)
+    , m_UseMultiThreading(use_multi_threading)
     , m_Gpu(std::move(gpu)) {
     m_Histogram.assign(binning.total_bins(), 0.0);
     // On the GPU path the per-event weights live in a GPU buffer (m_hPerEvent)
@@ -315,7 +317,7 @@ namespace ana::ic {
     const double veto_e =
         m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0;
 
-    #pragma omp parallel for
+    #pragma omp parallel for if(m_UseMultiThreading)
     for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin]; i < off[bin + 1]; ++i) {

@@ -54,7 +54,8 @@ namespace ana::ic {
                     bool                          need_per_event      = false,
                     bool                          use_veto            = false,
                     double                        veto_anchor_energy  = 100.0,
-                    double                        veto_rescale_energy = 100.0);
+                    double                        veto_rescale_energy = 100.0,
+                    bool                          use_multi_threading = true);
     ~AtmosphericFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -84,6 +85,7 @@ namespace ana::ic {
     bool                    m_UseVeto;
     double                  m_VetoAnchorEnergy;
     double                  m_VetoRescaleEnergy;
+    bool                    m_UseMultiThreading;
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 

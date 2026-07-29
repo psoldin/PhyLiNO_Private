@@ -1,12 +1,17 @@
 #include "Fit.h"
 
 // STL includes
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace ana {
 
@@ -19,6 +24,15 @@ namespace ana {
     // Lock the mutex to ensure that the minimizer is not created in parallel due to ROOT limitations
     static std::mutex mutex;
     std::unique_lock  lock{mutex};
+
+#ifdef _OPENMP
+    // Process-wide: OpenMP has no per-object thread pool, unlike the
+    // std::async sample-level concurrency in ICLikelihood, which is gated
+    // per-instance instead. -m/-1 (default) leaves the OpenMP/environment
+    // default team size alone.
+    if (m_Options->inputOptions().use_multi_threading())
+      omp_set_num_threads(std::max(1, m_Options->inputOptions().multi_threading_cores()));
+#endif
 
     const int         n_parameter = m_Module->number_of_parameters();
     const std::size_t n_config    = m_Options->inputOptions().input_parameters().size();

@@ -59,6 +59,13 @@ namespace ana::ic {
     double m_LLHBaseLine{0.0};
     bool   m_FirstCall{true};
 
+    // Gates both concurrency mechanisms in this likelihood: the std::async
+    // per-sample partial_llh spawn below and (via each pragma's if() clause)
+    // the OpenMP loops in the flux components. Defaults on; later CPU/GPU
+    // backend selection can drive this per-instance instead of only from the
+    // global -m option.
+    bool m_UseMultiThreading{true};
+
     void                 initialize_data(bool use_data);
     void                 setup_pulls();
     [[nodiscard]] double calculate_pulls(const ParameterWrapper& parameter) const noexcept;

@@ -53,18 +53,16 @@ namespace io {
     /** Name of the experiment selected via the "Experiment" config key. */
     [[nodiscard]] const std::string& experiment() const noexcept { return m_Experiment; }
 
-    [[nodiscard]] bool use_multi_threading() const noexcept { return m_MultiThreadingCores > 1; }
-
-    [[nodiscard]] int multi_threading_cores() const noexcept { return m_MultiThreadingCores; }
+    [[nodiscard]] bool use_multi_threading() const noexcept { return m_UseMultiThreading; }
 
     [[nodiscard]] const boost::property_tree::ptree& config_tree() const noexcept { return m_ConfigTree; }
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
 
    private:
-    long m_Seed;                /**< The global random seed. */
-    bool m_Silent;              /**< Flag indicating if the program should run in silent mode. */
-    int  m_MultiThreadingCores; /**< The number of cores to use for multi-threading. */
+    long   m_Seed;              /**< The global random seed. */
+    bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
+    bool   m_UseMultiThreading; /**< The number of cores to use for multi-threading. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
 
     std::string m_ConfigFile; /**< The configuration file path. */

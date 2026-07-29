@@ -27,6 +27,10 @@ namespace ana::ic {
     double veto_rescale_energy;
     // Astrophysical spectral model: single power law or NNMFit's AstroBPL.
     io::ic::AstroModel astro_model = io::ic::AstroModel::Powerlaw;
+    // Gates the OpenMP loops in the flux components and SampleLikelihood's own
+    // per-bin ssq reduction, via each pragma's if() clause. Set once from
+    // io::InputOptions::use_multi_threading() in ICLikelihood's constructor.
+    bool                use_multi_threading = true;
   };
 
   /**
@@ -93,6 +97,7 @@ namespace ana::ic {
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
     bool                        m_UseSAY;
+    bool                        m_UseMultiThreading;
 
     // Only the components the config declares are constructed; the parquet
     // columns of an absent component were never read (see ICDataBase).

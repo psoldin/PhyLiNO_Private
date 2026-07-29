@@ -15,7 +15,7 @@ namespace io {
   InputOptions::InputOptions(int argc, char** argv, experiment_options_t experiment_options)
     : m_Seed(std::chrono::system_clock::now().time_since_epoch().count())
     , m_Silent(false)
-    , m_MultiThreadingCores(-1)
+    , m_UseMultiThreading(false)
     , m_ExperimentOptions(std::move(experiment_options)) {
     namespace po = boost::program_options;
     namespace pt = boost::property_tree;
@@ -24,13 +24,13 @@ namespace io {
 
     po::options_description generic_options("Options");
 
-    generic_options.add_options()("help,h", "Print help message")
-    ("config,c", po::value<std::string>(&m_ConfigFile)->default_value("config.json")->required(), "Set Config File")
-    ("seed", po::value<long>(&m_Seed)->default_value(current_time), "Set seed for simulation")
-    ("silent", po::bool_switch(&m_Silent), "Run fit in silence mode")
-    ("multiThreading,m", po::value<int>(&m_MultiThreadingCores)->default_value(1), "Use multiple threads for fitting")
-    ("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
-    ;
+    generic_options.add_options()
+	("help,h", "Print help message")
+	("config,c", po::value<std::string>(&m_ConfigFile)->default_value("config.json")->required(), "Set Config File")
+	("seed", po::value<long>(&m_Seed)->default_value(current_time), "Set seed for simulation")
+	("silent", po::bool_switch(&m_Silent), "Run fit in silence mode")
+	("multiThreading,m", po::bool_switch(&m_UseMultiThreading), "Use multiple threads for fitting")
+	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance");
 
     po::options_description cmdline_options;
     cmdline_options.add(generic_options);

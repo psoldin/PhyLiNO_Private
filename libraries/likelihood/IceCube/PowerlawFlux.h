@@ -59,7 +59,8 @@ namespace ana::ic {
                  bool                           per_type_norm,
                  std::shared_ptr<GpuBackend>    gpu            = nullptr,
                  bool                           need_per_event = false,
-                 io::ic::AstroModel             model          = io::ic::AstroModel::Powerlaw);
+                 io::ic::AstroModel             model          = io::ic::AstroModel::Powerlaw,
+                 bool                           use_multi_threading = true);
     ~PowerlawFlux() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -87,6 +88,7 @@ namespace ana::ic {
     double                  m_ReferenceIndex;
     bool                    m_PerTypeNorm;
     bool                    m_NeedPerEvent;
+    bool                    m_UseMultiThreading;
     io::ic::AstroModel      m_Model;
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;

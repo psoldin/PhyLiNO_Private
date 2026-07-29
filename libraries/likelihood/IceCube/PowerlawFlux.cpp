@@ -131,12 +131,14 @@ namespace ana::ic {
                              const bool                    per_type_norm,
                              std::shared_ptr<GpuBackend>   gpu,
                              const bool                    need_per_event,
-                             const io::ic::AstroModel      model)
+                             const io::ic::AstroModel      model,
+                             const bool                    use_multi_threading)
     : m_Sample(sample)
     , m_ERef(e_ref_gev)
     , m_ReferenceIndex(reference_index)
     , m_PerTypeNorm(per_type_norm)
     , m_NeedPerEvent(need_per_event)
+    , m_UseMultiThreading(use_multi_threading)
     , m_Model(model)
     , m_Gpu(std::move(gpu)) {
     m_Histogram.assign(binning.total_bins(), 0.0);
@@ -217,7 +219,7 @@ namespace ana::ic {
     const int   n_bins   = static_cast<int>(m_Histogram.size());
 
     if (broken) {
-      #pragma omp parallel for
+      #pragma omp parallel for if(m_UseMultiThreading)
       for (int bin = 0; bin < n_bins; ++bin) {
         double acc = 0.0;
         for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
@@ -238,7 +240,7 @@ namespace ana::ic {
       return;
     }
 
-    #pragma omp parallel for
+    #pragma omp parallel for if(m_UseMultiThreading)
     for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {

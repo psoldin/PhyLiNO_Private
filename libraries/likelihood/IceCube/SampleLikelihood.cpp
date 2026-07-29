@@ -163,7 +163,8 @@ namespace ana::ic {
                                      const bool                  use_say)
     : m_Sample(sample)
     , m_Config(cfg)
-    , m_UseSAY(use_say) {
+    , m_UseSAY(use_say)
+    , m_UseMultiThreading(settings.use_multi_threading) {
     if (cfg.wants_astro())
       m_Astro.emplace(sample,
                       cfg.mc_binning,
@@ -172,7 +173,8 @@ namespace ana::ic {
                       settings.astro_per_type_norm,
                       gpu,
                       use_say,
-                      settings.astro_model);
+                      settings.astro_model,
+                      settings.use_multi_threading);
 
     if (cfg.wants_atmospheric())
       m_Atmo.emplace(sample,
@@ -183,7 +185,8 @@ namespace ana::ic {
                      use_say,
                      cfg.wants_veto(),
                      settings.veto_anchor_energy,
-                     settings.veto_rescale_energy);
+                     settings.veto_rescale_energy,
+                     settings.use_multi_threading);
 
     if (cfg.wants_template())
       m_Template.emplace(cfg.mc_binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
@@ -316,7 +319,7 @@ namespace ana::ic {
       // The component test is hoisted out of the per-event loop: which components
       // exist is fixed at construction, so each case gets its own tight loop.
       auto accumulate = [&](auto event_weight) {
-#pragma omp parallel for
+#pragma omp parallel for if(m_UseMultiThreading)
         for (int b = 0; b < n_bins; ++b) {
           double acc = 0.0;
 #pragma omp simd reduction(+ : acc)

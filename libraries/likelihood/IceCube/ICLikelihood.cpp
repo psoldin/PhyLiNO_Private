@@ -45,7 +45,8 @@ namespace ana::ic {
                              const io::ic::ICInputOptions&             input_options)
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
-    , m_GpuBackend(make_gpu_backend(input_options.backend_kind())) {
+    , m_GpuBackend(make_gpu_backend(input_options.backend_kind()))
+    , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
     const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
     std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";
 
@@ -58,6 +59,7 @@ namespace ana::ic {
         .veto_anchor_energy       = input_options.veto_anchor_energy(),
         .veto_rescale_energy      = input_options.veto_rescale_energy(),
         .astro_model              = input_options.astro_model(),
+        .use_multi_threading      = m_UseMultiThreading,
     };
 
     // ICDataBase loaded the enabled configs in config order, using the same
@@ -155,20 +157,25 @@ namespace ana::ic {
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: No samples available");
 
-    std::vector<std::future<double>> partial;
-    partial.reserve(m_Samples.size() - 1);
+    if (m_UseMultiThreading) {
+      std::vector<std::future<double>> partial;
+      partial.reserve(m_Samples.size() - 1);
 
-    for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
-      partial.push_back(
-        std::async(std::launch::async, [this, &sample = m_Samples[i]] {
-          return sample->partial_llh(m_Parameter);
-        }));
+      for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
+        partial.push_back(
+          std::async(std::launch::async, [this, &sample = m_Samples[i]] {
+            return sample->partial_llh(m_Parameter);
+          }));
+      }
+
+      llh = m_Samples[0]->partial_llh(m_Parameter);
+
+      for (auto& f : partial)
+        llh += f.get();
+    } else {
+      for (const auto& sample : m_Samples)
+        llh += sample->partial_llh(m_Parameter);
     }
-
-    llh = m_Samples[0]->partial_llh(m_Parameter);
-
-    for (auto& f : partial)
-      llh += f.get();
 
     llh += calculate_pulls(m_Parameter);
 
