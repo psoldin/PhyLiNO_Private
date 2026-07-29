@@ -169,7 +169,7 @@ namespace ana::dc {
                                                      index(ND, EnergyC),
                                                      index(FDII, EnergyC)};
 
-      Eigen::VectorXd energy_correlations(7);
+      Eigen::Matrix<double, 7, 1> energy_correlations;
 
       for (std::size_t i = 0; i < energy_indices.size(); ++i) {
         energy_correlations[i] = parameters[energy_indices[i]];
@@ -187,7 +187,7 @@ namespace ana::dc {
                                              index(ND, MCNorm),
                                              index(FDII, MCNorm)};
 
-      Eigen::VectorXd mcNorm_correlations(3);
+      Eigen::Vector3d mcNorm_correlations;
       for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
         mcNorm_correlations[i] = parameters[mcNorm_indices[i]];
       }
@@ -200,7 +200,7 @@ namespace ana::dc {
     }
     {
       const auto&     covMatrix = dco.interDetector_correlation_matrix();
-      Eigen::VectorXd reactor_correlations(3);
+      Eigen::Vector3d reactor_correlations;
       for (int i = NuShape01; i <= NuShape43; ++i) {
         reactor_correlations[0] = parameters[index(FDI, i)];
         reactor_correlations[1] = parameters[index(ND, i)];
@@ -326,7 +326,7 @@ namespace ana::dc {
                                                  index(ND, EnergyC),
                                                  index(FDII, EnergyC)};
 
-      Eigen::VectorXd difference(7);
+      Eigen::Matrix<double, 7, 1> difference;
       for (std::size_t i = 0; i < energy_indices.size(); ++i) {
         difference[i] = parameter[energy_indices[i]] - m_EnergyCV[i];
       }
@@ -339,7 +339,7 @@ namespace ana::dc {
                                                  index(ND, MCNorm),
                                                  index(FDII, MCNorm)};
 
-      Eigen::VectorXd difference(3);
+      Eigen::Vector3d difference;
       for (std::size_t i = 0; i < mcNorm_indices.size(); ++i) {
         difference[i] = parameter[mcNorm_indices[i]] - m_MCNormCV[i];
       }
