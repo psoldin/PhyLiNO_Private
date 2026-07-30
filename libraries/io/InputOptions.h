@@ -59,11 +59,15 @@ namespace io {
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
 
+    /** Result output format ("json" or "protobuf"), as passed via --output-format. */
+    [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
+
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
     bool   m_UseMultiThreading; /**< The number of cores to use for multi-threading. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
+    std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 
     std::string m_ConfigFile; /**< The configuration file path. */
 

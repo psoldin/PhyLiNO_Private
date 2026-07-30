@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package result.ic.proto;
+
+// Fitted value and 1-sigma error of a single fit parameter.
+message Parameter {
+  double value = 1;
+  double error = 2;
+}
+
+// One binning axis of a sample (see io::ic::Axis).
+message Axis {
+  string kind    = 1;
+  double low     = 2;
+  double high    = 3;
+  uint32 n_bins  = 4;
+}
+
+// Per-flux-component breakdown, both summed and per-bin. `name` is one of
+// "astro", "atmospheric"/"atmospheric_veto" (whichever the sample declared),
+// "template", "systematicsDelta", "galactic".
+message Component {
+  string name          = 1;
+  double total          = 2;
+  repeated double bins  = 3;
+}
+
+// One enabled analysis sample: its own binning, binned data and prediction at
+// the minimum, so the message is self-contained per sample. Bin arrays are
+// row-major over the sample's axes (first axis outer, last axis inner).
+message Sample {
+  string name                       = 1;
+  repeated string components        = 2;
+  double livetime                   = 3;
+  uint64 total_bins                 = 4;
+  repeated Axis axes                = 5;
+  repeated double data               = 6;
+  repeated double prediction         = 7;
+  double data_total                 = 8;
+  double pred_total                 = 9;
+  repeated Component components_breakdown = 10;
+}
+
+// Top-level LLHFit result for the IceCube experiment.
+message FitResult {
+  bool   converged                  = 1;
+  double chi2                       = 2;
+  double edm                        = 3;
+  double fit_duration               = 4;
+  map<string, Parameter> parameters = 5;
+  repeated Sample samples           = 6;
+  double data_total                 = 7;
+  double pred_total                 = 8;
+  string likelihood                 = 9;
+}

@@ -6,11 +6,14 @@
 #include "IceCube/ICLikelihood.h"
 #include "IceCube/ICParameter.h"
 
+#include "ICWriteResultsProto.h"
+
 #include <nlohmann/json.hpp>
 
 // STL includes
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -125,7 +128,7 @@ namespace result::ic {
     return j;
   }
 
-  inline void write_ice_cube_results(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
+  inline void write_ice_cube_results_json(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
     auto j = get_json_file(fit, llh, info);
 
     std::stringstream ss;
@@ -134,6 +137,22 @@ namespace result::ic {
     file.open(ss.str());
     file << j.dump(2) << '\n';
     file.close();
+  }
+
+  // Dispatches on the global "--output-format" option (default "json"). The
+  // protobuf format is the same content, binary-encoded and gzip-compressed,
+  // for the multi-thousand-file production runs where the pretty-printed JSON
+  // (one 3D-binned sample alone can be tens of MB) is not practical to store.
+  inline void write_ice_cube_results(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
+    const auto& format = fit.options()->inputOptions().output_format();
+
+    if (format == "json") {
+      write_ice_cube_results_json(fit, llh, info, name);
+    } else if (format == "protobuf") {
+      write_ice_cube_results_protobuf(fit, llh, info, name);
+    } else {
+      throw std::invalid_argument("Unknown --output-format \"" + format + "\" (expected \"json\" or \"protobuf\")");
+    }
   }
 
 }  // namespace result::ic

@@ -39,7 +39,7 @@ namespace io::ic {
       if (!col)
         return arrow::Status::Invalid("ICDataBase: missing required column '" + name + "'");
 
-      auto array = std::static_pointer_cast<arrow::DoubleArray>(col->chunk(0));
+      auto                array = std::static_pointer_cast<arrow::DoubleArray>(col->chunk(0));
       std::vector<double> out;
       out.reserve(array->length());
       for (int64_t i = 0, n = array->length(); i < n; ++i)
@@ -54,22 +54,20 @@ namespace io::ic {
     // applied unconditionally to real data (never to the MC baselines, which
     // ICDataBase::read_sample does not call this from).
     arrow::Result<std::vector<bool>> standard_mask(const arrow::Table& table, const std::string& reco_energy_branch) {
-      auto get = [&table](const std::string& name) { return table.GetColumnByName(name); };
+      auto get               = [&table](const std::string& name) { return table.GetColumnByName(name); };
       auto energy_exists     = get(reco_energy_branch + "_exists");
       auto energy_fit_status = get(reco_energy_branch + "_fit_status");
       auto dir_exists        = get("reco_dir_exists");
       auto dir_fit_status    = get("reco_dir_fit_status");
       if (!energy_exists || !energy_fit_status || !dir_exists || !dir_fit_status)
-        return arrow::Status::Invalid("ICDataBase: missing standard-mask columns ('" + reco_energy_branch +
-                                      "_exists', '" + reco_energy_branch +
-                                      "_fit_status', 'reco_dir_exists', 'reco_dir_fit_status')");
+        return arrow::Status::Invalid("ICDataBase: missing standard-mask columns ('" + reco_energy_branch + "_exists', '" + reco_energy_branch + "_fit_status', 'reco_dir_exists', 'reco_dir_fit_status')");
 
       auto ee = std::static_pointer_cast<arrow::UInt8Array>(energy_exists->chunk(0));
       auto es = std::static_pointer_cast<arrow::Int32Array>(energy_fit_status->chunk(0));
       auto de = std::static_pointer_cast<arrow::UInt8Array>(dir_exists->chunk(0));
       auto ds = std::static_pointer_cast<arrow::Int32Array>(dir_fit_status->chunk(0));
 
-      const int64_t    n = table.num_rows();
+      const int64_t     n = table.num_rows();
       std::vector<bool> pass(n, false);
       for (int64_t i = 0; i < n; ++i)
         pass[i] = ee->Value(i) == 1 && es->Value(i) == 0 && de->Value(i) == 1 && ds->Value(i) == 0;
@@ -93,8 +91,8 @@ namespace io::ic {
     const auto& b = cfg.branches;
 
     // Reconstructed variables: only needed to assign analysis bins.
-    ARROW_ASSIGN_OR_RAISE(auto e_reco,       get_double_column(*table, b.reco_energy));
-    ARROW_ASSIGN_OR_RAISE(auto reco_zenith,  get_double_column(*table, b.reco_zenith));
+    ARROW_ASSIGN_OR_RAISE(auto e_reco, get_double_column(*table, b.reco_energy));
+    ARROW_ASSIGN_OR_RAISE(auto reco_zenith, get_double_column(*table, b.reco_zenith));
 
     // Per-event fit-time columns. Only the components this sample declares are
     // read: a parquet that carries no atmospheric weights (or no astrophysical
@@ -106,10 +104,10 @@ namespace io::ic {
     }
 
     if (cfg.wants_atmospheric()) {
-      ARROW_ASSIGN_OR_RAISE(out.conv_baseline,   get_double_column(*table, b.conv_baseline));
-      ARROW_ASSIGN_OR_RAISE(out.conv_alt,        get_double_column(*table, b.conv_alt));
+      ARROW_ASSIGN_OR_RAISE(out.conv_baseline, get_double_column(*table, b.conv_baseline));
+      ARROW_ASSIGN_OR_RAISE(out.conv_alt, get_double_column(*table, b.conv_alt));
       ARROW_ASSIGN_OR_RAISE(out.prompt_baseline, get_double_column(*table, b.prompt_baseline));
-      ARROW_ASSIGN_OR_RAISE(out.prompt_alt,      get_double_column(*table, b.prompt_alt));
+      ARROW_ASSIGN_OR_RAISE(out.prompt_alt, get_double_column(*table, b.prompt_alt));
 
       for (int k = 0; k < params::ic::nBarrParams; ++k) {
         ARROW_ASSIGN_OR_RAISE(out.barr_conv[k], get_double_column(*table, b.barr_conv[k]));
@@ -135,9 +133,7 @@ namespace io::ic {
         ARROW_ASSIGN_OR_RAISE(auto survival, get_double_column(*osc_table, cfg.oscillation_branch));
         if (survival.size() != out.conv_baseline.size())
           return arrow::Status::Invalid(
-              "ICDataBase: oscillation sidecar '" + cfg.oscillation_file + "' has " +
-              std::to_string(survival.size()) + " rows, the baseline parquet has " +
-              std::to_string(out.conv_baseline.size()) + " (they must be row-aligned)");
+              "ICDataBase: oscillation sidecar '" + cfg.oscillation_file + "' has " + std::to_string(survival.size()) + " rows, the baseline parquet has " + std::to_string(out.conv_baseline.size()) + " (they must be row-aligned)");
 
         // NNMFit's OscillationsHook is constructed per-flux with the flux's own
         // self._baseline_weight as its target column (Flux.py::apply_hooks_for_flux:
@@ -146,13 +142,15 @@ namespace io::ic {
         // The CR-gradient alternative (conv_alt/prompt_alt) and the Barr slope columns
         // are separate flux graphs the hook never touches.
         auto apply_survival = [&survival](std::vector<double>& column) {
-          for (std::size_t i = 0; i < column.size(); ++i) column[i] *= survival[i];
+          for (std::size_t i = 0; i < column.size(); ++i)
+            column[i] *= survival[i];
         };
         apply_survival(out.conv_baseline);
         apply_survival(out.prompt_baseline);
 
         double mean = 0.0;
-        for (const double v : survival) mean += v;
+        for (const double v : survival)
+          mean += v;
         std::cout << "IceCube sample '" << cfg.name << "': applied oscillation survival factors (mean "
                   << mean / static_cast<double>(survival.size()) << ")\n";
       }
@@ -165,14 +163,16 @@ namespace io::ic {
     const double livetime = cfg.livetime;
     if (livetime != 1.0) {
       auto scale = [livetime](std::vector<double>& col) {
-        for (double& v : col) v *= livetime;
+        for (double& v : col)
+          v *= livetime;
       };
       scale(out.astro_baseline);
       scale(out.conv_baseline);
       scale(out.conv_alt);
       scale(out.prompt_baseline);
       scale(out.prompt_alt);
-      for (auto& g : out.barr_conv) scale(g);
+      for (auto& g : out.barr_conv)
+        scale(g);
     }
 
     // Assign each event to an analysis bin from its reco energy and zenith.
@@ -213,7 +213,7 @@ namespace io::ic {
     // is on the axis structure, not on the RA bin count: a one-bin RA axis is still
     // an RA axis, and feeding bin_index only two of three reco values would read
     // past the end of the array it is handed.
-    const bool needs_ra = io::ic::has_ra_axis(cfg.binning);
+    const bool          needs_ra = io::ic::has_ra_axis(cfg.binning);
     std::vector<double> ra;
     if (needs_ra) {
       ARROW_ASSIGN_OR_RAISE(ra, get_double_column(*table, b.reco_ra));
@@ -230,12 +230,14 @@ namespace io::ic {
     std::vector<double> masked_ra;
     masked_energy.reserve(n_rows);
     masked_zenith.reserve(n_rows);
-    if (needs_ra) masked_ra.reserve(n_rows);
+    if (needs_ra)
+      masked_ra.reserve(n_rows);
     for (std::size_t i = 0; i < n_rows; ++i) {
       if (passes[i]) {
         masked_energy.push_back(energy[i]);
         masked_zenith.push_back(zenith[i]);
-        if (needs_ra) masked_ra.push_back(ra[i]);
+        if (needs_ra)
+          masked_ra.push_back(ra[i]);
       }
     }
     if (masked_energy.size() != n_rows)
@@ -244,10 +246,11 @@ namespace io::ic {
                 << (100.0 * static_cast<double>(n_rows - masked_energy.size()) / static_cast<double>(n_rows))
                 << "%)\n";
 
-    out = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)
-                   : bin_event_counts(cfg.binning, masked_energy, masked_zenith);
+    out          = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)
+                            : bin_event_counts(cfg.binning, masked_energy, masked_zenith);
     double total = 0.0;
-    for (const double v : out) total += v;
+    for (const double v : out)
+      total += v;
     std::cout << "IceCube data '" << cfg.name << "': " << n_rows << " rows, " << total
               << " in analysis range\n";
     return arrow::Status::OK();
@@ -265,8 +268,7 @@ namespace io::ic {
       std::vector<double> data_histogram;
       const auto          data_status = read_data_histogram(cfg, data_histogram);
       if (!data_status.ok())
-        throw std::runtime_error("Failed to read IceCube data for sample '" + cfg.name + "': " +
-                                 data_status.ToString());
+        throw std::runtime_error("Failed to read IceCube data for sample '" + cfg.name + "': " + data_status.ToString());
       m_DataHistograms.push_back(std::move(data_histogram));
     }
     if (m_Samples.empty())
