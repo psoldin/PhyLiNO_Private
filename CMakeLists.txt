@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 project(PhLiNO)
 
-enable_testing()
+include(CTest)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -38,10 +38,29 @@ if(NOT OpenMP_CXX_FOUND AND APPLE)
 endif()
 find_package(Arrow REQUIRED CONFIG)
 find_package(Parquet REQUIRED CONFIG)
+# CONFIG mode (not the CMake-bundled FindProtobuf.cmake module) so the
+# protobuf::libprotobuf target carries its real transitive link deps -- modern
+# protobuf builds against abseil, and the module-mode target does not
+# propagate those abseil libraries, which fails at link time.
+find_package(Protobuf REQUIRED CONFIG)
 
 include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
+
+if(BUILD_TESTING)
+  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  if(MSVC)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  endif()
+
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/52eb8108c5bdec04579160ae17225d66034bd723.zip
+  )
+  FetchContent_MakeAvailable(googletest)
+endif()
 
 # The OpenMP::OpenMP_CXX imported target carries both the compile flag and the
 # runtime library. The old CMAKE_*_FLAGS route relied on OpenMP_EXE_LINKER_FLAGS,

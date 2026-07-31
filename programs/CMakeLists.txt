@@ -1,2 +1,5 @@
 add_subdirectory(LLHFit)
-add_subdirectory(ictests)
+
+if(BUILD_TESTING)
+  add_subdirectory(ictests)
+endif()

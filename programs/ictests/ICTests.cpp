@@ -1,10 +1,3 @@
-// These tests ARE their assertions. The project configures Release with -DNDEBUG,
-// which compiles every assert() away and would leave this executable printing
-// "all passed" without checking anything -- so NDEBUG is dropped for this file
-// before <cassert> is pulled in, and main() verifies at runtime that assertions
-// really are live.
-#undef NDEBUG
-
 #include "DetectorSystematics.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICParameter.h"
@@ -17,8 +10,8 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <gtest/gtest.h>
 
-#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -37,11 +30,11 @@ static Binning tracks_binning() {
                   Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 33}});
 }
 
-static void test_total_bins() {
-  assert(tracks_binning().total_bins() == 45 * 33);
+TEST(BinningTest, TotalBins) {
+  ASSERT_TRUE(tracks_binning().total_bins() == 45 * 33);
 }
 
-static void test_bin_index_matches_legacy() {
+TEST(BinningTest, BinIndexMatchesLegacy) {
   const Binning b = tracks_binning();
   auto legacy = [](double e_gev, double zen_rad) -> int {
     const double log_e = std::log10(e_gev);
@@ -55,29 +48,29 @@ static void test_bin_index_matches_legacy() {
   for (double e : {50.0, 316.0, 1000.0, 1e4, 1e5, 5e6, 2e7})
     for (double z : {0.0, 1.0, 1.57, 2.0, 2.6, 3.14}) {
       const double reco[2] = {e, z};
-      assert(b.bin_index(reco) == legacy(e, z));
+      ASSERT_TRUE(b.bin_index(reco) == legacy(e, z));
     }
 }
 
-static void test_parse_axis_spec() {
+TEST(BinningTest, ParseAxisSpec) {
   const Axis a = io::ic::parse_axis("Log10Energy", "(2.5, 7.0, 45)");
-  assert(a.n_bins == 45);
-  assert(std::abs(a.lo - 2.5) < 1e-12);
-  assert(std::abs(a.hi - 7.0) < 1e-12);
-  assert(a.uniform());
+  ASSERT_TRUE(a.n_bins == 45);
+  ASSERT_TRUE(std::abs(a.lo - 2.5) < 1e-12);
+  ASSERT_TRUE(std::abs(a.hi - 7.0) < 1e-12);
+  ASSERT_TRUE(a.uniform());
 }
 
 // The cascade zenith axis is a hardcoded non-uniform cos-zenith edge list in
 // NNMFit (binning/rectangular_binning.py, spacing "cscd-cos_5up"). Expressed here
 // as explicit edges, Axis::index must bin by upper_bound over those edges.
-static void test_non_uniform_axis_index() {
+TEST(BinningTest, NonUniformAxisIndex) {
   const std::vector<double> edges{-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0};
   const Axis a = io::ic::parse_axis("CosZenith", "[-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0]");
-  assert(!a.uniform());
-  assert(a.n_bins == 7);
-  assert(a.edges.size() == 8);
-  assert(std::abs(a.lo + 1.0) < 1e-12);
-  assert(std::abs(a.hi - 1.0) < 1e-12);
+  ASSERT_TRUE(!a.uniform());
+  ASSERT_TRUE(a.n_bins == 7);
+  ASSERT_TRUE(a.edges.size() == 8);
+  ASSERT_TRUE(std::abs(a.lo + 1.0) < 1e-12);
+  ASSERT_TRUE(std::abs(a.hi - 1.0) < 1e-12);
 
   // Reference: the bin containing cos(zenith), -1 outside [lo, hi).
   auto reference = [&edges](const double zenith_rad) -> int {
@@ -89,72 +82,72 @@ static void test_non_uniform_axis_index() {
   };
 
   for (double zenith : {0.0, 0.3, 0.8, 1.0, 1.2, 1.5708, 1.9, 2.4, 2.9, 3.14159, 3.2})
-    assert(a.index(zenith) == reference(zenith));
+    ASSERT_TRUE(a.index(zenith) == reference(zenith));
 
   // Lower edge inclusive, upper edge exclusive, in cos(zenith).
-  assert(a.index(std::acos(-1.0)) == 0);      // cos = -1 -> first bin
-  assert(a.index(std::acos(-0.76)) == 1);     // exactly an interior edge
-  assert(a.index(std::acos(0.999999)) == 6);  // last bin
-  assert(a.index(std::acos(1.0)) == -1);      // cos = +1 == hi -> out of range
+  ASSERT_TRUE(a.index(std::acos(-1.0)) == 0);      // cos = -1 -> first bin
+  ASSERT_TRUE(a.index(std::acos(-0.76)) == 1);     // exactly an interior edge
+  ASSERT_TRUE(a.index(std::acos(0.999999)) == 6);  // last bin
+  ASSERT_TRUE(a.index(std::acos(1.0)) == -1);      // cos = +1 == hi -> out of range
 
   // A non-ascending edge list is a config error, not a silently wrong binning.
   bool threw = false;
   try {
     const Axis descending = io::ic::parse_axis("CosZenith", "[-1.0, 0.5, 0.2]");
-    assert(descending.n_bins == 2);  // unreachable; keeps the parse result used
+    ASSERT_TRUE(descending.n_bins == 2);  // unreachable; keeps the parse result used
   } catch (const std::runtime_error&) {
     threw = true;
   }
-  assert(threw);
+  ASSERT_TRUE(threw);
 }
 
 // A binning may mix a uniform energy axis with an explicit-edge zenith axis: that
 // is exactly the cscd_cascade grid (21 x 7 = 147 bins). cscd_muon is one bin.
-static void test_mixed_binning_cascade_grid() {
+TEST(BinningTest, MixedCascadeGrid) {
   const Binning cascade({io::ic::parse_axis("Log10Energy", "(2.8, 7.0, 21)"),
                          io::ic::parse_axis("CosZenith",
                                             "[-1.0, -0.76, -0.52, -0.28, -0.04, 0.2, 0.6, 1.0]")});
-  assert(cascade.total_bins() == 147);
+  ASSERT_TRUE(cascade.total_bins() == 147);
 
   // 10^3 GeV is energy bin 1 ((3.0 - 2.8) / 0.2); cos(zenith) = 0 is zenith bin 4.
   const double reco[2] = {1000.0, 1.5707963267948966};
-  assert(cascade.bin_index(reco) == 1 * 7 + 4);
+  ASSERT_TRUE(cascade.bin_index(reco) == 1 * 7 + 4);
 
   const Binning muon({io::ic::parse_axis("Log10Energy", "(2.6, 4.8, 1)"),
                       io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
-  assert(muon.total_bins() == 1);
+  ASSERT_TRUE(muon.total_bins() == 1);
   const double inside[2] = {1000.0, 1.5};
-  assert(muon.bin_index(inside) == 0);
+  ASSERT_TRUE(muon.bin_index(inside) == 0);
   const double too_soft[2] = {100.0, 1.5};
-  assert(muon.bin_index(too_soft) == -1);
+  ASSERT_TRUE(muon.bin_index(too_soft) == -1);
 }
 
 // The parameter layout is the contract between the config's "Parameter" array, the
 // Minuit index array and every component that reads a fixed index, so pin down the
 // count and the two contiguous blocks components index into.
-static void test_parameter_layout() {
+TEST(ICParameterTest, Layout) {
   using namespace params::ic;
-  assert(number_of_parameters() == 23);
-  assert(nBarrParams == 4);
-  assert(nDetSysParams == 5);
+  ASSERT_TRUE(number_of_parameters() == 23);
+  ASSERT_TRUE(nBarrParams == 4);
+  ASSERT_TRUE(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
-  assert(BarrW == BarrH + 1 && BarrY == BarrH + 2 && BarrZ == BarrH + 3);
+  ASSERT_TRUE(BarrW == BarrH + 1 && BarrY == BarrH + 2 && BarrZ == BarrH + 3);
   // Detector block, contiguous in the order the exported gradient file uses.
-  assert(IceAbs == DOMEff + 1 && IceScat == DOMEff + 2);
-  assert(HoleIceP0 == DOMEff + 3 && HoleIceP1 == DOMEff + 4);
+  ASSERT_TRUE(IceAbs == DOMEff + 1 && IceScat == DOMEff + 2);
+  ASSERT_TRUE(HoleIceP0 == DOMEff + 3 && HoleIceP1 == DOMEff + 4);
   // The two template norms are distinct: tracks Corsika vs cascade MuonGun.
-  assert(MuonNorm != MuonGunNorm);
+  ASSERT_TRUE(MuonNorm != MuonGunNorm);
   // Galactic norms are the last block, one per galactic template a sample can declare.
-  assert(GalacticNorm1 == GalacticNorm0 + 1);
+  ASSERT_TRUE(GalacticNorm1 == GalacticNorm0 + 1);
   // Broken-power-law block (NNMFit AstroBPL), contiguous after the galactic norms.
-  assert(AstroGamma2 == AstroGamma1 + 1);
-  assert(AstroEBreak == AstroGamma2 + 1);
+  ASSERT_TRUE(AstroGamma2 == AstroGamma1 + 1);
+  ASSERT_TRUE(AstroEBreak == AstroGamma2 + 1);
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
 // config that specifies neither prior key keeps today's meaning -- the
 // compatibility guarantee the Double Chooz configs rely on.
-static void test_prior_defaults_and_overrides() {
+TEST(InputParameterTest, PriorDefaultsAndOverrides) {
   static constexpr char kJson[] = R"JSON(
 {
   "Parameter": [
@@ -170,18 +163,18 @@ static void test_prior_defaults_and_overrides() {
   boost::property_tree::read_json(iss, pt);
 
   const io::InputParameter parameters(pt.get_child("Parameter"));
-  assert(parameters.size() == 2);
+  ASSERT_TRUE(parameters.size() == 2);
 
   // Legacy entry: prior falls back to StartValue / StepWidth exactly as before.
-  assert(parameters.parameters()[0].value() == 1.0);
-  assert(parameters.parameters()[0].uncertainty() == 0.4);
-  assert(parameters.parameters()[0].prior_value() == 1.0);
-  assert(parameters.parameters()[0].prior_width() == 0.4);
+  ASSERT_TRUE(parameters.parameters()[0].value() == 1.0);
+  ASSERT_TRUE(parameters.parameters()[0].uncertainty() == 0.4);
+  ASSERT_TRUE(parameters.parameters()[0].prior_value() == 1.0);
+  ASSERT_TRUE(parameters.parameters()[0].prior_width() == 0.4);
 
   // Explicit entry: step and prior are independent.
-  assert(parameters.parameters()[1].uncertainty() == 0.1);
-  assert(parameters.parameters()[1].prior_value() == 1.2);
-  assert(parameters.parameters()[1].prior_width() == 0.5);
+  ASSERT_TRUE(parameters.parameters()[1].uncertainty() == 0.1);
+  ASSERT_TRUE(parameters.parameters()[1].prior_value() == 1.2);
+  ASSERT_TRUE(parameters.parameters()[1].prior_width() == 0.5);
 }
 
 // Exercises the real io::ic::parse_samples() (declared in SampleConfig.h,
@@ -189,7 +182,7 @@ static void test_prior_defaults_and_overrides() {
 // "Binnings" + "Samples" parser added in Task 3. One binning shared by two
 // samples, one of which is disabled, to check both binning resolution and
 // per-sample field parsing (including the comma-split "components" list).
-static void test_parse_samples() {
+TEST(SampleConfigTest, ParseSamples) {
   static constexpr char kJson[] = R"JSON(
 {
   "IceCube": {
@@ -224,34 +217,34 @@ static void test_parse_samples() {
   boost::property_tree::read_json(iss, pt);
 
   const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
-  assert(samples.size() == 2);
+  ASSERT_TRUE(samples.size() == 2);
 
-  assert(samples[0].name == "tracks_baseline");
-  assert(samples[0].enabled == true);
-  assert(std::abs(samples[0].livetime - 3.0e8) < 1.0);
-  assert(samples[0].binning.total_bins() == 1485);
-  assert(samples[0].components.size() == 3);
-  assert(samples[0].components[0] == "astro");
-  assert(samples[0].components[1] == "conventional");
-  assert(samples[0].components[2] == "prompt");
-  assert(samples[0].has_component("conventional"));
-  assert(!samples[0].has_component("muon"));
-  assert(samples[0].wants_astro());
-  assert(samples[0].wants_atmospheric());
+  ASSERT_TRUE(samples[0].name == "tracks_baseline");
+  ASSERT_TRUE(samples[0].enabled == true);
+  ASSERT_TRUE(std::abs(samples[0].livetime - 3.0e8) < 1.0);
+  ASSERT_TRUE(samples[0].binning.total_bins() == 1485);
+  ASSERT_TRUE(samples[0].components.size() == 3);
+  ASSERT_TRUE(samples[0].components[0] == "astro");
+  ASSERT_TRUE(samples[0].components[1] == "conventional");
+  ASSERT_TRUE(samples[0].components[2] == "prompt");
+  ASSERT_TRUE(samples[0].has_component("conventional"));
+  ASSERT_TRUE(!samples[0].has_component("muon"));
+  ASSERT_TRUE(samples[0].wants_astro());
+  ASSERT_TRUE(samples[0].wants_atmospheric());
 
-  assert(samples[1].name == "tracks_alt");
-  assert(samples[1].enabled == false);
-  assert(std::abs(samples[1].livetime - 1.0e8) < 1.0);
-  assert(samples[1].binning.total_bins() == 1485);
+  ASSERT_TRUE(samples[1].name == "tracks_alt");
+  ASSERT_TRUE(samples[1].enabled == false);
+  ASSERT_TRUE(std::abs(samples[1].livetime - 1.0e8) < 1.0);
+  ASSERT_TRUE(samples[1].binning.total_bins() == 1485);
   // Component masking: an astro-only sample must not pull in the atmospheric
   // flux (nor its parquet columns, see ICDataBase::read_sample).
-  assert(samples[1].wants_astro());
-  assert(!samples[1].wants_atmospheric());
+  ASSERT_TRUE(samples[1].wants_astro());
+  ASSERT_TRUE(!samples[1].wants_atmospheric());
 }
 
 // parse_samples() must reject component lists the flux components cannot
 // honour, instead of silently predicting fewer events than the config asks for.
-static void test_parse_samples_rejects_bad_components() {
+TEST(SampleConfigTest, RejectsBadComponents) {
   static constexpr char kTemplate[] = R"JSON(
 {
   "IceCube": {
@@ -276,7 +269,7 @@ static void test_parse_samples_rejects_bad_components() {
     std::istringstream          iss(json);
     boost::property_tree::read_json(iss, pt);
     const auto parsed = io::ic::parse_samples(pt.get_child("IceCube"));
-    assert(parsed.size() == 1);
+    ASSERT_TRUE(parsed.size() == 1);
   };
 
   auto throws = [&parse_with](const std::string& components_entry) {
@@ -288,30 +281,30 @@ static void test_parse_samples_rejects_bad_components() {
     return false;
   };
 
-  assert(throws(""));                                        // no components at all
-  assert(throws(R"(, "components": "astro, cascades")"));     // unknown component name
-  assert(throws(R"(, "components": "astro, conventional")")); // conventional without prompt
-  assert(throws(R"(, "components": "prompt")"));              // prompt without conventional
-  assert(!throws(R"(, "components": "astro")"));              // astro alone is fine
-  assert(!throws(R"(, "components": "conventional, prompt")"));
+  ASSERT_TRUE(throws(""));                                        // no components at all
+  ASSERT_TRUE(throws(R"(, "components": "astro, cascades")"));     // unknown component name
+  ASSERT_TRUE(throws(R"(, "components": "astro, conventional")")); // conventional without prompt
+  ASSERT_TRUE(throws(R"(, "components": "prompt")"));              // prompt without conventional
+  ASSERT_TRUE(!throws(R"(, "components": "astro")"));              // astro alone is fine
+  ASSERT_TRUE(!throws(R"(, "components": "conventional, prompt")"));
 
   // Veto pair, variant mixing and duplicate templates.
-  assert(throws(R"(, "components": "astro, conventional_veto")"));  // veto pair incomplete
-  assert(throws(R"(, "components": "astro, prompt_veto")"));
-  assert(throws(R"(, "components": "conventional, prompt, conventional_veto, prompt_veto")"));
-  assert(throws(R"(, "components": "astro, muon, muontemplate", "Template": { "File": "t.txt" })"));
-  assert(!throws(R"(, "components": "astro, conventional_veto, prompt_veto")"));
+  ASSERT_TRUE(throws(R"(, "components": "astro, conventional_veto")"));  // veto pair incomplete
+  ASSERT_TRUE(throws(R"(, "components": "astro, prompt_veto")"));
+  ASSERT_TRUE(throws(R"(, "components": "conventional, prompt, conventional_veto, prompt_veto")"));
+  ASSERT_TRUE(throws(R"(, "components": "astro, muon, muontemplate", "Template": { "File": "t.txt" })"));
+  ASSERT_TRUE(!throws(R"(, "components": "astro, conventional_veto, prompt_veto")"));
 
   // A template component needs its file, and a file needs its component.
-  assert(throws(R"(, "components": "astro, muon")"));  // template declared, no Template block
-  assert(throws(R"(, "components": "astro", "Template": { "File": "t.txt" })"));
-  assert(throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "Nope" })"));
-  assert(!throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "MuonGunNorm" })"));
+  ASSERT_TRUE(throws(R"(, "components": "astro, muon")"));  // template declared, no Template block
+  ASSERT_TRUE(throws(R"(, "components": "astro", "Template": { "File": "t.txt" })"));
+  ASSERT_TRUE(throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "Nope" })"));
+  ASSERT_TRUE(!throws(R"(, "components": "astro, muon", "Template": { "File": "t.txt", "Norm": "MuonGunNorm" })"));
 }
 
 // The cascade samples declare the veto variants plus the MuonGun template, and
 // carry their template / gradient file paths and reco branch overrides per sample.
-static void test_parse_samples_cascade_entry() {
+TEST(SampleConfigTest, ParsesCascadeEntry) {
   static constexpr char kJson[] = R"JSON(
 {
   "IceCube": {
@@ -343,23 +336,23 @@ static void test_parse_samples_cascade_entry() {
   boost::property_tree::read_json(iss, pt);
 
   const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
-  assert(samples.size() == 1);
+  ASSERT_TRUE(samples.size() == 1);
   const io::ic::SampleConfig& cascade = samples[0];
 
-  assert(cascade.binning.total_bins() == 147);
-  assert(std::abs(cascade.livetime - 330315015.11) < 1e-6);
-  assert(cascade.wants_astro());
-  assert(cascade.wants_atmospheric());
-  assert(cascade.wants_veto());
-  assert(cascade.wants_template());
-  assert(cascade.template_file == "muongun_cascade.txt");
-  assert(cascade.template_norm_index == params::ic::MuonGunNorm);
-  assert(cascade.gradient_file == "gradients_cscd_cascade.txt");
-  assert(cascade.data_path == "data_cscd_cascade.parquet");
-  assert(cascade.branches.reco_energy == "energy_monopod");
-  assert(cascade.branches.reco_zenith == "zenith_monopod");
+  ASSERT_TRUE(cascade.binning.total_bins() == 147);
+  ASSERT_TRUE(std::abs(cascade.livetime - 330315015.11) < 1e-6);
+  ASSERT_TRUE(cascade.wants_astro());
+  ASSERT_TRUE(cascade.wants_atmospheric());
+  ASSERT_TRUE(cascade.wants_veto());
+  ASSERT_TRUE(cascade.wants_template());
+  ASSERT_TRUE(cascade.template_file == "muongun_cascade.txt");
+  ASSERT_TRUE(cascade.template_norm_index == params::ic::MuonGunNorm);
+  ASSERT_TRUE(cascade.gradient_file == "gradients_cscd_cascade.txt");
+  ASSERT_TRUE(cascade.data_path == "data_cscd_cascade.parquet");
+  ASSERT_TRUE(cascade.branches.reco_energy == "energy_monopod");
+  ASSERT_TRUE(cascade.branches.reco_zenith == "zenith_monopod");
   // Defaults still apply to the columns the sample did not override.
-  assert(cascade.branches.true_energy == "MCPrimaryEnergy");
+  ASSERT_TRUE(cascade.branches.true_energy == "MCPrimaryEnergy");
 
   // The tracks-style sample: plain atmospheric pair, Corsika template norm, and
   // no gradient file, so detector systematics stay off for it.
@@ -386,18 +379,18 @@ static void test_parse_samples_cascade_entry() {
   boost::property_tree::read_json(tracks_iss, tracks_pt);
 
   const auto tracks = io::ic::parse_samples(tracks_pt.get_child("IceCube"));
-  assert(tracks.size() == 1);
-  assert(tracks[0].wants_atmospheric());
-  assert(!tracks[0].wants_veto());
-  assert(tracks[0].wants_template());
-  assert(tracks[0].template_norm_index == params::ic::MuonNorm);  // Norm defaults to MuonNorm
-  assert(tracks[0].gradient_file.empty());
+  ASSERT_TRUE(tracks.size() == 1);
+  ASSERT_TRUE(tracks[0].wants_atmospheric());
+  ASSERT_TRUE(!tracks[0].wants_veto());
+  ASSERT_TRUE(tracks[0].wants_template());
+  ASSERT_TRUE(tracks[0].template_norm_index == params::ic::MuonNorm);  // Norm defaults to MuonNorm
+  ASSERT_TRUE(tracks[0].gradient_file.empty());
 }
 
 // The oscillation sidecar is a per-event multiplicative factor on the atmospheric
 // baselines only (NNMFit's OscillationsHook: nu_mu disappearance, applied to the
 // conventional and prompt baseline weights at load time).
-static void test_parse_samples_oscillation_entry() {
+TEST(SampleConfigTest, ParsesOscillationEntry) {
   static constexpr char kJson[] = R"JSON(
 {
   "IceCube": {
@@ -430,18 +423,18 @@ static void test_parse_samples_oscillation_entry() {
   boost::property_tree::read_json(iss, pt);
 
   const auto samples = io::ic::parse_samples(pt.get_child("IceCube"));
-  assert(samples.size() == 2);
-  assert(samples[0].oscillation_file == "osc_tracks.parquet");
-  assert(samples[0].oscillation_branch == "osc_survival");
-  assert(samples[1].oscillation_file.empty());
+  ASSERT_TRUE(samples.size() == 2);
+  ASSERT_TRUE(samples[0].oscillation_file == "osc_tracks.parquet");
+  ASSERT_TRUE(samples[0].oscillation_branch == "osc_survival");
+  ASSERT_TRUE(samples[1].oscillation_file.empty());
   // Default branch name applies even without an explicit "Branch" key.
-  assert(samples[1].oscillation_branch == "osc_survival");
+  ASSERT_TRUE(samples[1].oscillation_branch == "osc_survival");
 }
 
 // A sample whose analysis binning carries an RA axis keeps a second, RA-free
 // binning for the MC: per-event weights, the muon template and the SnowStorm
 // gradients all stay 2D and are broadcast over RA at prediction time.
-static void test_parse_samples_ra_binning() {
+TEST(SampleConfigTest, ParsesRaBinning) {
   const std::string json = R"JSON({
     "Binnings": {
       "b3d": {
@@ -469,23 +462,23 @@ static void test_parse_samples_ra_binning() {
   boost::property_tree::read_json(in, tree);
   const auto samples = io::ic::parse_samples(tree);
 
-  assert(samples.size() == 1);
+  ASSERT_TRUE(samples.size() == 1);
   const io::ic::SampleConfig& s = samples[0];
-  assert(s.binning.total_bins() == 24);
-  assert(s.mc_binning.total_bins() == 6);
-  assert(s.mc_binning.n_axes() == 2);
-  assert(s.ra_bins() == 4);
+  ASSERT_TRUE(s.binning.total_bins() == 24);
+  ASSERT_TRUE(s.mc_binning.total_bins() == 6);
+  ASSERT_TRUE(s.mc_binning.n_axes() == 2);
+  ASSERT_TRUE(s.ra_bins() == 4);
 
-  assert(s.galactic.size() == 2);
-  assert(s.galactic[0].name == "fermi");
-  assert(s.galactic[0].file == "fermi.txt");
-  assert(s.galactic[0].norm_index == params::ic::GalacticNorm0);
-  assert(s.galactic[1].norm_index == params::ic::GalacticNorm1);
+  ASSERT_TRUE(s.galactic.size() == 2);
+  ASSERT_TRUE(s.galactic[0].name == "fermi");
+  ASSERT_TRUE(s.galactic[0].file == "fermi.txt");
+  ASSERT_TRUE(s.galactic[0].norm_index == params::ic::GalacticNorm0);
+  ASSERT_TRUE(s.galactic[1].norm_index == params::ic::GalacticNorm1);
 }
 
 // A 2-axis sample gets mc_binning == binning and ra_bins() == 1, so nothing about
 // the existing configs changes.
-static void test_parse_samples_without_ra() {
+TEST(SampleConfigTest, ParsesWithoutRa) {
   const std::string json = R"JSON({
     "Binnings": {
       "b2d": {
@@ -504,13 +497,13 @@ static void test_parse_samples_without_ra() {
   boost::property_tree::read_json(in, tree);
   const auto samples = io::ic::parse_samples(tree);
 
-  assert(samples[0].mc_binning.total_bins() == samples[0].binning.total_bins());
-  assert(samples[0].ra_bins() == 1);
-  assert(samples[0].galactic.empty());
+  ASSERT_TRUE(samples[0].mc_binning.total_bins() == samples[0].binning.total_bins());
+  ASSERT_TRUE(samples[0].ra_bins() == 1);
+  ASSERT_TRUE(samples[0].galactic.empty());
 }
 
 // Configurations the prediction path cannot express must fail at startup.
-static void test_parse_samples_rejects_bad_galactic() {
+TEST(SampleConfigTest, RejectsBadGalactic) {
   auto parse = [](const std::string& binnings, const std::string& sample_body) {
     const std::string json = "{ \"Binnings\": " + binnings + ", \"Samples\": { \"s\": { " +
                              sample_body + " } } }";
@@ -537,23 +530,23 @@ static void test_parse_samples_rejects_bad_galactic() {
   };
 
   // The RA axis must be last.
-  assert(throws(ra_first, R"("binning": "bad", "parquet": "m.parquet", "components": "astro")"));
+  ASSERT_TRUE(throws(ra_first, R"("binning": "bad", "parquet": "m.parquet", "components": "astro")"));
 
   // A galactic template needs an RA axis to be binned against.
-  assert(throws(b2d, R"("binning": "b2d", "parquet": "m.parquet", "components": "astro",
+  ASSERT_TRUE(throws(b2d, R"("binning": "b2d", "parquet": "m.parquet", "components": "astro",
       "Galactic": { "fermi": { "File": "f.txt", "Norm": "GalacticNorm0" } })"));
 
   // Unknown norm name.
-  assert(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+  ASSERT_TRUE(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
       "Galactic": { "fermi": { "File": "f.txt", "Norm": "MuonNorm" } })"));
 
   // Two templates sharing one norm would be indistinguishable in the fit.
-  assert(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+  ASSERT_TRUE(throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
       "Galactic": { "a": { "File": "a.txt", "Norm": "GalacticNorm0" },
                     "b": { "File": "b.txt", "Norm": "GalacticNorm0" } })"));
 
   // A valid 3D sample with one galactic template parses.
-  assert(!throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
+  ASSERT_TRUE(!throws(b3d, R"("binning": "b3d", "parquet": "m.parquet", "components": "astro",
       "Galactic": { "fermi": { "File": "f.txt", "Norm": "GalacticNorm0" } })"));
 }
 
@@ -561,7 +554,7 @@ static void test_parse_samples_rejects_bad_galactic() {
 // loaded, relying on both walking the enabled configs in the same order --
 // the riskiest line in the multi-sample refactor. Both sides call
 // enabled_sample_indices(), so pin its behaviour down here.
-static void test_enabled_sample_indices() {
+TEST(SampleConfigTest, EnabledSampleIndices) {
   using io::ic::SampleConfig;
 
   const Binning grid = tracks_binning();
@@ -575,26 +568,26 @@ static void test_enabled_sample_indices() {
   const std::vector<SampleConfig> middle_disabled{
       make("tracks", true), make("cscd_cascade", false), make("cscd_muon", true)};
   const auto enabled = io::ic::enabled_sample_indices(middle_disabled);
-  assert(enabled.size() == 2);
-  assert(enabled[0] == 0);
-  assert(enabled[1] == 2);
-  assert(middle_disabled[enabled[1]].name == "cscd_muon");
+  ASSERT_TRUE(enabled.size() == 2);
+  ASSERT_TRUE(enabled[0] == 0);
+  ASSERT_TRUE(enabled[1] == 2);
+  ASSERT_TRUE(middle_disabled[enabled[1]].name == "cscd_muon");
 
   // First disabled, and order is config order, not "enabled first".
   const std::vector<SampleConfig> first_disabled{
       make("tracks", false), make("cscd_cascade", true), make("cscd_muon", true)};
   const auto enabled_tail = io::ic::enabled_sample_indices(first_disabled);
-  assert(enabled_tail.size() == 2);
-  assert(enabled_tail[0] == 1);
-  assert(enabled_tail[1] == 2);
+  ASSERT_TRUE(enabled_tail.size() == 2);
+  ASSERT_TRUE(enabled_tail[0] == 1);
+  ASSERT_TRUE(enabled_tail[1] == 2);
 
   // All enabled: identity. All disabled: empty (ICDataBase/ICLikelihood throw).
   const std::vector<SampleConfig> all_enabled{make("a", true), make("b", true)};
   const auto                      identity = io::ic::enabled_sample_indices(all_enabled);
-  assert(identity.size() == 2);
-  assert(identity[0] == 0 && identity[1] == 1);
-  assert(io::ic::enabled_sample_indices({make("a", false)}).empty());
-  assert(io::ic::enabled_sample_indices({}).empty());
+  ASSERT_TRUE(identity.size() == 2);
+  ASSERT_TRUE(identity[0] == 0 && identity[1] == 1);
+  ASSERT_TRUE(io::ic::enabled_sample_indices({make("a", false)}).empty());
+  ASSERT_TRUE(io::ic::enabled_sample_indices({}).empty());
 }
 
 // Proves the CSR invariant that ICSample::sort_into_bins() is supposed to
@@ -613,7 +606,7 @@ static void test_enabled_sample_indices() {
 // offset per column, and 1000*(k+1) per Barr slope), so after the permutation
 // is applied we can check that e_true (offset 0) and every other column moved
 // together: col[i] - offset == e_true[i] for every surviving event i.
-static void test_sort_into_bins_csr_invariant() {
+TEST(ICSampleTest, SortIntoBinsMaintainsCsrInvariant) {
   using io::ic::ICSample;
 
   ICSample s;
@@ -650,42 +643,42 @@ static void test_sort_into_bins_csr_invariant() {
   s.sort_into_bins(/*total_bins=*/4);
 
   // The out-of-range event (original index 1) must be dropped: 6 -> 5.
-  assert(s.size() == 5);
+  ASSERT_TRUE(s.size() == 5);
 
   // CSR shape: total_bins + 1 offsets, monotonic non-decreasing, last == size().
-  assert(s.bin_offsets.size() == 5);
+  ASSERT_TRUE(s.bin_offsets.size() == 5);
   for (std::size_t b = 0; b + 1 < s.bin_offsets.size(); ++b)
-    assert(s.bin_offsets[b] <= s.bin_offsets[b + 1]);
-  assert(s.bin_offsets.back() == s.size());
+    ASSERT_TRUE(s.bin_offsets[b] <= s.bin_offsets[b + 1]);
+  ASSERT_TRUE(s.bin_offsets.back() == s.size());
 
   // Expected per-bin counts: bin0={2,5}(2), bin1={4}(1), bin2={0,3}(2), bin3={}(0).
-  assert(s.bin_offsets[0] == 0);
-  assert(s.bin_offsets[1] == 2);
-  assert(s.bin_offsets[2] == 3);
-  assert(s.bin_offsets[3] == 5);
-  assert(s.bin_offsets[4] == 5);
+  ASSERT_TRUE(s.bin_offsets[0] == 0);
+  ASSERT_TRUE(s.bin_offsets[1] == 2);
+  ASSERT_TRUE(s.bin_offsets[2] == 3);
+  ASSERT_TRUE(s.bin_offsets[3] == 5);
+  ASSERT_TRUE(s.bin_offsets[4] == 5);
 
   // Events are grouped by bin: bin_idx is non-decreasing across the sorted array.
   for (std::size_t i = 0; i + 1 < s.size(); ++i)
-    assert(s.bin_idx[i] <= s.bin_idx[i + 1]);
+    ASSERT_TRUE(s.bin_idx[i] <= s.bin_idx[i + 1]);
 
   // Original index 1 (dropped) must not survive in any column.
   for (std::size_t i = 0; i < s.size(); ++i)
-    assert(s.e_true[i] != 1.0);
+    ASSERT_TRUE(s.e_true[i] != 1.0);
 
   // Every column was permuted in lockstep with e_true (same permutation
   // applied to every per-event column, including all four Barr slopes).
   for (std::size_t i = 0; i < s.size(); ++i) {
-    assert(std::abs(s.astro_baseline[i]  - s.e_true[i] - 100.0) < 1e-9);
-    assert(std::abs(s.conv_baseline[i]   - s.e_true[i] - 200.0) < 1e-9);
-    assert(std::abs(s.conv_alt[i]        - s.e_true[i] - 300.0) < 1e-9);
-    assert(std::abs(s.prompt_baseline[i] - s.e_true[i] - 400.0) < 1e-9);
-    assert(std::abs(s.prompt_alt[i]      - s.e_true[i] - 500.0) < 1e-9);
+    ASSERT_TRUE(std::abs(s.astro_baseline[i]  - s.e_true[i] - 100.0) < 1e-9);
+    ASSERT_TRUE(std::abs(s.conv_baseline[i]   - s.e_true[i] - 200.0) < 1e-9);
+    ASSERT_TRUE(std::abs(s.conv_alt[i]        - s.e_true[i] - 300.0) < 1e-9);
+    ASSERT_TRUE(std::abs(s.prompt_baseline[i] - s.e_true[i] - 400.0) < 1e-9);
+    ASSERT_TRUE(std::abs(s.prompt_alt[i]      - s.e_true[i] - 500.0) < 1e-9);
     for (int k = 0; k < params::ic::nBarrParams; ++k)
-      assert(std::abs(s.barr_conv[k][i] - s.e_true[i] - 1000.0 * (k + 1)) < 1e-9);
+      ASSERT_TRUE(std::abs(s.barr_conv[k][i] - s.e_true[i] - 1000.0 * (k + 1)) < 1e-9);
     for (int k = 0; k < 3; ++k) {
-      assert(std::abs(s.veto_conv[k][i]   - s.e_true[i] - 5000.0 * (k + 1)) < 1e-9);
-      assert(std::abs(s.veto_prompt[k][i] - s.e_true[i] - 9000.0 * (k + 1)) < 1e-9);
+      ASSERT_TRUE(std::abs(s.veto_conv[k][i]   - s.e_true[i] - 5000.0 * (k + 1)) < 1e-9);
+      ASSERT_TRUE(std::abs(s.veto_prompt[k][i] - s.e_true[i] - 9000.0 * (k + 1)) < 1e-9);
     }
   }
 
@@ -693,7 +686,7 @@ static void test_sort_into_bins_csr_invariant() {
   // indices should be [2, 5, 4, 0, 3] (stable within each bin).
   const double expected_original_index[5] = {2.0, 5.0, 4.0, 0.0, 3.0};
   for (std::size_t i = 0; i < 5; ++i)
-    assert(std::abs(s.e_true[i] - expected_original_index[i]) < 1e-9);
+    ASSERT_TRUE(std::abs(s.e_true[i] - expected_original_index[i]) < 1e-9);
 }
 
 // 2D test binning: Log10Energy in [2, 5) with 3 bins, CosZenith in [-1, 1) with
@@ -749,12 +742,14 @@ static io::ic::ICSample synthetic_sample(const Binning& binning, const bool with
       }
     }
   }
-  assert(static_cast<int>(sample.size()) == n_events);
+  if (static_cast<int>(sample.size()) != n_events)
+    throw std::logic_error("failed to construct the complete synthetic sample");
 
   sample.sort_into_bins(binning.total_bins());
   // All 12 synthetic events were built in-range; none should be dropped.
-  assert(static_cast<int>(sample.size()) == n_events);
-  assert(sample.bin_offsets.back() == sample.size());
+  if (static_cast<int>(sample.size()) != n_events || sample.bin_offsets.empty()
+      || sample.bin_offsets.back() != sample.size())
+    throw std::logic_error("synthetic sample does not have a valid CSR layout");
   return sample;
 }
 
@@ -789,12 +784,12 @@ static std::vector<double> nominal_parameter_values() {
 // value must not improve (must strictly worsen) the likelihood. Exercises the
 // CPU (gpu = nullptr) path of both PowerlawFlux and AtmosphericFlux end to end,
 // including the SAY ssq path (assemble_fluctuation).
-static void test_sample_likelihood_asimov_is_minimum() {
+TEST(SampleLikelihoodTest, AsimovIsMinimum) {
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
 
   const Binning binning = synthetic_binning();
-  assert(binning.total_bins() == 6);
+  ASSERT_TRUE(binning.total_bins() == 6);
   const io::ic::ICSample sample = synthetic_sample(binning, /*with_atmospheric=*/true);
 
   const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
@@ -812,7 +807,7 @@ static void test_sample_likelihood_asimov_is_minimum() {
   likelihood.generate_asimov(nominal);
 
   const double llh_nominal = likelihood.partial_llh(nominal);
-  assert(std::isfinite(llh_nominal));
+  ASSERT_TRUE(std::isfinite(llh_nominal));
 
   // Perturb AstroNorm x1.5 away from its Asimov (nominal) value; everything
   // else stays at the nominal/config default.
@@ -823,25 +818,24 @@ static void test_sample_likelihood_asimov_is_minimum() {
   perturbed.reset_parameter(perturbed_values.data());
 
   const double llh_perturbed = likelihood.partial_llh(perturbed);
-  assert(std::isfinite(llh_perturbed));
+  ASSERT_TRUE(std::isfinite(llh_perturbed));
 
   // The Asimov point (data == prediction at nominal) must minimize -2lnL:
   // do NOT assert llh_nominal ~= 0 -- SAY/Poisson here keep the saturated
   // constant, so the minimum is a nonzero value.
-  assert(llh_nominal < llh_perturbed);
+  ASSERT_TRUE(llh_nominal < llh_perturbed);
 }
 
 // The GPU SAY path (flux kernels leaving per-event weights on the GPU + the
 // say_ssq reduction kernel) must reproduce the CPU path within FP32 tolerance,
 // at the Asimov point and away from it. Skipped when no Metal device exists.
-static void test_metal_say_ssq_matches_cpu() {
+TEST(SampleLikelihoodTest, MetalSaySsqMatchesCpu) {
   using ana::ic::MetalBackend;
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
 
   if (!MetalBackend::available()) {
-    std::puts("ICTests: no Metal device, skipping test_metal_say_ssq_matches_cpu");
-    return;
+    GTEST_SKIP() << "Metal backend is unavailable";
   }
 
   const Binning          binning = synthetic_binning();
@@ -876,12 +870,12 @@ static void test_metal_say_ssq_matches_cpu() {
 
     const double llh_cpu = cpu.partial_llh(parameter);
     const double llh_gpu = gpu.partial_llh(parameter);
-    assert(std::isfinite(llh_cpu) && std::isfinite(llh_gpu));
+    ASSERT_TRUE(std::isfinite(llh_cpu) && std::isfinite(llh_gpu));
 
     // FP32 flux weights + FP32 ssq reduction vs FP64: a loose relative bound
     // still catches a structurally wrong ssq (missing component, wrong bin).
     const double scale = std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0});
-    assert(std::fabs(llh_cpu - llh_gpu) / scale < 1.0e-4);
+    ASSERT_TRUE(std::fabs(llh_cpu - llh_gpu) / scale < 1.0e-4);
 
     // The per-bin predictions must agree too (flux kernels unchanged by the
     // ssq work; this pins the readback-skip refactor).
@@ -889,7 +883,7 @@ static void test_metal_say_ssq_matches_cpu() {
     const auto pred_gpu = gpu.predicted();
     for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
       const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
-      assert(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale < 1.0e-4);
+      ASSERT_TRUE(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale < 1.0e-4);
     }
   }
 }
@@ -899,7 +893,7 @@ static void test_metal_say_ssq_matches_cpu() {
 // astrophysical component alone, and the atmospheric parameters have no effect
 // on it. This is what lets a cascade parquet without conv/prompt/Barr columns
 // (or a tracks parquet used astro-only) be fitted.
-static void test_sample_likelihood_component_masking() {
+TEST(SampleLikelihoodTest, ComponentMasking) {
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
 
@@ -907,10 +901,10 @@ static void test_sample_likelihood_component_masking() {
 
   const io::ic::ICSample full       = synthetic_sample(binning, /*with_atmospheric=*/true);
   const io::ic::ICSample astro_only = synthetic_sample(binning, /*with_atmospheric=*/false);
-  assert(astro_only.conv_baseline.empty());
-  assert(astro_only.prompt_baseline.empty());
-  assert(astro_only.barr_conv[0].empty());
-  assert(astro_only.size() == full.size());
+  ASSERT_TRUE(astro_only.conv_baseline.empty());
+  ASSERT_TRUE(astro_only.prompt_baseline.empty());
+  ASSERT_TRUE(astro_only.barr_conv[0].empty());
+  ASSERT_TRUE(astro_only.size() == full.size());
 
   const io::ic::SampleConfig astro_cfg{
       .name = "astro_only", .binning = binning, .mc_binning = binning, .components = {"astro"}};
@@ -931,17 +925,17 @@ static void test_sample_likelihood_component_masking() {
 
   const auto astro_pred = astro_llh.predicted();
   const auto full_pred  = full_llh.predicted();
-  assert(astro_pred.size() == static_cast<std::size_t>(binning.total_bins()));
+  ASSERT_TRUE(astro_pred.size() == static_cast<std::size_t>(binning.total_bins()));
 
   // Every bin has atmospheric events in the full sample, so masking them out
   // must lower the prediction everywhere -- and leave it strictly positive.
   for (std::size_t b = 0; b < astro_pred.size(); ++b) {
-    assert(astro_pred[b] > 0.0);
-    assert(astro_pred[b] < full_pred[b]);
+    ASSERT_TRUE(astro_pred[b] > 0.0);
+    ASSERT_TRUE(astro_pred[b] < full_pred[b]);
   }
 
   const double astro_at_nominal = astro_llh.partial_llh(nominal);
-  assert(std::isfinite(astro_at_nominal));
+  ASSERT_TRUE(std::isfinite(astro_at_nominal));
 
   // Moving the atmospheric parameters cannot touch an astro-only sample.
   std::vector<double> atmo_shifted = nominal_values;
@@ -953,18 +947,18 @@ static void test_sample_likelihood_component_masking() {
 
   ParameterWrapper shifted(params::ic::number_of_parameters());
   shifted.reset_parameter(atmo_shifted.data());
-  assert(astro_llh.partial_llh(shifted) == astro_at_nominal);
+  ASSERT_TRUE(astro_llh.partial_llh(shifted) == astro_at_nominal);
 
   // ... while the same shift does move the sample that includes them.
   const double full_at_nominal = full_llh.partial_llh(nominal);
-  assert(full_llh.partial_llh(shifted) != full_at_nominal);
+  ASSERT_TRUE(full_llh.partial_llh(shifted) != full_at_nominal);
 
   // AstroNorm still moves the astro-only sample away from its Asimov minimum.
   std::vector<double> astro_shifted = nominal_values;
   astro_shifted[params::ic::AstroNorm] *= 1.5;
   ParameterWrapper astro_perturbed(params::ic::number_of_parameters());
   astro_perturbed.reset_parameter(astro_shifted.data());
-  assert(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
+  ASSERT_TRUE(astro_llh.partial_llh(astro_perturbed) > astro_at_nominal);
 }
 
 // A sample fitted with an RA axis must predict exactly the 2D prediction spread
@@ -972,7 +966,7 @@ static void test_sample_likelihood_component_masking() {
 // its sigma^2 the 2D sigma^2 divided by n_ra^2. A galactic template is the one
 // piece that is genuinely 3D: it is added to mu after the broadcast, undivided,
 // and stays out of sigma^2 entirely.
-static void test_ra_broadcast_matches_2d() {
+TEST(SampleLikelihoodTest, RaBroadcastMatches2d) {
   using ana::ic::GlobalFluxSettings;
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
@@ -1016,20 +1010,20 @@ static void test_ra_broadcast_matches_2d() {
   flat.generate_asimov(parameter);
   with_ra.generate_asimov(parameter);
 
-  assert(flat.predicted().size() == 1);
-  assert(with_ra.predicted().size() == 4);
+  ASSERT_TRUE(flat.predicted().size() == 1);
+  ASSERT_TRUE(with_ra.predicted().size() == 4);
   for (int r = 0; r < 4; ++r)
-    assert(with_ra.predicted()[r] == flat.predicted()[0] / 4.0);
+    ASSERT_TRUE(with_ra.predicted()[r] == flat.predicted()[0] / 4.0);
 
   // sigma^2 is a squared quantity, so its divisor is n_ra^2, not n_ra. Getting
   // this divisor wrong at the call site would leave mu right and silently scale
   // every SAY variance by n_ra -- exactly the kind of error that survives to a
   // published number, so assert it rather than only asserting mu.
-  assert(flat.ssq().size() == 1);
-  assert(with_ra.ssq().size() == 4);
-  assert(flat.ssq()[0] > 0.0);
+  ASSERT_TRUE(flat.ssq().size() == 1);
+  ASSERT_TRUE(with_ra.ssq().size() == 4);
+  ASSERT_TRUE(flat.ssq()[0] > 0.0);
   for (int r = 0; r < 4; ++r)
-    assert(with_ra.ssq()[r] == flat.ssq()[0] / 16.0);
+    ASSERT_TRUE(with_ra.ssq()[r] == flat.ssq()[0] / 16.0);
 
   // A galactic template is already in the analysis binning: its per-bin rate is
   // added to mu UNDIVIDED (no RA broadcast), and it contributes nothing to
@@ -1062,13 +1056,13 @@ static void test_ra_broadcast_matches_2d() {
   for (int r = 0; r < 4; ++r) {
     const double expected =
         with_ra.predicted()[r] + galactic_norm * (galactic_rates[r] * cfg_gal.livetime);
-    assert(std::abs(with_galactic.predicted()[r] - expected) < 1e-12 * expected);
+    ASSERT_TRUE(std::abs(with_galactic.predicted()[r] - expected) < 1e-12 * expected);
     // Undivided: the galactic part alone must be the full per-bin rate, not a
     // quarter of it.
-    assert(std::abs(with_galactic.galactic_histogram()[r] -
+    ASSERT_TRUE(std::abs(with_galactic.galactic_histogram()[r] -
                     galactic_norm * (galactic_rates[r] * cfg_gal.livetime)) < 1e-12);
     // sigma^2 is untouched by the galactic template.
-    assert(with_galactic.ssq()[r] == with_ra.ssq()[r]);
+    ASSERT_TRUE(with_galactic.ssq()[r] == with_ra.ssq()[r]);
   }
 
   // A galactic file with a non-zero fluctuation column contradicts that exclusion
@@ -1088,7 +1082,7 @@ static void test_ra_broadcast_matches_2d() {
     threw = true;
   }
   std::remove(bad_galactic.c_str());
-  assert(threw);
+  ASSERT_TRUE(threw);
 
   // Asimov data is the prediction, so the partial -2lnL of the two must agree to
   // the extent SAY allows: the 3D bins are the 2D bin split four ways, with sigma^2
@@ -1096,19 +1090,19 @@ static void test_ra_broadcast_matches_2d() {
   // approximately -- so compare the predictions, not the likelihood, and just
   // require the 3D likelihood to be finite and at its minimum.
   const double at_nominal = with_ra.partial_llh(parameter);
-  assert(std::isfinite(at_nominal));
+  ASSERT_TRUE(std::isfinite(at_nominal));
 
   values[params::ic::AstroNorm] = 1.8;
   ParameterWrapper perturbed(params::ic::number_of_parameters());
   perturbed.reset_parameter(values.data());
-  assert(with_ra.partial_llh(perturbed) > at_nominal);
+  ASSERT_TRUE(with_ra.partial_llh(perturbed) > at_nominal);
 }
 
 // NNMFit AstroBPL (parameters/astroBPL.py). e_break is log10(E/GeV); `pivot`
 // renormalises so the norm is the flux at 100 TeV whichever side of the break
 // that falls on. Checked here against a hand-evaluated reference rather than
 // against a second implementation of the same formula.
-static void test_astro_broken_powerlaw() {
+TEST(PowerlawFluxTest, BrokenPowerLaw) {
   using ana::ic::AstroModel;
   using ana::ic::PowerlawFlux;
   using ana::ParameterWrapper;
@@ -1136,7 +1130,7 @@ static void test_astro_broken_powerlaw() {
   // per_type_norm = false, so the 0.5 factor applies.
   PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false,
                     AstroModel::BrokenPowerlaw);
-  assert(flux.check_and_recalculate(parameter));
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
 
   const double e_break = std::pow(10.0, log_ebreak);
   const double pivot   = 1.0e5 < e_break ? std::pow(1.0e5 / e_break, g1)
@@ -1148,19 +1142,19 @@ static void test_astro_broken_powerlaw() {
     expected += sample.astro_baseline[i] * norm * pivot * shape *
                 (e / 1.0e5) * (e / 1.0e5) * 0.5;
   }
-  assert(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
 
   // The break must actually bite: moving it above both events changes the result.
   values[params::ic::AstroEBreak] = 7.0;
   ParameterWrapper moved(params::ic::number_of_parameters());
   moved.reset_parameter(values.data());
-  assert(flux.check_and_recalculate(moved));
-  assert(std::abs(flux.histogram()[0] - expected) > 1e-6 * expected);
+  ASSERT_TRUE(flux.check_and_recalculate(moved));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) > 1e-6 * expected);
 }
 
 // The single-power-law mode must be untouched by the broken-power-law work:
 // same inputs, same numbers as the formula documented on PowerlawFlux.
-static void test_astro_single_powerlaw_unchanged() {
+TEST(PowerlawFluxTest, SinglePowerLawUnchanged) {
   using ana::ic::AstroModel;
   using ana::ic::PowerlawFlux;
   using ana::ParameterWrapper;
@@ -1181,13 +1175,13 @@ static void test_astro_single_powerlaw_unchanged() {
   parameter.reset_parameter(values.data());
 
   PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
-  assert(flux.check_and_recalculate(parameter));
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
 
   double expected = 0.0;
   for (int i = 0; i < 2; ++i)
     expected += sample.astro_baseline[i] * 0.5 * 1.5 *
                 std::pow(sample.e_true[i] / 1.0e5, 2.0 - 2.4);
-  assert(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
 }
 
 // The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
@@ -1196,13 +1190,13 @@ static void test_astro_single_powerlaw_unchanged() {
 // applied multiplicatively to the conventional and prompt weights. Checked here
 // against the same formula evaluated by hand on a one-bin sample, and against the
 // invariant that veto-off reproduces the un-vetoed prediction exactly.
-static void test_veto_reweight() {
+TEST(AtmosphericFluxTest, VetoReweight) {
   using ana::ic::AtmosphericFlux;
   using ana::ParameterWrapper;
 
   const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 1)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
-  assert(binning.total_bins() == 1);
+  ASSERT_TRUE(binning.total_bins() == 1);
 
   // Two events in the single bin, no Barr slopes and conv_alt == conv_base, so the
   // un-vetoed weight is exactly conv_base * ConvNorm + prompt_base * PromptNorm at
@@ -1269,24 +1263,24 @@ static void test_veto_reweight() {
   };
 
   const double unvetoed = reference(false, 0.0);
-  assert(std::abs(histogram_at(false, 0.0) - unvetoed) < 1e-12 * unvetoed);
+  ASSERT_TRUE(std::abs(histogram_at(false, 0.0) - unvetoed) < 1e-12 * unvetoed);
   for (double p : {0.0, 0.5, -0.5, 1.301, -1.301})
-    assert(std::abs(histogram_at(true, p) - reference(true, p)) < 1e-12 * unvetoed);
+    ASSERT_TRUE(std::abs(histogram_at(true, p) - reference(true, p)) < 1e-12 * unvetoed);
   // The veto suppresses the flux, and its parameter actually triggers a recalculation.
-  assert(histogram_at(true, 0.0) < histogram_at(false, 0.0));
-  assert(histogram_at(true, 1.0) != histogram_at(true, 0.0));
+  ASSERT_TRUE(histogram_at(true, 0.0) < histogram_at(false, 0.0));
+  ASSERT_TRUE(histogram_at(true, 1.0) != histogram_at(true, 0.0));
 }
 
 // A muon template is a per-bin rate plus a per-bin fluctuation; the component
 // scales both by its norm parameter and the sample livetime, matching NNMFit
 // (histogram_builder: ssq += (hist_fluctuation * livetime)**2).
-static void test_template_flux() {
+TEST(TemplateFluxTest, RatesAndFluctuations) {
   using ana::ic::TemplateFlux;
   using ana::ParameterWrapper;
 
   const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
-  assert(binning.total_bins() == 3);
+  ASSERT_TRUE(binning.total_bins() == 3);
 
   const std::string path = "ictests_template.txt";
   {
@@ -1307,15 +1301,15 @@ static void test_template_flux() {
   ParameterWrapper parameter(params::ic::number_of_parameters());
   parameter.reset_parameter(values.data());
 
-  assert(flux.check_and_recalculate(parameter));
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
 
   const double rates[3]  = {1.0e-6, 2.0e-6, 4.0e-6};
   const double sigmas[3] = {2.0e-7, 3.0e-7, 5.0e-7};
   for (int b = 0; b < 3; ++b) {
     const double mu  = 2.0 * rates[b] * livetime;
     const double ssq = (2.0 * sigmas[b] * livetime) * (2.0 * sigmas[b] * livetime);
-    assert(std::abs(flux.histogram()[b] - mu) < 1e-9 * mu);
-    assert(std::abs(flux.fluctuation()[b] - ssq) < 1e-9 * ssq);
+    ASSERT_TRUE(std::abs(flux.histogram()[b] - mu) < 1e-9 * mu);
+    ASSERT_TRUE(std::abs(flux.fluctuation()[b] - ssq) < 1e-9 * ssq);
   }
 
   // Unchanged parameters must not trigger a recalculation. check_parameter_changed
@@ -1324,7 +1318,7 @@ static void test_template_flux() {
   // resetting to the same values again, exactly as ICLikelihood::calculate_likelihood
   // resets the shared ParameterWrapper once per evaluation.
   parameter.reset_parameter(values.data());
-  assert(!flux.check_and_recalculate(parameter));
+  ASSERT_TRUE(!flux.check_and_recalculate(parameter));
 
   // A template whose bin count disagrees with the binning is a hard error: it
   // would otherwise silently mis-assign every bin.
@@ -1340,7 +1334,7 @@ static void test_template_flux() {
     threw = true;
   }
   std::remove(bad.c_str());
-  assert(threw);
+  ASSERT_TRUE(threw);
 }
 
 // SnowStorm gradients are a histogram-level additive perturbation of mu and
@@ -1349,13 +1343,13 @@ static void test_template_flux() {
 //   D_k       = p_k - split_k
 //   mu_add_b  = sum_k D_k * gradient_k_b * lt_scale
 //   ssq_add_b = sum_k (D_k * error_k_b * lt_scale)^2 + 2 * sum_{i<j} D_i D_j cov_ij_b
-static void test_detector_systematics() {
+TEST(DetectorSystematicsTest, AppliesGradientsAndCovariance) {
   using ana::ic::DetectorSystematics;
   using ana::ParameterWrapper;
 
   const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 2)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
-  assert(binning.total_bins() == 2);
+  ASSERT_TRUE(binning.total_bins() == 2);
 
   const int    n_sys    = params::ic::nDetSysParams;  // 5
   const double lt_scale = 2.0;
@@ -1401,8 +1395,8 @@ static void test_detector_systematics() {
   at_split.reset_parameter(values.data());
   systematics.check_and_recalculate(at_split);
   for (int b = 0; b < 2; ++b) {
-    assert(systematics.mu_delta()[b] == 0.0);
-    assert(systematics.ssq_delta()[b] == 0.0);
+    ASSERT_TRUE(systematics.mu_delta()[b] == 0.0);
+    ASSERT_TRUE(systematics.ssq_delta()[b] == 0.0);
   }
 
   // Perturb two systematics.
@@ -1410,7 +1404,7 @@ static void test_detector_systematics() {
   values[params::ic::IceAbs] = split[1] - 0.02;
   ParameterWrapper shifted(params::ic::number_of_parameters());
   shifted.reset_parameter(values.data());
-  assert(systematics.check_and_recalculate(shifted));
+  ASSERT_TRUE(systematics.check_and_recalculate(shifted));
 
   const double d[5] = {0.05, -0.02, 0.0, 0.0, 0.0};
   for (int b = 0; b < 2; ++b) {
@@ -1427,61 +1421,52 @@ static void test_detector_systematics() {
       for (int j = i + 1; j < n_sys; ++j, ++pair)
         ssq_add += 2.0 * (d[i] * lt_scale) * (d[j] * lt_scale) * cov[pair][b];
 
-    assert(std::abs(systematics.mu_delta()[b] - mu_add) < 1e-12 * std::abs(mu_add));
-    assert(std::abs(systematics.ssq_delta()[b] - ssq_add) < 1e-12 * std::abs(ssq_add));
+    ASSERT_TRUE(std::abs(systematics.mu_delta()[b] - mu_add) < 1e-12 * std::abs(mu_add));
+    ASSERT_TRUE(std::abs(systematics.ssq_delta()[b] - ssq_add) < 1e-12 * std::abs(ssq_add));
   }
-}
-
-// Guards against the whole suite silently becoming a no-op: if NDEBUG ever wins
-// again, assert() expands to nothing, `live` stays false and this reports it
-// instead of printing "all passed".
-static bool assertions_are_live() {
-  bool live = false;
-  assert(live = true);
-  return live;
 }
 
 // Real data is a plain per-bin count in the sample's own binning: no weights, no
 // livetime scaling. This tests the counting helper the loader uses.
-static void test_data_histogram_counts() {
+TEST(BinningTest, DataHistogramCounts2d) {
   const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
-  assert(binning.total_bins() == 6);
+  ASSERT_TRUE(binning.total_bins() == 6);
 
   // Three events in bin (energy 0, zenith 0), one out of range.
   const std::vector<double> energies{316.0, 316.0, 316.0, 10.0};
   const std::vector<double> zeniths{2.0, 2.0, 2.0, 2.0};
 
   const std::vector<double> counts = io::ic::bin_event_counts(binning, energies, zeniths);
-  assert(counts.size() == 6);
-  assert(counts[0] == 3.0);
-  for (std::size_t b = 1; b < counts.size(); ++b) assert(counts[b] == 0.0);
+  ASSERT_TRUE(counts.size() == 6);
+  ASSERT_TRUE(counts[0] == 3.0);
+  for (std::size_t b = 1; b < counts.size(); ++b) ASSERT_TRUE(counts[b] == 0.0);
 }
 
 // The analysis binning may carry a trailing RA axis; the MC binning is the same
 // binning without it. Row-major flattening makes the 3D index the 2D index times
 // n_ra plus the RA index, which is what makes the broadcast a block write.
-static void test_drop_ra_axis() {
+TEST(BinningTest, DropRaAxis) {
   const Binning analysis({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                           io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
                           io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
-  assert(analysis.total_bins() == 24);
+  ASSERT_TRUE(analysis.total_bins() == 24);
 
   const Binning mc = io::ic::drop_ra_axis(analysis);
-  assert(mc.n_axes() == 2);
-  assert(mc.total_bins() == 6);
+  ASSERT_TRUE(mc.n_axes() == 2);
+  ASSERT_TRUE(mc.total_bins() == 6);
 
   // A binning with no RA axis is returned unchanged.
   const Binning two_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                        io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
-  assert(io::ic::drop_ra_axis(two_d).total_bins() == 6);
+  ASSERT_TRUE(io::ic::drop_ra_axis(two_d).total_bins() == 6);
 
   // The flat index of (e, zen, ra) is the 2D index * n_ra + ra index.
   const std::array<double, 3> reco{316.0, 2.0, 0.1};
   const std::array<double, 2> reco_2d{316.0, 2.0};
   const int flat_3d = analysis.bin_index(reco);
   const int flat_2d = mc.bin_index(reco_2d);
-  assert(flat_3d == flat_2d * 4 + analysis.axes()[2].index(0.1));
+  ASSERT_TRUE(flat_3d == flat_2d * 4 + analysis.axes()[2].index(0.1));
 
   auto throws = [](auto&& f) {
     try {
@@ -1496,47 +1481,47 @@ static void test_drop_ra_axis() {
   // (2D index * n_ra + ra index) layout the broadcast assumes.
   const Binning ra_first({io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)"),
                           io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)")});
-  assert(throws([&] { (void)io::ic::drop_ra_axis(ra_first); }));
+  ASSERT_TRUE(throws([&] { (void)io::ic::drop_ra_axis(ra_first); }));
 
   // A binning cannot consist of the Ra axis alone.
   const Binning ra_only({io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
-  assert(throws([&] { (void)io::ic::drop_ra_axis(ra_only); }));
+  ASSERT_TRUE(throws([&] { (void)io::ic::drop_ra_axis(ra_only); }));
 }
 
 // "Has an Ra axis" is a property of the axis list, not of the RA bin count: a
 // one-bin Ra axis is a legitimate binning (the 2D cross-check of a 3D fit) and
 // must still be treated as three-dimensional everywhere -- reading its data with
 // only two reco columns would run off the end of the reco array.
-static void test_has_ra_axis() {
+TEST(BinningTest, HasRaAxis) {
   const Binning three_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
                          io::ic::parse_axis("Ra", "(0.0, 6.28319, 4)")});
   const Binning two_d({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                        io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)")});
-  assert(io::ic::has_ra_axis(three_d));
-  assert(!io::ic::has_ra_axis(two_d));
+  ASSERT_TRUE(io::ic::has_ra_axis(three_d));
+  ASSERT_TRUE(!io::ic::has_ra_axis(two_d));
 
   // One RA bin: ra_bin_count() is 1 exactly as for the 2D binning, so only
   // has_ra_axis() tells the two apart.
   const Binning one_ra_bin({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                             io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
                             io::ic::parse_axis("Ra", "(0.0, 6.28319, 1)")});
-  assert(io::ic::has_ra_axis(one_ra_bin));
-  assert(io::ic::ra_bin_count(one_ra_bin) == 1);
-  assert(io::ic::ra_bin_count(two_d) == 1);
-  assert(one_ra_bin.n_axes() == 3);
-  assert(one_ra_bin.total_bins() == 6);
+  ASSERT_TRUE(io::ic::has_ra_axis(one_ra_bin));
+  ASSERT_TRUE(io::ic::ra_bin_count(one_ra_bin) == 1);
+  ASSERT_TRUE(io::ic::ra_bin_count(two_d) == 1);
+  ASSERT_TRUE(one_ra_bin.n_axes() == 3);
+  ASSERT_TRUE(one_ra_bin.total_bins() == 6);
 
   const Binning mc = io::ic::drop_ra_axis(one_ra_bin);
-  assert(mc.n_axes() == 2);
-  assert(mc.total_bins() == 6);
-  assert(!io::ic::has_ra_axis(mc));
+  ASSERT_TRUE(mc.n_axes() == 2);
+  ASSERT_TRUE(mc.total_bins() == 6);
+  ASSERT_TRUE(!io::ic::has_ra_axis(mc));
 }
 
 // A one-bin RA axis plus a galactic template is a valid configuration: the
 // template is stored in the (3-axis) analysis binning and fits it. The old
 // `ra_bins() == 1` test rejected it with a "has no Ra axis" message.
-static void test_parse_samples_one_ra_bin_galactic() {
+TEST(SampleConfigTest, ParsesOneRaBinGalactic) {
   const std::string json = R"JSON({
     "Binnings": {
       "b3d1": {
@@ -1561,39 +1546,39 @@ static void test_parse_samples_one_ra_bin_galactic() {
   boost::property_tree::read_json(in, tree);
   const auto samples = io::ic::parse_samples(tree);
 
-  assert(samples.size() == 1);
+  ASSERT_TRUE(samples.size() == 1);
   const io::ic::SampleConfig& s = samples[0];
-  assert(io::ic::has_ra_axis(s.binning));
-  assert(s.binning.n_axes() == 3);
-  assert(s.mc_binning.n_axes() == 2);
-  assert(s.ra_bins() == 1);
-  assert(s.binning.total_bins() == s.mc_binning.total_bins());
-  assert(s.galactic.size() == 1);
+  ASSERT_TRUE(io::ic::has_ra_axis(s.binning));
+  ASSERT_TRUE(s.binning.n_axes() == 3);
+  ASSERT_TRUE(s.mc_binning.n_axes() == 2);
+  ASSERT_TRUE(s.ra_bins() == 1);
+  ASSERT_TRUE(s.binning.total_bins() == s.mc_binning.total_bins());
+  ASSERT_TRUE(s.galactic.size() == 1);
 }
 
 // mu is spread uniformly over RA (divisor n_ra), sigma^2 with divisor n_ra^2 --
 // NNMFit Binning_2D_to_3D.make_binned_flux divides the repeated weights, so the
 // square of those weights picks up the square of the divisor.
-static void test_broadcast_over_ra() {
+TEST(BinningTest, BroadcastOverRa) {
   const std::vector<double> mc_bins{10.0, 20.0, 30.0};
 
   std::vector<double> mu(9, -1.0);
   io::ic::broadcast_over_ra(mc_bins, 3, 3.0, mu);
   for (int b = 0; b < 3; ++b)
     for (int r = 0; r < 3; ++r)
-      assert(mu[b * 3 + r] == mc_bins[b] / 3.0);
+      ASSERT_TRUE(mu[b * 3 + r] == mc_bins[b] / 3.0);
 
   std::vector<double> ssq(9, -1.0);
   io::ic::broadcast_over_ra(mc_bins, 3, 9.0, ssq);
   for (int b = 0; b < 3; ++b)
     for (int r = 0; r < 3; ++r)
-      assert(ssq[b * 3 + r] == mc_bins[b] / 9.0);
+      ASSERT_TRUE(ssq[b * 3 + r] == mc_bins[b] / 9.0);
 
   // n_ra == 1 with divisor 1.0 is an exact copy: x / 1.0 == x in IEEE-754, so a
   // 2-axis sample going through this path is bit-for-bit unchanged.
   std::vector<double> identity(3, -1.0);
   io::ic::broadcast_over_ra(mc_bins, 1, 1.0, identity);
-  for (int b = 0; b < 3; ++b) assert(identity[b] == mc_bins[b]);
+  for (int b = 0; b < 3; ++b) ASSERT_TRUE(identity[b] == mc_bins[b]);
 
   auto throws = [](auto&& f) {
     try {
@@ -1606,22 +1591,22 @@ static void test_broadcast_over_ra() {
 
   // A wrong-size out span must throw rather than write out of bounds.
   std::vector<double> wrong_size(8, -1.0);
-  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, 3, 3.0, wrong_size); }));
+  ASSERT_TRUE(throws([&] { io::ic::broadcast_over_ra(mc_bins, 3, 3.0, wrong_size); }));
 
   // n_ra <= 0 must throw with an actionable message, not underflow to a huge
   // size_t and produce a nonsense "expected 3 * 18446744073709551614".
   std::vector<double> negative_n_ra(3, -1.0);
-  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, -1, 3.0, negative_n_ra); }));
-  assert(throws([&] { io::ic::broadcast_over_ra(mc_bins, 0, 3.0, negative_n_ra); }));
+  ASSERT_TRUE(throws([&] { io::ic::broadcast_over_ra(mc_bins, -1, 3.0, negative_n_ra); }));
+  ASSERT_TRUE(throws([&] { io::ic::broadcast_over_ra(mc_bins, 0, 3.0, negative_n_ra); }));
 }
 
 // Data is binned truly 3D (NNMFit make_binned_data), so the counting helper needs
 // a three-column overload.
-static void test_data_histogram_counts_3d() {
+TEST(BinningTest, DataHistogramCounts3d) {
   const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
                          io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)"),
                          io::ic::parse_axis("Ra", "(0.0, 4.0, 2)")});
-  assert(binning.total_bins() == 6);
+  ASSERT_TRUE(binning.total_bins() == 6);
 
   // Two events in RA bin 0 of energy bin 0, one in RA bin 1, one out of RA range.
   const std::vector<double> energies{316.0, 316.0, 316.0, 316.0};
@@ -1629,49 +1614,8 @@ static void test_data_histogram_counts_3d() {
   const std::vector<double> ras{0.5, 1.5, 3.0, 4.5};
 
   const std::vector<double> counts = io::ic::bin_event_counts(binning, energies, zeniths, ras);
-  assert(counts.size() == 6);
-  assert(counts[0] == 2.0);
-  assert(counts[1] == 1.0);
-  for (std::size_t b = 2; b < counts.size(); ++b) assert(counts[b] == 0.0);
-}
-
-int main() {
-  if (!assertions_are_live()) {
-    std::puts("ICTests: FAILED -- assertions are compiled out (NDEBUG), the suite checks nothing");
-    return 1;
-  }
-
-  test_total_bins();
-  test_bin_index_matches_legacy();
-  test_parse_axis_spec();
-  test_non_uniform_axis_index();
-  test_mixed_binning_cascade_grid();
-  test_drop_ra_axis();
-  test_has_ra_axis();
-  test_broadcast_over_ra();
-  test_parameter_layout();
-  test_prior_defaults_and_overrides();
-  test_parse_samples();
-  test_parse_samples_rejects_bad_components();
-  test_parse_samples_cascade_entry();
-  test_parse_samples_oscillation_entry();
-  test_parse_samples_ra_binning();
-  test_parse_samples_without_ra();
-  test_parse_samples_rejects_bad_galactic();
-  test_parse_samples_one_ra_bin_galactic();
-  test_enabled_sample_indices();
-  test_sort_into_bins_csr_invariant();
-  test_sample_likelihood_asimov_is_minimum();
-  test_metal_say_ssq_matches_cpu();
-  test_sample_likelihood_component_masking();
-  test_ra_broadcast_matches_2d();
-  test_astro_broken_powerlaw();
-  test_astro_single_powerlaw_unchanged();
-  test_veto_reweight();
-  test_template_flux();
-  test_detector_systematics();
-  test_data_histogram_counts();
-  test_data_histogram_counts_3d();
-  std::puts("ICTests: all passed");
-  return 0;
+  ASSERT_TRUE(counts.size() == 6);
+  ASSERT_TRUE(counts[0] == 2.0);
+  ASSERT_TRUE(counts[1] == 1.0);
+  for (std::size_t b = 2; b < counts.size(); ++b) ASSERT_TRUE(counts[b] == 0.0);
 }
