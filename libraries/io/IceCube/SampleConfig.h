@@ -71,6 +71,13 @@ namespace io::ic {
 
     std::string parquet;
     std::string data_path;
+
+    // Pre-binned data counts ("DataCounts"), one value per analysis bin, read
+    // instead of binning a data parquet. This is how a pseudo-experiment is fed
+    // to both frameworks from the same numbers: NNMFit takes the identical
+    // array through analysis_type "custom_data" + "custom_dataset". Takes
+    // precedence over data_path when both are set.
+    std::string data_counts_path;
     double      livetime = 1.0;
     std::vector<std::string> components;
     BranchNames branches;

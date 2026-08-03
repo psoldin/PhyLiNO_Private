@@ -202,6 +202,7 @@ namespace io::ic {
           .mc_binning = drop_ra_axis(it->second),
           .parquet    = sample_node.get<std::string>("parquet"),
           .data_path  = sample_node.get<std::string>("data", ""),
+          .data_counts_path = sample_node.get<std::string>("DataCounts", ""),
           .livetime   = sample_node.get<double>("livetime", 1.0),
           .components = split_trim(sample_node.get<std::string>("components", ""), ','),
           .branches   = parse_branches(sample_node),

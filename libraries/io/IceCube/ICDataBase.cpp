@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,9 +24,12 @@ namespace io::ic {
 
     arrow::Result<std::shared_ptr<arrow::Table>> read_parquet_file(const std::string& filename) {
       ARROW_ASSIGN_OR_RAISE(auto input, arrow::io::ReadableFile::Open(filename));
-      std::unique_ptr<parquet::arrow::FileReader> reader;
-      ARROW_RETURN_NOT_OK(
-          parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
+      // std::unique_ptr<parquet::arrow::FileReader> reader;
+      ARROW_ASSIGN_OR_RAISE(auto reader,
+                            parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
+      // std::unique_ptr<parquet::arrow::FileReader> reader;
+      // ARROW_RETURN_NOT_OK(
+      //     parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
 
       std::shared_ptr<arrow::Table> table;
       ARROW_RETURN_NOT_OK(reader->ReadTable(&table));
@@ -195,6 +200,39 @@ namespace io::ic {
   }
 
   arrow::Status ICDataBase::read_data_histogram(const SampleConfig& cfg, std::vector<double>& out) {
+    // Pre-binned counts win over the parquet: the point of "DataCounts" is to
+    // fit numbers that came from somewhere else (a pseudo-experiment shared
+    // with NNMFit), so silently preferring a configured parquet would defeat it.
+    if (!cfg.data_counts_path.empty()) {
+      std::cout << "Reading IceCube data counts for sample '" << cfg.name << "': "
+                << cfg.data_counts_path << '\n';
+      std::ifstream in(cfg.data_counts_path);
+      if (!in)
+        return arrow::Status::IOError("cannot open DataCounts file '" + cfg.data_counts_path + "'");
+
+      const int   total_bins = cfg.binning.total_bins();
+      std::string line;
+      out.clear();
+      out.reserve(total_bins);
+      while (std::getline(in, line)) {
+        if (line.empty() || line.front() == '#') continue;
+        std::istringstream row(line);
+        double             count = 0.0;
+        if (!(row >> count)) continue;
+        out.push_back(count);
+      }
+      if (out.size() != static_cast<std::size_t>(total_bins))
+        return arrow::Status::Invalid("DataCounts file '" + cfg.data_counts_path + "' has " +
+                                      std::to_string(out.size()) + " values, sample '" + cfg.name +
+                                      "' has " + std::to_string(total_bins) + " bins");
+
+      double total = 0.0;
+      for (const double v : out) total += v;
+      std::cout << "IceCube data counts '" << cfg.name << "': " << total << " events in "
+                << out.size() << " bins\n";
+      return arrow::Status::OK();
+    }
+
     if (cfg.data_path.empty()) {
       out.clear();
       return arrow::Status::OK();
