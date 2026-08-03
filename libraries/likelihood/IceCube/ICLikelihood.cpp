@@ -18,8 +18,8 @@ namespace ana::ic {
 
     // One shared GPU backend for all samples' flux components; nullptr => CPU path. A
     // requested GPU backend falls back to CPU if no matching device is present.
-    std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind    kind,
-                                                 const io::ic::GpuPrecision   precision) {
+    std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind  kind,
+                                                 const io::ic::GpuPrecision precision) {
       switch (kind) {
         case io::ic::BackendKind::Cpu:
           return nullptr;
@@ -74,14 +74,14 @@ namespace ana::ic {
     const auto enabled = io::ic::enabled_sample_indices(input_options.samples());
     if (enabled.size() != m_DataBase->n_samples())
       throw std::runtime_error(
-          "ICLikelihood: enabled-sample count (" + std::to_string(enabled.size()) +
-          ") does not match the loaded sample count (" + std::to_string(m_DataBase->n_samples()) + ")");
+          "ICLikelihood: enabled-sample count (" + std::to_string(enabled.size()) + ") does not match the loaded sample count (" + std::to_string(m_DataBase->n_samples()) + ")");
 
     for (std::size_t k = 0; k < enabled.size(); ++k) {
       const io::ic::SampleConfig& cfg = input_options.samples()[enabled[k]];
       std::cout << "ICLikelihood: sample '" << cfg.name << "' with "
                 << cfg.binning.total_bins() << " bins, components:";
-      for (const auto& c : cfg.components) std::cout << ' ' << c;
+      for (const auto& c : cfg.components)
+        std::cout << ' ' << c;
       std::cout << '\n';
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
           m_DataBase->sample(k), cfg, settings, m_GpuBackend, use_say));
@@ -127,8 +127,7 @@ namespace ana::ic {
       if (use_data) {
         const auto& counts = m_DataBase->data_histogram(k);
         if (counts.empty())
-          throw std::runtime_error("ICLikelihood: UseData is true but sample " + std::to_string(k) +
-                                   " has no \"data\" path in its config");
+          throw std::runtime_error("ICLikelihood: UseData is true but sample " + std::to_string(k) + " has no \"data\" path in its config");
         m_Samples[k]->set_data(counts);
       }
       for (const double v : m_Samples[k]->data())
@@ -167,9 +166,9 @@ namespace ana::ic {
 
       for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
         partial.push_back(
-          std::async(std::launch::async, [this, &sample = m_Samples[i]] {
-            return sample->partial_llh(m_Parameter);
-          }));
+            std::async(std::launch::async, [this, &sample = m_Samples[i]] {
+              return sample->partial_llh(m_Parameter);
+            }));
       }
 
       llh = m_Samples[0]->partial_llh(m_Parameter);
@@ -181,17 +180,17 @@ namespace ana::ic {
         llh += sample->partial_llh(m_Parameter);
     }
 
+    // The pull term is -2 * NNMFit's log_prior: their Gaussian prior is
+    // -((x - x0) / (sigma * sqrt(2)))^2 (LikelihoodBuilder.make_priors), so
+    // multiplying by -2 gives exactly ((x - x0) / sigma)^2.
     llh += calculate_pulls(m_Parameter);
 
-    if (m_FirstCall) {
-      if (std::isfinite(llh)) {
-        m_LLHBaseLine = llh;
-        m_FirstCall = false;
-      }
-    }
-
-    llh -= m_LLHBaseLine;
-
+    // No baseline shift: both likelihood terms are absolutely normalised the
+    // same way NNMFit normalises them (Poisson with the saturated term
+    // subtracted, SAY unsubtracted), so this value is 2 * NNMFit's -llh --
+    // PhyLiNO reports -2 log L (Minuit2 ErrorDef = 1), NNMFit reports -log L
+    // (iminuit errordef = LIKELIHOOD = 0.5). Same minimum, same parameter
+    // errors; only the printed scale differs.
     return std::isfinite(llh) ? llh : 1.0e25;
   }
 

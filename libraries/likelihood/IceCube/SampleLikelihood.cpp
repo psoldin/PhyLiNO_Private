@@ -1,10 +1,10 @@
 #include "SampleLikelihood.h"
 
+#include "PoissonLikelihood.h"
 #include "SAYLikelihood.h"
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -136,15 +136,17 @@ namespace ana::ic {
       }
     )CUDA";
 
+    // NNMFit's default Poisson likelihood: per bin, log P(k|mu) with the
+    // saturated term log P(k|k) subtracted (LikelihoodBuilder.make_binwise_llh
+    // with substract_saturated=True). The subtraction is not cosmetic -- without
+    // it the sum carries a bin-count-sized constant that the minimiser has to
+    // work against, which is what the removed hardcoded baseline in
+    // ICLikelihood was papering over.
     static double calculate_poisson_likelihood(const std::span<const double> data,
                                                const std::span<const double> prediction) noexcept {
       double llh = 0.0;
       for (std::size_t i = 0, n = data.size(); i < n; ++i) {
-        const double model = prediction[i];
-        const double obs   = data[i];
-        if (model <= 0.0)
-          continue;
-        llh += obs * std::log(model) - model;
+        llh += poisson_bin_log_likelihood_saturated(data[i], prediction[i]);
       }
       return -2.0 * llh;
     }

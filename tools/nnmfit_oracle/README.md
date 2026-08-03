@@ -57,11 +57,80 @@ Two things to keep in mind when comparing fits:
 -Σ log L + ½ χ²          (no factor 2; the saturated term is NOT subtracted for SAY)
 ```
 
-PhyLiNO's `ICLikelihood` computes `-2 Σ log L + χ²` — i.e. **exactly twice** NNMFit's objective — and
-then subtracts a first-call baseline (`m_LLHBaseLine`). Therefore:
+PhyLiNO's `ICLikelihood` computes `-2 Σ log L + χ²` — i.e. **exactly twice** NNMFit's objective.
+Since 2026-08-03 it applies **no baseline offset** (the first-call `m_LLHBaseLine` and the later
+hardcoded constant are both gone), and its Poisson term subtracts the saturated likelihood exactly
+as `LikelihoodBuilder.make_binwise_llh(substract_saturated=True)` does. Therefore:
 
-> Absolute likelihood values are not comparable. Compare *differences* between parameter points,
-> with `Δ(PhyLiNO) = 2 · Δ(NNMFit)`.
+> Absolute likelihood values *are* comparable: `PhyLiNO = 2 · NNMFit`, at any parameter point.
+
+The factor 2 is the error-definition convention, not a normalisation difference: PhyLiNO reports
+−2 log L with Minuit2's default `ErrorDef = 1`, NNMFit reports −log L with iminuit
+`errordef = LIKELIHOOD = 0.5`. Same minimum, same parameter errors.
+
+### Which term each code uses
+
+| | NNMFit | PhyLiNO |
+|---|---|---|
+| SAY | `SAYLLH.compute_log_L`, saturated term **not** subtracted (`builder.py` raises `NotImplementedError` if asked) | `say_bin_log_likelihood` — same, unsubtracted |
+| Poisson | `logP(k\|µ) − logP(k\|k)` (subtraction is the default and the only path `run_fit` takes) | `poisson_bin_log_likelihood_saturated` — same |
+| µ ≤ 0 | `−690·k` for `k > 0`, else `0` | same |
+| prior | `−((x − x₀)/(σ√2))²` | `χ² = ((x − x₀)/σ)²`, i.e. `−2 ×` theirs |
+
+The saturated subtraction is why no baseline is needed: at the Asimov point every bin has `µ = k`,
+so the Poisson total is exactly 0 instead of a bin-count-sized constant.
+
+## Likelihood value parity
+
+Two levels, one fast and offline, one requiring NNMFit runs.
+
+**Per-bin golden values (offline, in the unit suite).**
+`gen_llh_golden.py` dumps `log L` per bin straight out of NNMFit's aesara graphs
+(`SAYLLH.compute_log_L`, `PoissonLLH.compute_log_L`, and the saturated-subtracted combination) for
+a set of edge cases — non-integer `k`, `ssq = 0`, `ssq > µ²`, `ssq < 0`, `µ = 0`, `µ < 0`, tiny `µ`
+with large `k`, and a 2.5e5-count bin:
+
+```
+/Users/soldin/Projects/IceCube/NNMFit/.venv/bin/python tools/nnmfit_oracle/gen_llh_golden.py \
+    -o programs/ictests/LLHGolden.inc
+```
+
+The generated header is committed and asserted by `ICTests.LikelihoodParityTest.*` to 1e-12
+relative. Regenerate it only when NNMFit's likelihood implementation changes.
+
+**Whole-likelihood value at one fixed point (needs NNMFit).**
+
+```
+tools/nnmfit_oracle/compare_llh_value.py configs/config_icecube_combined.json \
+    /Users/soldin/Downloads/Fit_Configuration_Combined_macOS.yaml --use-data --likelihood SAY
+```
+
+Both sides evaluate rather than fit: PhyLiNO through a probe config with every parameter `Fixed`,
+NNMFit through `run_fit.py --fix` for every parameter (which makes `do_fit()` take its
+"all parameters fixed → evaluate" branch; the script fails if `minimizer_info` comes back as
+anything but `evaluated_only`). It then checks `PhyLiNO == 2 · NNMFit`.
+
+Use `--use-data`: without it each code builds its *own* Asimov set from its own prediction at the
+probe point, which makes the Poisson objective trivially 0 on both sides — a smoke test for the
+absence of a baseline offset, not a parity gate. `--set NAME=VALUE` moves the point (PhyLiNO
+names; translated via the script's `NAME_MAP`).
+
+## Converged-fit parity
+
+```
+tools/nnmfit_oracle/run_fit_parity.sh [OUT_DIR] [NNMFIT_CONFIG]
+```
+
+Stage 1 is the value check above, stage 2 fits with NNMFit from the **config default seeds**
+(`--use_default_param_seeds`, so its usual seed randomisation is off and both codes start from the
+same point), stage 3 fits with PhyLiNO on the same data and diffs every parameter plus the minimum
+against `2 · llh_value`.
+
+This fits real detector data, so it is a manual script — run it from a shell yourself; nothing
+invokes it automatically. Two differences are expected and are not defects: the two minimisers
+(Migrad vs LBFGSB) stop at different points within their own tolerances, and `PromptNorm` is
+clipped at 0 by NNMFit's bounds while PhyLiNO, which has no bounds plumbing, may go slightly
+negative.
 
 ## Histogram dumps
 
@@ -156,8 +225,8 @@ tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined.json /t
     --set VetoThreshold=0.14108708515445395 --set MuonGunNorm=1.1362703633930007 \
     --set MuonNorm=1.827017996655897
 
-build/programs/LLHFit/LLHFit -c /tmp/probe_defaults.json --silent && cp Output.json /tmp/probe_defaults_output.json
-build/programs/LLHFit/LLHFit -c /tmp/probe_fitted_nosys.json --silent && cp Output.json /tmp/probe_fitted_nosys_output.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_defaults.json --fitOnly --silent && cp Output.json /tmp/probe_defaults_output.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_fitted_nosys.json --fitOnly --silent && cp Output.json /tmp/probe_fitted_nosys_output.json
 
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_defaults_output.json /tmp/nnmfit_dumps --tolerance 1e-6
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_fitted_nosys_output.json /tmp/nnmfit_dumps_fitted_nosys --tolerance 1e-6
@@ -247,7 +316,7 @@ tools/nnmfit_oracle/dump_histograms.sh \
 
 # our side: evaluate at the same fixed point, then compare
 tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined_3d.json /tmp/probe_3d_defaults.json
-build/programs/LLHFit/LLHFit -c /tmp/probe_3d_defaults.json --silent
+build/programs/LLHFit/LLHFit -c /tmp/probe_3d_defaults.json --fitOnly --silent
 cp Output.json /tmp/probe_3d_defaults_output.json
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_3d_defaults_output.json /tmp/nnmfit_dumps_3d --tolerance 1e-8
 ```

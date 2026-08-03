@@ -33,7 +33,7 @@ json.dump(c, open('$DATA_CONFIG', 'w'), indent=2)
 "
 
 echo "Fitting $DATA_CONFIG against real data..."
-(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --silent)
+(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --fitOnly --silent)
 cp "$ROOT/Output.json" "$OUT_DIR/Output.json"
 
 python3 - "$OUT_DIR/Output.json" "$REF_JSON" <<'EOF'
@@ -47,13 +47,15 @@ print(f"{'parameter':16s} {'ours':>14s} {'NNMFit':>14s} {'abs diff':>12s}")
 for name, theirs in sorted(ref["fitted"].items()):
     mine = ours["parameters"][name]["value"]
     print(f"{name:16s} {mine:14.6f} {theirs:14.6f} {abs(mine - theirs):12.2e}")
-print("our chi2 (baseline-subtracted)", ours["chi2"], "NNMFit llh_value", ref["llh_value"])
+print("our -2lnL+chi2", ours["LLH"], "NNMFit llh_value", ref["llh_value"],
+      "2 * NNMFit", 2.0 * ref["llh_value"])
 print()
 print("Known, expected differences -- not defects:")
 print("  PromptNorm: NNMFit clips it at its range boundary (0.0); this framework has")
 print("  no bounds plumbing, so ours may land slightly negative instead.")
-print("  Absolute likelihood values are NOT comparable (different conventions, see")
-print("  tools/nnmfit_oracle/README.md); only compare differences between points.")
+print("  Our value is 2 * NNMFit's by convention (-2lnL vs -lnL, see")
+print("  tools/nnmfit_oracle/README.md); the two minimisers still stop at slightly")
+print("  different points within their own tolerances.")
 EOF
 
 echo

@@ -62,10 +62,18 @@ namespace io {
     /** Result output format ("json" or "protobuf"), as passed via --output-format. */
     [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
 
+    /**
+     * Run one fit and write its result ("Output.json") instead of the 2D scan.
+     * What LLHFit did before the scan became its default entry point; the
+     * NNMFit likelihood-parity harness needs it (tools/nnmfit_oracle).
+     */
+    [[nodiscard]] bool fit_only() const noexcept { return m_FitOnly; }
+
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
     bool   m_UseMultiThreading; /**< The number of cores to use for multi-threading. */
+    bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 

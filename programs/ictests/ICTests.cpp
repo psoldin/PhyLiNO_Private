@@ -5,6 +5,8 @@
 #include "IceCube/SampleConfig.h"
 #include "InputParameter.h"
 #include "MetalBackend.h"
+#include "PoissonLikelihood.h"
+#include "SAYLikelihood.h"
 #include "SampleLikelihood.h"
 #include "TemplateFlux.h"
 
@@ -12,6 +14,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -821,8 +824,10 @@ TEST(SampleLikelihoodTest, AsimovIsMinimum) {
   ASSERT_TRUE(std::isfinite(llh_perturbed));
 
   // The Asimov point (data == prediction at nominal) must minimize -2lnL:
-  // do NOT assert llh_nominal ~= 0 -- SAY/Poisson here keep the saturated
-  // constant, so the minimum is a nonzero value.
+  // do NOT assert llh_nominal ~= 0 -- this instance is SAY, which (like
+  // NNMFit's) does not subtract the saturated term, so the minimum is a
+  // nonzero value. The Poisson term does subtract it; that zero is asserted
+  // by LikelihoodParityTest.PoissonAsimovIsExactlyZero.
   ASSERT_TRUE(llh_nominal < llh_perturbed);
 }
 
@@ -1618,4 +1623,72 @@ TEST(BinningTest, DataHistogramCounts3d) {
   ASSERT_TRUE(counts[0] == 2.0);
   ASSERT_TRUE(counts[1] == 1.0);
   for (std::size_t b = 2; b < counts.size(); ++b) ASSERT_TRUE(counts[b] == 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Likelihood parity with NNMFit
+// ---------------------------------------------------------------------------
+
+// Per-bin golden values dumped from NNMFit's own aesara graphs by
+// tools/nnmfit_oracle/gen_llh_golden.py. Regenerate with:
+//   /Users/soldin/Projects/IceCube/NNMFit/.venv/bin/python \
+//       tools/nnmfit_oracle/gen_llh_golden.py -o programs/ictests/LLHGolden.inc
+#include "LLHGolden.inc"
+
+// Every bin-level likelihood term must reproduce NNMFit bit-for-bit up to
+// double rounding: the SAY term, the plain Poisson term (the branch SAY falls
+// back to at ssq == 0), and the saturated-subtracted Poisson term that
+// NNMFit's LikelihoodBuilder actually minimises for llh == "PoissonLLH".
+TEST(LikelihoodParityTest, BinTermsMatchNNMFitGolden) {
+  using ana::ic::poisson_bin_log_likelihood;
+  using ana::ic::poisson_bin_log_likelihood_saturated;
+  using ana::ic::say_bin_log_likelihood;
+
+  for (const LLHGoldenCase& c : kLLHGolden) {
+    const double tolerance = 1e-12 * std::max(1.0, std::abs(c.say));
+    EXPECT_NEAR(say_bin_log_likelihood(c.k, c.mu, c.ssq), c.say, tolerance)
+        << "SAY mismatch at k=" << c.k << " mu=" << c.mu << " ssq=" << c.ssq;
+    EXPECT_NEAR(poisson_bin_log_likelihood(c.k, c.mu), c.poisson,
+                1e-12 * std::max(1.0, std::abs(c.poisson)))
+        << "Poisson mismatch at k=" << c.k << " mu=" << c.mu;
+    EXPECT_NEAR(poisson_bin_log_likelihood_saturated(c.k, c.mu), c.poisson_saturated,
+                1e-12 * std::max(1.0, std::abs(c.poisson_saturated)))
+        << "Saturated Poisson mismatch at k=" << c.k << " mu=" << c.mu;
+  }
+}
+
+// The saturated subtraction is what makes the Poisson likelihood absolutely
+// normalised: at the Asimov point every bin has mu == k, so each bin term is
+// exactly zero and the total is zero without any baseline offset. This is the
+// property the removed hardcoded baseline in ICLikelihood was faking, so guard
+// it directly.
+TEST(LikelihoodParityTest, PoissonAsimovIsExactlyZero) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/false);
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
+  ParameterWrapper          nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  likelihood.generate_asimov(nominal);
+
+  EXPECT_NEAR(likelihood.partial_llh(nominal), 0.0, 1e-9);
+
+  // ... and any move away from it costs something positive.
+  std::vector<double> perturbed_values = nominal_values;
+  perturbed_values[params::ic::AstroNorm] *= 1.5;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(perturbed_values.data());
+
+  EXPECT_GT(likelihood.partial_llh(perturbed), 0.0);
 }

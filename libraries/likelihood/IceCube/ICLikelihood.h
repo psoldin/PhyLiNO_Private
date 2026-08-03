@@ -56,9 +56,6 @@ namespace ana::ic {
     // Gaussian pulls: (param_index, central_value, sigma)
     std::vector<std::tuple<int, double, double>> m_Pulls;
 
-    double m_LLHBaseLine{0.0};
-    bool   m_FirstCall{true};
-
     // Gates both concurrency mechanisms in this likelihood: the std::async
     // per-sample partial_llh spawn below and (via each pragma's if() clause)
     // the OpenMP loops in the flux components. Defaults on; later CPU/GPU

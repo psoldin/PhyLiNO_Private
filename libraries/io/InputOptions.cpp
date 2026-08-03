@@ -31,6 +31,7 @@ namespace io {
 	("silent", po::bool_switch(&m_Silent), "Run fit in silence mode")
 	("multiThreading,m", po::bool_switch(&m_UseMultiThreading), "Use multiple threads for fitting")
 	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
+	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf");
 
     po::options_description cmdline_options;
