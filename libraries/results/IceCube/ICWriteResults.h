@@ -26,7 +26,7 @@ namespace result::ic {
     nlohmann::json j;
 
     j["converged"]   = fit.converged();
-    j["chi2"]        = min->MinValue();
+    j["LLH"]         = min->MinValue();
     j["EDM"]         = min->Edm();
     j["fitDuration"] = fit.time_duration();
 
@@ -77,7 +77,8 @@ namespace result::ic {
       // plain one.
       auto sum_of = [](const std::vector<double>& values) {
         double total = 0.0;
-        for (const double v : values) total += v;
+        for (const double v : values)
+          total += v;
         return total;
       };
       const std::string atmo_key = config.wants_veto() ? "atmospheric_veto" : "atmospheric";
