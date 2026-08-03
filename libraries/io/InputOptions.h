@@ -55,6 +55,20 @@ namespace io {
 
     [[nodiscard]] bool use_multi_threading() const noexcept { return m_UseMultiThreading; }
 
+    /**
+     * OpenMP team size requested via --threads. -1 (the default) leaves the
+     * OpenMP/environment default alone. Only consulted when -m is given.
+     */
+    [[nodiscard]] int multi_threading_cores() const noexcept { return m_MultiThreadingCores; }
+
+    /**
+     * Number of grid points the 2D scan fits concurrently (--scanWorkers).
+     * Each worker runs a whole fit with its own likelihood, so on the IceCube
+     * GPU backends every worker also holds its own copy of the MC columns on
+     * the device. Defaults to 1, i.e. the sequential scan.
+     */
+    [[nodiscard]] int scan_workers() const noexcept { return m_ScanWorkers; }
+
     [[nodiscard]] const boost::property_tree::ptree& config_tree() const noexcept { return m_ConfigTree; }
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
@@ -83,7 +97,9 @@ namespace io {
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
-    bool   m_UseMultiThreading; /**< The number of cores to use for multi-threading. */
+    bool   m_UseMultiThreading;      /**< Flag indicating if the fit may use multiple threads. */
+    int    m_MultiThreadingCores{-1}; /**< OpenMP team size; -1 keeps the environment default. */
+    int    m_ScanWorkers{1};          /**< Grid points the 2D scan fits concurrently. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */

@@ -7,6 +7,8 @@
 #include "IceCube/ICInputOptions.h"
 #include "IceCube/ICParameter.h"
 
+#include <mutex>
+
 namespace ana::ic {
 
   /**
@@ -33,15 +35,15 @@ namespace ana::ic {
 
     void write_results(Fit& fit, std::string_view name) override;
 
-    [[nodiscard]] const std::shared_ptr<ICLikelihood>& likelihood() const noexcept { return m_Likelihood; }
-
     [[nodiscard]] const io::ic::ICInputOptions& ic_input_options() const noexcept { return *m_InputOptions; }
 
    private:
     std::shared_ptr<io::ic::ICInputOptions>   m_InputOptions;
     // Cached immutable MC sample; loaded once, reused across Fit constructions.
+    // The only state the module keeps: the likelihood itself belongs to the Fit
+    // that created it, so several Fits can run concurrently on one module.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
-    std::shared_ptr<ICLikelihood>             m_Likelihood;
+    std::mutex                                m_DataBaseMutex;
   };
 
 }  // namespace ana::ic

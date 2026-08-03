@@ -30,6 +30,8 @@ namespace io {
 	("seed", po::value<long>(&m_Seed)->default_value(current_time), "Set seed for simulation")
 	("silent", po::bool_switch(&m_Silent), "Run fit in silence mode")
 	("multiThreading,m", po::bool_switch(&m_UseMultiThreading), "Use multiple threads for fitting")
+	("threads", po::value<int>(&m_MultiThreadingCores)->default_value(-1), "OpenMP team size used when -m is given; -1 keeps the environment default")
+	("scanWorkers", po::value<int>(&m_ScanWorkers)->default_value(1), "Number of grid points the 2D scan fits concurrently (each worker runs a full fit)")
 	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")

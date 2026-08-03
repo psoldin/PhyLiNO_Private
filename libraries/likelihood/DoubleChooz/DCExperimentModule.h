@@ -35,13 +35,12 @@ namespace ana::dc {
       return m_InputOptions->use_sterile() && (i == params::DeltaM41 || i == params::SinSqT14);
     }
 
-    [[nodiscard]] const std::shared_ptr<DCLikelihood>& likelihood() const noexcept { return m_Likelihood; }
-
     [[nodiscard]] const io::dc::DCInputOptions& dc_input_options() const noexcept { return *m_InputOptions; }
 
    private:
+    // No likelihood handle: it belongs to the Fit that created it, so several
+    // Fits can share one module (see write_results).
     std::shared_ptr<io::dc::DCInputOptions> m_InputOptions;
-    std::shared_ptr<DCLikelihood>           m_Likelihood;
   };
 
 }  // namespace ana::dc

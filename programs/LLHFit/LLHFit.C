@@ -83,6 +83,8 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
 
   const scan::Settings settings;
 
+  const int scan_workers = std::max(1, options->inputOptions().scan_workers());
+
   // Working in integer lattice coordinates keeps every point of every depth
   // exactly representable and gives each one a stable name.
   const double spacing_x = (high_x - low_x) / settings.lattice_x();
@@ -139,8 +141,11 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       });
     }
 
+    // Each worker builds its own Fit -- and therefore its own likelihood -- over
+    // the shared module, whose only state is the immutable MC sample. Points are
+    // handed out one at a time, so a slow fit does not stall the others.
     const int        n_nodes   = static_cast<int>(ordered.size());
-    const int        n_workers = std::min<int>(std::max(n_nodes, 1), 1);
+    const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
     std::atomic<int> next_index{0};
     std::mutex       surface_mutex;
 
@@ -186,9 +191,10 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       t.join();
   };
 
-  auto report = [](int round, std::size_t split, std::size_t cells, std::size_t points) {
+  auto report = [scan_workers](int round, std::size_t split, std::size_t cells, std::size_t points) {
     if (round == 0)
-      std::cout << "Coarse grid: " << points << " points\n";
+      std::cout << "Coarse grid: " << points << " points"
+                << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
     else
       std::cout << "Refinement " << round << ": splitting " << split << " of " << cells << " cells (" << points << " points so far)\n";
   };

@@ -27,15 +27,14 @@ namespace ana::linreg {
     [[nodiscard]] int number_of_parameters() const override { return params::linreg::number_of_parameters(); }
 
     [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options) override {
-      m_Likelihood = std::make_shared<LinRegLikelihood>(std::move(options), *m_InputOptions);
-      return m_Likelihood;
+      return std::make_shared<LinRegLikelihood>(std::move(options), *m_InputOptions);
     }
 
     void write_results(Fit& fit, std::string_view name) override;
 
    private:
+    // No likelihood handle: it belongs to the Fit that created it.
     std::shared_ptr<io::linreg::LinRegInputOptions> m_InputOptions;
-    std::shared_ptr<LinRegLikelihood>               m_Likelihood;
   };
 
 }  // namespace ana::linreg

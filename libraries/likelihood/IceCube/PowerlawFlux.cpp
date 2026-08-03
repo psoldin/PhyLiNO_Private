@@ -19,7 +19,7 @@ namespace ana::ic {
     struct PowerlawParamsT {
       R   eff_norm;
       R   inv_eref;
-      R   exponent;    // single PL: ref_index - gamma. Broken PL: gamma_1.
+      R   exponent;  // single PL: ref_index - gamma. Broken PL: gamma_1.
       int write_pe;
       R   gamma_2;     // broken PL only
       R   inv_ebreak;  // broken PL only: 1 / E_break
@@ -132,15 +132,15 @@ namespace ana::ic {
 
   }  // namespace
 
-  PowerlawFlux::PowerlawFlux(const io::ic::ICSample&       sample,
-                             const io::ic::Binning&        binning,
-                             const double                  e_ref_gev,
-                             const double                  reference_index,
-                             const bool                    per_type_norm,
-                             std::shared_ptr<GpuBackend>   gpu,
-                             const bool                    need_per_event,
-                             const io::ic::AstroModel      model,
-                             const bool                    use_multi_threading)
+  PowerlawFlux::PowerlawFlux(const io::ic::ICSample&     sample,
+                             const io::ic::Binning&      binning,
+                             const double                e_ref_gev,
+                             const double                reference_index,
+                             const bool                  per_type_norm,
+                             std::shared_ptr<GpuBackend> gpu,
+                             const bool                  need_per_event,
+                             const io::ic::AstroModel    model,
+                             const bool                  use_multi_threading)
     : m_Sample(sample)
     , m_ERef(e_ref_gev)
     , m_ReferenceIndex(reference_index)
@@ -180,11 +180,11 @@ namespace ana::ic {
     // Broken-power-law scalars, evaluated in double precision on the host and
     // narrowed only when the kernel params struct is filled. Left at their
     // single-power-law-safe defaults otherwise.
-    const bool   broken  = m_Model == io::ic::AstroModel::BrokenPowerlaw;
-    double       g1      = 0.0;
-    double       g2      = 0.0;
-    double       e_break = 1.0;
-    double       pivot   = 1.0;
+    const bool broken  = m_Model == io::ic::AstroModel::BrokenPowerlaw;
+    double     g1      = 0.0;
+    double     g2      = 0.0;
+    double     e_break = 1.0;
+    double     pivot   = 1.0;
     if (broken) {
       g1      = parameter[AstroGamma1];
       g2      = parameter[AstroGamma2];
@@ -218,13 +218,15 @@ namespace ana::ic {
         fill(p);
         m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
         const double* hist = m_Gpu->contents_f64(m_hHist);
-        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = hist[bin];
+        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
+          m_Histogram[bin] = hist[bin];
       } else {
         PowerlawParamsT<float> p;
         fill(p);
         m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
         const float* hist = m_Gpu->contents(m_hHist);
-        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = static_cast<double>(hist[bin]);
+        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
+          m_Histogram[bin] = static_cast<double>(hist[bin]);
       }
       // Per-event weights stay GPU-resident (read by the say_ssq kernel).
       return;
@@ -241,7 +243,7 @@ namespace ana::ic {
     const int   n_bins   = static_cast<int>(m_Histogram.size());
 
     if (broken) {
-      #pragma omp parallel for if(m_UseMultiThreading)
+#pragma omp parallel for if (m_UseMultiThreading)
       for (int bin = 0; bin < n_bins; ++bin) {
         double acc = 0.0;
         for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
@@ -252,8 +254,8 @@ namespace ana::ic {
           // fluxless_weight * 1e-18 * (E/1e5)^-2, so the 1e-18 cancels against
           // AstroBPL's own factor and (E/1e5)^2 remains. The 1e5 is a property of
           // that column, not the configurable ERefGeV.
-          const double undo  = (e / 1.0e5) * (e / 1.0e5);
-          const double w     = baseline[i] * eff_norm * pivot * shape * undo;
+          const double undo = (e / 1.0e5) * (e / 1.0e5);
+          const double w    = baseline[i] * eff_norm * pivot * shape * undo;
           acc += w;
           m_PerEventWeight[i] = w;
         }
@@ -262,7 +264,7 @@ namespace ana::ic {
       return;
     }
 
-    #pragma omp parallel for if(m_UseMultiThreading)
+#pragma omp parallel for if (m_UseMultiThreading)
     for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
@@ -274,18 +276,35 @@ namespace ana::ic {
     }
   }
 
+  inline bool check_SPL_parameter(const ParameterWrapper& parameter) noexcept {
+    using namespace params::ic;
+    return parameter.check_parameter_changed(AstroNorm)
+           || parameter.check_parameter_changed(SpectralIndex);
+  }
+
+  inline bool check_BPL_parameter(const ParameterWrapper& parameter) noexcept {
+    using namespace params::ic;
+    return parameter.check_parameter_changed(AstroNorm)
+           || parameter.check_parameter_changed(AstroGamma1)
+           || parameter.check_parameter_changed(AstroGamma2)
+           || parameter.check_parameter_changed(AstroEBreak);
+  }
+
   bool PowerlawFlux::check_and_recalculate(const ParameterWrapper& parameter) {
     using namespace params::ic;
     // Watch exactly the parameters the active model reads: SpectralIndex is
     // unused in broken-power-law mode, and the three AstroBPL parameters are
     // unused in single-power-law mode.
-    const bool changed =
-        m_Model == io::ic::AstroModel::BrokenPowerlaw
-            ? parameter.check_parameter_changed(AstroNorm) || parameter.check_parameter_changed(AstroGamma1) ||
-                  parameter.check_parameter_changed(AstroGamma2) || parameter.check_parameter_changed(AstroEBreak)
-            : parameter.check_parameter_changed(AstroNorm) || parameter.check_parameter_changed(SpectralIndex);
+
+    using enum io::ic::AstroModel;
+
+    const bool changed = (m_Model == BrokenPowerlaw)
+                             ? check_BPL_parameter(parameter)
+                             : check_SPL_parameter(parameter);
+
     if (changed)
       recalculate(parameter);
+
     return changed;
   }
 
