@@ -1,7 +1,7 @@
 {
   "Experiment": "IceCube",
   "IceCube": {
-    "Backend": "metal",
+    "Backend": "cpu",
     "Likelihood": "Poisson",
     "UseData": false,
     "AstroModel": "Powerlaw",

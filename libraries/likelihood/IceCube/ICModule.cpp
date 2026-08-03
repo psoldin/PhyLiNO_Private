@@ -4,6 +4,7 @@
 
 #include "IceCube/ICWriteResults.h"
 
+#include <memory>
 #include <stdexcept>
 
 namespace ana::ic {
