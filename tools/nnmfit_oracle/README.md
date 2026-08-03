@@ -178,6 +178,48 @@ there; `ICTests.ParameterSeedingTest.*` covers both branches and the seed reprod
 The parity scripts never pass `--randomizeSeeds` — they pin every parameter, and a randomized
 start would move the point being compared.
 
+## Recorded likelihood-value results (2026-08-03)
+
+All Asimov, all through `compare_llh_value.py`. "Moved point" means the Asimov set is generated at
+the config values while the likelihood is evaluated somewhere else (`AsimovValue` / `--inject`),
+which is the only way the Poisson term measures anything — at its own truth it is exactly 0.
+
+| config | likelihood | point | backend | deviation from `2 · NNMFit` |
+|---|---|---|---|---|
+| combined 2D (`HEAD`) | SAY | defaults | cpu | 6.9e-14 |
+| combined 3D | SAY | defaults | cpu | 1.2e-13 |
+| combined 2D (`HEAD`) | Poisson | moved | cpu | 1.6e-14 |
+| tracks 2D | Poisson | moved | cpu | 2.2e-14 |
+| cscd_cascade 2D | Poisson | moved | cpu | 6.8e-14 |
+| cscd_muon 2D | Poisson | moved | cpu | 3.0e-12 |
+| combined 3D | SAY | moved | cpu | 6.1e-14 |
+| combined 3D | SAY | moved | **metal** | 3.4e-08 |
+| combined 2D (`HEAD`) | Poisson | moved | **metal** | 1.1e-06 |
+
+The moved points are `AstroNorm 1.8, ConvNorm 1.15, DeltaGamma 0.05, DOMEff 0.97, BarrH 0.1` (2D)
+and additionally `AstroGamma1 1.5, AstroGamma2 2.9, AstroEBreak 4.6, GalacticNorm0/1 1.2` (3D).
+The 3D moved point is the one that exercises `AstroBPL`, the galactic template, the RA axis and
+the detector gradients simultaneously — everything the defaults-point gates could not see.
+
+**GPU backends.** Metal does not reach the CPU path's ~1e-13 because the flux kernels are FP32.
+The useful way to state its accuracy is **absolute, not relative**: the Metal-vs-CPU difference
+was `0.0127` on the 3D SAY point (value 3.7e5) and `0.0129` on the 2D Poisson point (value
+1.2e4) — the same absolute error against likelihood values 30x apart, because it comes from FP32
+rounding in the per-event flux sum, not from anything that scales with the likelihood. So the
+relative tolerance a GPU run needs depends on how large the likelihood happens to be
+(3e-8 for the first, 1e-6 for the second); `--tolerance 1e-4` covers both. A *relative* tolerance
+tightened for the 3D case would spuriously fail the 2D one.
+
+That absolute offset is ~0.013 in `-2lnL`, i.e. far below the 1-unit scale that matters for a fit
+result, but it is not zero: do not use a GPU backend when comparing two likelihood values that
+differ by less than ~0.1.
+
+**CUDA cannot be tested on macOS** — `CudaBackend_stub.cpp` returns `available() == false`, so
+`--backend cuda` silently falls back to the CPU path and proves nothing about the CUDA kernels
+(the run will still print `ok`, which is exactly the kind of quiet false pass this directory's
+notes keep warning about). Gate CUDA on a machine with a device, and check the
+`ICLikelihood: CUDA backend using FP64/FP32 kernels` line actually appears.
+
 ## Converged-fit parity
 
 ```
@@ -194,6 +236,13 @@ invokes it automatically. Two differences are expected and are not defects: the 
 (Migrad vs LBFGSB) stop at different points within their own tolerances, and `PromptNorm` is
 clipped at 0 by NNMFit's bounds while PhyLiNO, which has no bounds plumbing, may go slightly
 negative.
+
+> **NOT YET RUN — the one gap in the parity coverage.** Everything recorded in this file was
+> gated on Asimov. Real data has never been compared between the two codes, neither the
+> likelihood value nor a converged fit, and it is the only check that exercises the measured
+> histograms (`UseData: true`) and the minimiser end to end. Worth doing since the gradient
+> livetime fix above changed every tracks fit that moves a detector parameter. Owner: the user,
+> deliberately — see the standing rule that data fits are run by hand, not by an agent.
 
 ## Histogram dumps
 

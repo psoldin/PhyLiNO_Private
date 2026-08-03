@@ -79,7 +79,7 @@ def run(cmd, **kwargs):
     subprocess.run(cmd, check=True, **kwargs)
 
 
-def build_probe_config(base_config, out_config, overrides, likelihood, use_data):
+def build_probe_config(base_config, out_config, overrides, likelihood, use_data, backend="cpu"):
     """Every parameter Fixed, values from the base config unless overridden.
 
     The base config's values stay in "AsimovValue", so the Asimov set is
@@ -91,7 +91,7 @@ def build_probe_config(base_config, out_config, overrides, likelihood, use_data)
         cfg = json.load(f)
 
     cfg["IceCube"]["Likelihood"] = likelihood
-    cfg["IceCube"]["Backend"] = "cpu"
+    cfg["IceCube"]["Backend"] = backend
     cfg["IceCube"]["UseData"] = bool(use_data)
 
     names = {p["Name"] for p in cfg["Parameter"]}
@@ -217,6 +217,10 @@ def main():
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--workdir", default=None)
     parser.add_argument("--likelihood", default="SAY", choices=["SAY", "Poisson"])
+    parser.add_argument("--backend", default="cpu", choices=["cpu", "metal", "cuda"],
+                        help="PhyLiNO compute backend. The GPU kernels are FP32 for some "
+                             "components, so a GPU run needs a looser --tolerance than the "
+                             "1e-12-ish a CPU run reaches.")
     parser.add_argument("--use-data", action="store_true")
     parser.add_argument("--tolerance", type=float, default=1e-9,
                         help="relative tolerance on PhyLiNO == 2 * NNMFit")
@@ -233,7 +237,8 @@ def main():
 
     probe_config = os.path.join(workdir, "probe.json")
     point, asimov_point = build_probe_config(args.phylino_config, probe_config,
-                                             overrides, args.likelihood, args.use_data)
+                                             overrides, args.likelihood, args.use_data,
+                                             args.backend)
 
     moved = {k: (asimov_point[k], v) for k, v in point.items() if asimov_point[k] != v}
     if moved:
