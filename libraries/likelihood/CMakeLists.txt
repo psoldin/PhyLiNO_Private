@@ -3,6 +3,7 @@ set(files
     Fit.cpp
     ParameterWrapper.h
     ParameterWrapper.cpp
+    ParameterSeeding.h
     Likelihood.h
     ExperimentModule.h
 )

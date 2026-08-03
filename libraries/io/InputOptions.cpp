@@ -32,6 +32,8 @@ namespace io {
 	("multiThreading,m", po::bool_switch(&m_UseMultiThreading), "Use multiple threads for fitting")
 	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
+	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")
+	("randomizeWidth", po::value<double>(&m_RandomizeWidth)->default_value(0.08), "Relative width of the randomized start values (NNMFit's default is 0.08)")
 	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf");
 
     po::options_description cmdline_options;

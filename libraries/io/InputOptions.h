@@ -69,11 +69,24 @@ namespace io {
      */
     [[nodiscard]] bool fit_only() const noexcept { return m_FitOnly; }
 
+    /**
+     * Randomize the minimizer start values around the configured ones, the
+     * counterpart of NNMFit's default `randomize_param_seeds` (see
+     * ana::randomized_start_value). Only the start point moves -- the data,
+     * Asimov included, is built from the configured values either way.
+     */
+    [[nodiscard]] bool randomize_seeds() const noexcept { return m_RandomizeSeeds; }
+
+    /** Relative width of the randomized start values, as passed via --randomizeWidth. */
+    [[nodiscard]] double randomize_width() const noexcept { return m_RandomizeWidth; }
+
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
     bool   m_UseMultiThreading; /**< The number of cores to use for multi-threading. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
+    bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
+    double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 

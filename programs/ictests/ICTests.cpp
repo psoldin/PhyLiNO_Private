@@ -5,6 +5,7 @@
 #include "IceCube/SampleConfig.h"
 #include "InputParameter.h"
 #include "MetalBackend.h"
+#include "ParameterSeeding.h"
 #include "PoissonLikelihood.h"
 #include "SAYLikelihood.h"
 #include "SampleLikelihood.h"
@@ -18,7 +19,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1691,4 +1694,66 @@ TEST(LikelihoodParityTest, PoissonAsimovIsExactlyZero) {
   perturbed.reset_parameter(perturbed_values.data());
 
   EXPECT_GT(likelihood.partial_llh(perturbed), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Randomized minimizer start values
+// ---------------------------------------------------------------------------
+
+// The multiplicative branch must reproduce NNMFit's draw, value * N(1, width),
+// and the additive branch must actually move a parameter whose start value is
+// 0 -- which is where NNMFit's purely multiplicative version gives up.
+TEST(ParameterSeedingTest, DrawsMatchTheirBranches) {
+  using ana::randomized_start_value;
+
+  constexpr int    kDraws = 20000;
+  constexpr double kValue = 1.5;
+  constexpr double kStep  = 0.1;
+  constexpr double kWidth = 0.08;
+
+  std::mt19937_64 rng(12345);
+
+  double sum = 0.0, sum_sq = 0.0;
+  for (int i = 0; i < kDraws; ++i) {
+    const double x = randomized_start_value(kValue, kStep, kWidth, rng);
+    sum += x;
+    sum_sq += x * x;
+  }
+  double mean = sum / kDraws;
+  double sigma = std::sqrt(sum_sq / kDraws - mean * mean);
+
+  // Multiplicative: mean == value, sigma == value * width. Tolerances are ~4
+  // standard errors of the estimators at this sample size.
+  EXPECT_NEAR(mean, kValue, 4.0 * kValue * kWidth / std::sqrt(kDraws));
+  EXPECT_NEAR(sigma, kValue * kWidth, 0.05 * kValue * kWidth);
+
+  // Additive fallback at zero: mean == 0, sigma == step. NNMFit returns
+  // exactly 0 here, forever.
+  sum = sum_sq = 0.0;
+  for (int i = 0; i < kDraws; ++i) {
+    const double x = randomized_start_value(0.0, kStep, kWidth, rng);
+    sum += x;
+    sum_sq += x * x;
+  }
+  mean = sum / kDraws;
+  sigma = std::sqrt(sum_sq / kDraws - mean * mean);
+
+  EXPECT_NEAR(mean, 0.0, 4.0 * kStep / std::sqrt(kDraws));
+  EXPECT_NEAR(sigma, kStep, 0.05 * kStep);
+}
+
+// Same seed, same draws: a randomized start point must be reproducible from
+// --seed alone (NNMFit's is not -- it uses numpy's global RNG).
+TEST(ParameterSeedingTest, SameSeedSameDraw) {
+  using ana::randomized_start_value;
+
+  auto draw = [](const std::uint64_t seed) {
+    std::mt19937_64     rng(seed);
+    std::vector<double> out;
+    for (int i = 0; i < 8; ++i) out.push_back(ana::randomized_start_value(1.5, 0.1, 0.08, rng));
+    return out;
+  };
+
+  EXPECT_EQ(draw(4242), draw(4242));
+  EXPECT_NE(draw(4242), draw(4243));
 }

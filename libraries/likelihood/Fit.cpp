@@ -1,7 +1,10 @@
 #include "Fit.h"
 
+#include "ParameterSeeding.h"
+
 // STL includes
 #include <algorithm>
+#include <random>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -38,8 +41,7 @@ namespace ana {
     const std::size_t n_config    = m_Options->inputOptions().input_parameters().size();
 
     if (static_cast<std::size_t>(n_parameter) != n_config) {
-      throw std::invalid_argument("Experiment " + m_Module->name() + " expects " + std::to_string(n_parameter) +
-                                  " parameters, but the config file provides " + std::to_string(n_config));
+      throw std::invalid_argument("Experiment " + m_Module->name() + " expects " + std::to_string(n_parameter) + " parameters, but the config file provides " + std::to_string(n_config));
     }
 
     // Initialize the likelihood of the selected experiment
@@ -64,22 +66,42 @@ namespace ana {
   }
 
   void Fit::setup_minimizer() {
-    const bool silent = m_Options->inputOptions().silent();
-
-    const auto& input_parameters = m_Options->inputOptions().input_parameters();
+    const auto& input_options    = m_Options->inputOptions();
+    const bool  silent           = input_options.silent();
+    const bool  randomize        = input_options.randomize_seeds();
+    const auto& input_parameters = input_options.input_parameters();
 
     const auto& names      = input_parameters.names();
     const auto& fixed      = input_parameters.fixed();
     const auto& parameters = input_parameters.parameters();
 
+    // Randomized start values are drawn from the run's own --seed, so a draw is
+    // reproducible (NNMFit's equivalent uses numpy's global RNG and is not).
+    // The likelihood was already constructed above, so anything built from the
+    // configured values -- the Asimov data in particular -- is unaffected;
+    // only where the minimizer starts moves.
+    std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(input_options.seed()));
+
     for (std::size_t i = 0; i < parameters.size(); ++i) {
+      // A fixed parameter is a constraint, not a start point: randomizing it
+      // would silently change the point being evaluated. NNMFit likewise
+      // overwrites its fixed parameters after drawing the seeds.
+      const bool   randomize_this = randomize && !fixed[i];
+      const double start          = randomize_this
+                                        ? randomized_start_value(parameters[i].value(),
+                                                                 parameters[i].uncertainty(),
+                                                                 input_options.randomize_width(), rng)
+                                        : parameters[i].value();
+
       if (!silent) {
         std::cout << "Set up parameter " << std::setw(5) << i << ": " << std::setw(18) << names[i]
-                  << " with value " << std::setw(10) << parameters[i].value()
-                  << " and uncertainty " << parameters[i].uncertainty() << '\n';
+                  << " with value " << std::setw(10) << start;
+        if (randomize_this)
+          std::cout << " (randomized from " << parameters[i].value() << ')';
+        std::cout << " and uncertainty " << parameters[i].uncertainty() << '\n';
       }
 
-      m_Minimizer->SetVariable(i, names[i], parameters[i].value(), parameters[i].uncertainty());
+      m_Minimizer->SetVariable(i, names[i], start, parameters[i].uncertainty());
     }
 
     if (!silent) {

@@ -115,6 +115,30 @@ probe point, which makes the Poisson objective trivially 0 on both sides — a s
 absence of a baseline offset, not a parity gate. `--set NAME=VALUE` moves the point (PhyLiNO
 names; translated via the script's `NAME_MAP`).
 
+## Randomized start values
+
+`LLHFit --randomizeSeeds` perturbs the minimizer's start point, the counterpart of NNMFit's
+`randomize_param_seeds`, which `run_fit.py` applies **by default** (`--use_default_param_seeds`
+turns it off). Only the start point moves: the data, Asimov included, is built from the configured
+values either way.
+
+| | NNMFit | PhyLiNO |
+|---|---|---|
+| draw | `np.random.normal(1, w) * value` | same, `w` = `--randomizeWidth` (default 0.08) |
+| `w` | `0.25 * (hi - lo)` if bounded, else `0.08` | no bounds in this framework, so always `--randomizeWidth` |
+| `value == 0` | stays `0` — never randomized | drawn from `N(0, StepWidth)` |
+| fixed parameters | overwritten after the draw | not drawn |
+| reproducible | no (numpy global RNG; the draw is recorded in the output pickle) | yes, from `--seed` |
+
+The `value == 0` difference matters for the IceCube configs: `BarrH/W/Y/Z`, `CRGrad`,
+`DeltaGamma` and `VetoThreshold` all start at 0, so NNMFit's multiplicative draw leaves every one
+of them exactly at its configured value. `ana::randomized_start_value`
+(`libraries/likelihood/ParameterSeeding.h`) falls back to an additive draw of width `StepWidth`
+there; `ICTests.ParameterSeedingTest.*` covers both branches and the seed reproducibility.
+
+The parity scripts never pass `--randomizeSeeds` — they pin every parameter, and a randomized
+start would move the point being compared.
+
 ## Converged-fit parity
 
 ```
