@@ -2,6 +2,8 @@
 
 // STL includes
 #include <iostream>
+#include <optional>
+#include <stdexcept>
 #include <string>
 
 // boost includes
@@ -134,6 +136,13 @@ namespace io {
        *
        * @param parameter The boost::property_tree::ptree object containing the parameter information.
        */
+      /** ptree::get_optional yields a boost::optional; this is the std one. */
+      static std::optional<double> optional_double(const boost::property_tree::ptree& parameter,
+                                                   const std::string&                 key) {
+        const auto value = parameter.get_optional<double>(key);
+        return value ? std::optional<double>(*value) : std::nullopt;
+      }
+
       explicit Parameter(const boost::property_tree::ptree& parameter)
         : m_Value(parameter.get<double>("StartValue"))
         , m_Uncertainty(parameter.get<double>("StepWidth"))
@@ -147,7 +156,26 @@ namespace io {
         // the start value, which is what the Asimov set was always built from,
         // so existing configs are unaffected. Separating the two is what lets a
         // fit (or a fixed-point evaluation) sit somewhere other than the truth.
-        , m_AsimovValue(parameter.get<double>("AsimovValue", m_Value)) {
+        , m_AsimovValue(parameter.get<double>("AsimovValue", m_Value))
+        // Optional minimiser bounds, NNMFit's per-parameter "range". Either
+        // side may be omitted for a one-sided bound; omitting both (the
+        // default) leaves the parameter unbounded, which is what every config
+        // meant before bounds existed.
+        , m_LowerBound(optional_double(parameter, "LowerBound"))
+        , m_UpperBound(optional_double(parameter, "UpperBound")) {
+        if (m_LowerBound && m_UpperBound && *m_LowerBound >= *m_UpperBound)
+          throw std::invalid_argument(
+              "Parameter '" + parameter.get<std::string>("Name", "<unnamed>") + "': LowerBound " +
+              std::to_string(*m_LowerBound) + " must be below UpperBound " +
+              std::to_string(*m_UpperBound));
+
+        // A start value outside its own bounds is a config error, not something
+        // to silently clamp: Minuit2 would take the clamped point as the seed
+        // and the fit would quietly start somewhere the config never asked for.
+        if ((m_LowerBound && m_Value < *m_LowerBound) || (m_UpperBound && m_Value > *m_UpperBound))
+          throw std::invalid_argument(
+              "Parameter '" + parameter.get<std::string>("Name", "<unnamed>") + "': StartValue " +
+              std::to_string(m_Value) + " lies outside its bounds");
       }
 
       /**
@@ -177,12 +205,19 @@ namespace io {
        */
       [[nodiscard]] double asimov_value() const noexcept { return m_AsimovValue; }
 
+      /** Minimiser bounds ("LowerBound"/"UpperBound"); empty means unbounded on that side. */
+      [[nodiscard]] const std::optional<double>& lower_bound() const noexcept { return m_LowerBound; }
+      [[nodiscard]] const std::optional<double>& upper_bound() const noexcept { return m_UpperBound; }
+
      private:
       double m_Value;        ///< The start value of the parameter.
       double m_Uncertainty;  ///< The minimiser step width.
       double m_PriorValue;   ///< Central value of the Gaussian pull.
       double m_PriorWidth;   ///< Width of the Gaussian pull.
       double m_AsimovValue;  ///< Value the Asimov data is generated at.
+
+      std::optional<double> m_LowerBound;  ///< Optional minimiser lower bound.
+      std::optional<double> m_UpperBound;  ///< Optional minimiser upper bound.
     };
   };
 

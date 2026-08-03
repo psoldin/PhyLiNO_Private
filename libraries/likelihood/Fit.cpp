@@ -86,22 +86,54 @@ namespace ana {
       // A fixed parameter is a constraint, not a start point: randomizing it
       // would silently change the point being evaluated. NNMFit likewise
       // overwrites its fixed parameters after drawing the seeds.
-      const bool   randomize_this = randomize && !fixed[i];
-      const double start          = randomize_this
-                                        ? randomized_start_value(parameters[i].value(),
-                                                                 parameters[i].uncertainty(),
-                                                                 input_options.randomize_width(), rng)
-                                        : parameters[i].value();
+      const bool randomize_this = randomize && !fixed[i];
+      double     start          = randomize_this
+                                      ? randomized_start_value(parameters[i].value(),
+                                                               parameters[i].uncertainty(),
+                                                               input_options.randomize_width(), rng)
+                                      : parameters[i].value();
+
+      const std::optional<double>& lower = parameters[i].lower_bound();
+      const std::optional<double>& upper = parameters[i].upper_bound();
+
+      // A randomized draw can land outside the bounds -- the draw knows nothing
+      // about them -- and Minuit2 rejects a seed outside its own limits. Pull it
+      // back inside, a hair off the boundary: seeding exactly ON a limit makes
+      // Minuit2's internal arcsin transformation singular. The configured start
+      // value is never clamped; InputParameter rejects that at parse time.
+      if (randomize_this && (lower || upper)) {
+        const double margin = 1.0e-3 * parameters[i].uncertainty();
+        if (lower) start = std::max(start, *lower + margin);
+        if (upper) start = std::min(start, *upper - margin);
+      }
 
       if (!silent) {
         std::cout << "Set up parameter " << std::setw(5) << i << ": " << std::setw(18) << names[i]
                   << " with value " << std::setw(10) << start;
         if (randomize_this)
           std::cout << " (randomized from " << parameters[i].value() << ')';
-        std::cout << " and uncertainty " << parameters[i].uncertainty() << '\n';
+        std::cout << " and uncertainty " << parameters[i].uncertainty();
+        if (lower || upper) {
+          std::cout << ", bounds [" << (lower ? std::to_string(*lower) : "-inf") << ", "
+                    << (upper ? std::to_string(*upper) : "+inf") << ']';
+        }
+        std::cout << '\n';
       }
 
-      m_Minimizer->SetVariable(i, names[i], start, parameters[i].uncertainty());
+      // Minuit2 handles limits by an internal variable transformation, so a
+      // bounded parameter is minimised in a different coordinate than an
+      // unbounded one. Only the variants a parameter actually needs are used:
+      // declaring a huge artificial limit instead of leaving a side open would
+      // apply that transformation for nothing.
+      const double step = parameters[i].uncertainty();
+      if (lower && upper)
+        m_Minimizer->SetLimitedVariable(i, names[i], start, step, *lower, *upper);
+      else if (lower)
+        m_Minimizer->SetLowerLimitedVariable(i, names[i], start, step, *lower);
+      else if (upper)
+        m_Minimizer->SetUpperLimitedVariable(i, names[i], start, step, *upper);
+      else
+        m_Minimizer->SetVariable(i, names[i], start, step);
     }
 
     if (!silent) {

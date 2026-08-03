@@ -277,11 +277,50 @@ Result at seed 20260803 (combined 2D, SAY, 18 free parameters):
 
 Every parameter agrees well inside its own fitted uncertainty: 15 of 18 below 0.05σ, and the three
 largest are `PromptNorm` 0.221σ, `AstroNorm` 0.170σ, `SpectralIndex` 0.139σ. `PromptNorm` is the
-known bounds difference — NNMFit clips it at exactly 0.0, PhyLiNO has no bounds plumbing and walks
-to −0.123 — which also accounts for most of the likelihood gap and for the correlated shifts in
-the other two. PhyLiNO reaching the lower minimum while NNMFit's line search gives up is a
-minimiser difference, not an objective difference; the fixed-point gates above already prove the
-objectives agree to 1e-16.
+bounds difference — NNMFit clips it at exactly 0.0, and at the time of that run PhyLiNO had no
+bounds.
+
+### With bounds applied (same draw, same seed)
+
+`LowerBound`/`UpperBound` now exist (see below), so the same fit was repeated with NNMFit's own
+ranges transferred by `apply_nnmfit_bounds.py`:
+
+| | unbounded | bounded |
+|---|---|---|
+| `PromptNorm` | −0.1232 | **1e-07** (NNMFit: 0.0) |
+| minimum − `2 ×` NNMFit | −0.050833 | **+0.000012** |
+| largest parameter difference | 1.23e-01 (0.221σ) | **4.5e-04 (0.002σ)** |
+
+So the residual really was the missing bound: with `PromptNorm` free, PhyLiNO reached an
+unphysical region NNMFit could not, which also dragged `AstroNorm` and `SpectralIndex` off by
+~0.15σ; both now agree to <0.001σ. A minimum difference of 1.2e-05 on a value of 7839 (1.5e-09
+relative) means the two minimisers land in the same place, not merely in compatible places.
+
+## Parameter bounds
+
+PhyLiNO parameters take optional `"LowerBound"` / `"UpperBound"` keys. Omitting both leaves the
+parameter unbounded, which is what every config meant before bounds existed, so nothing changes
+unless they are written in. Either side may be omitted on its own — NNMFit's `astro_norm`,
+`conv_norm`, `prompt_norm`, `gamma_astro`, `muon_norm` and `muongun_norm` are all lower-bounded
+with `None` above, so one-sided bounds are not a corner case.
+
+`Fit::setup_minimizer` dispatches to Minuit2's `SetLimitedVariable` /
+`SetLowerLimitedVariable` / `SetUpperLimitedVariable` / `SetVariable` accordingly. Minuit2
+implements a limit through an internal arcsin transformation, so an open side is deliberately left
+open rather than given a large artificial limit, which would apply that transformation for nothing.
+
+Two things are rejected at parse time rather than absorbed: an inverted range, and a `StartValue`
+outside its own bounds. Clamping the latter would start the fit somewhere the config never asked
+for — silently, which is this directory's recurring failure mode. Sitting exactly *on* a bound is
+allowed (NNMFit's own fitted `PromptNorm` is exactly 0.0). A **randomized** start value is clamped,
+with a small margin: the draw knows nothing about the bounds, and seeding exactly on a limit makes
+Minuit2's transformation singular.
+
+```
+tools/nnmfit_oracle/apply_nnmfit_bounds.py PHYLINO_CONFIG NNMFIT_CONFIG OUT_CONFIG
+```
+
+copies NNMFit's ranges across so a fit comparison is not confounded by one side being bounded.
 
 **Two traps when regenerating the draw.** The pickle must be written by *NNMFit's* interpreter —
 one written by a newer numpy carries `numpy._core` references that NNMFit's numpy cannot unpickle

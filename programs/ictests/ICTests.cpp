@@ -1785,3 +1785,76 @@ TEST(InputParameterTest, AsimovValueDefaultsToStartValue) {
   EXPECT_EQ(parameters.parameters()[1].value(), 1.5);
   EXPECT_EQ(parameters.parameters()[1].asimov_value(), 2.25);
 }
+
+// Optional minimiser bounds ("LowerBound"/"UpperBound", NNMFit's per-parameter
+// "range"). A config naming neither stays unbounded, which is what every config
+// meant before bounds existed.
+TEST(InputParameterTest, BoundsParseAndDefaults) {
+  static constexpr char kJson[] = R"JSON(
+{
+  "Parameter": [
+    { "Name": "free",  "StartValue": 1.0, "StepWidth": 0.1, "Fixed": false, "Constrained": false },
+    { "Name": "both",  "StartValue": 0.5, "StepWidth": 0.1, "LowerBound": 0.0, "UpperBound": 5.0,
+      "Fixed": false, "Constrained": false },
+    { "Name": "lower", "StartValue": 1.0, "StepWidth": 0.1, "LowerBound": 0.0,
+      "Fixed": false, "Constrained": false },
+    { "Name": "upper", "StartValue": 1.0, "StepWidth": 0.1, "UpperBound": 3.0,
+      "Fixed": false, "Constrained": false }
+  ]
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const io::InputParameter parameters(pt.get_child("Parameter"));
+  ASSERT_TRUE(parameters.size() == 4);
+  const auto& p = parameters.parameters();
+
+  EXPECT_FALSE(p[0].lower_bound().has_value());
+  EXPECT_FALSE(p[0].upper_bound().has_value());
+
+  ASSERT_TRUE(p[1].lower_bound().has_value());
+  ASSERT_TRUE(p[1].upper_bound().has_value());
+  EXPECT_EQ(*p[1].lower_bound(), 0.0);
+  EXPECT_EQ(*p[1].upper_bound(), 5.0);
+
+  EXPECT_TRUE(p[2].lower_bound().has_value());
+  EXPECT_FALSE(p[2].upper_bound().has_value());
+
+  EXPECT_FALSE(p[3].lower_bound().has_value());
+  EXPECT_TRUE(p[3].upper_bound().has_value());
+}
+
+// A start value outside its own bounds, or an inverted range, is a config error.
+// Clamping instead would start the fit somewhere the config never asked for --
+// silently, which is the failure mode this whole comparison effort keeps hitting.
+TEST(InputParameterTest, BoundsRejectBadConfigs) {
+  auto parse = [](const char* json) {
+    boost::property_tree::ptree pt;
+    std::istringstream          iss(json);
+    boost::property_tree::read_json(iss, pt);
+    return io::InputParameter(pt.get_child("Parameter"));
+  };
+
+  EXPECT_THROW(parse(R"JSON({"Parameter": [
+    { "Name": "below", "StartValue": -0.5, "StepWidth": 0.1, "LowerBound": 0.0,
+      "Fixed": false, "Constrained": false }]})JSON"),
+               std::invalid_argument);
+
+  EXPECT_THROW(parse(R"JSON({"Parameter": [
+    { "Name": "above", "StartValue": 9.0, "StepWidth": 0.1, "UpperBound": 3.0,
+      "Fixed": false, "Constrained": false }]})JSON"),
+               std::invalid_argument);
+
+  EXPECT_THROW(parse(R"JSON({"Parameter": [
+    { "Name": "inverted", "StartValue": 1.0, "StepWidth": 0.1, "LowerBound": 5.0,
+      "UpperBound": 0.0, "Fixed": false, "Constrained": false }]})JSON"),
+               std::invalid_argument);
+
+  // On a bound exactly is allowed: NNMFit's own fitted PromptNorm sits at 0.0.
+  EXPECT_NO_THROW(parse(R"JSON({"Parameter": [
+    { "Name": "onedge", "StartValue": 0.0, "StepWidth": 0.1, "LowerBound": 0.0,
+      "Fixed": false, "Constrained": false }]})JSON"));
+}
