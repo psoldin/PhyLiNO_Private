@@ -195,11 +195,19 @@ which is the only way the Poisson term measures anything — at its own truth it
 | combined 3D | SAY | moved | cpu | 6.1e-14 |
 | combined 3D | SAY | moved | **metal** | 3.4e-08 |
 | combined 2D (`HEAD`) | Poisson | moved | **metal** | 1.1e-06 |
+| combined 3D | SAY | **all 21 parameters moved** | cpu | 3.2e-16 |
 
 The moved points are `AstroNorm 1.8, ConvNorm 1.15, DeltaGamma 0.05, DOMEff 0.97, BarrH 0.1` (2D)
 and additionally `AstroGamma1 1.5, AstroGamma2 2.9, AstroEBreak 4.6, GalacticNorm0/1 1.2` (3D).
-The 3D moved point is the one that exercises `AstroBPL`, the galactic template, the RA axis and
-the detector gradients simultaneously — everything the defaults-point gates could not see.
+
+The **all-parameters-moved** row is the strongest single check in this table: every one of the 21
+shared parameters off its no-op value at once, so nothing is multiplied by zero. It is the only
+run in which `CRGrad` (0.4) is non-zero — i.e. the only one where the `conv_alt`/`prompt_alt`
+CR-gradient columns contribute at all — and the only one exercising all four Barr slopes and all
+five detector-systematic gradient rows rather than `DOMEfficiency` alone. Reproduce with
+`--set CRGrad=0.4 --set BarrW=-0.15 --set BarrY=0.12 --set BarrZ=-0.05 --set PromptNorm=0.8
+--set MuonNorm=1.3 --set MuonGunNorm=1.2 --set VetoThreshold=0.12 --set IceAbs=1.03
+--set IceScat=0.98 --set HoleIceP0=0.30 --set HoleIceP1=-0.08` on top of the 3D moved point.
 
 **GPU backends.** Metal does not reach the CPU path's ~1e-13 because the flux kernels are FP32.
 The useful way to state its accuracy is **absolute, not relative**: the Metal-vs-CPU difference
@@ -237,12 +245,48 @@ invokes it automatically. Two differences are expected and are not defects: the 
 clipped at 0 by NNMFit's bounds while PhyLiNO, which has no bounds plumbing, may go slightly
 negative.
 
-> **NOT YET RUN — the one gap in the parity coverage.** Everything recorded in this file was
-> gated on Asimov. Real data has never been compared between the two codes, neither the
-> likelihood value nor a converged fit, and it is the only check that exercises the measured
-> histograms (`UseData: true`) and the minimiser end to end. Worth doing since the gradient
-> livetime fix above changed every tracks fit that moves a detector parameter. Owner: the user,
-> deliberately — see the standing rule that data fits are run by hand, not by an agent.
+> Real *detector* data has still never been compared. The minimiser is now gated by the
+> pseudo-experiment run below, so what remains untested here is only the measured histograms
+> themselves (`UseData: true` reading a data parquet). Owner: the user, deliberately — see the
+> standing rule that data fits are run by hand, not by an agent.
+
+## Converged-fit parity on a pseudo-experiment (2026-08-03)
+
+```
+tools/nnmfit_oracle/run_pseudo_fit_parity.sh [OUT_DIR] [SEED]
+```
+
+A Poisson draw on the Asimov prediction is integer-valued by construction, so it is a legitimate
+dataset, and feeding the **same** draw to both codes makes their objectives identical bin for bin.
+This gates what no fixed-point comparison can: the minimiser, the derivatives, and the fitted
+parameter values with their uncertainties. It needs no detector data.
+
+The draw is generated once by `make_pseudo_data.py` and handed to PhyLiNO as per-sample
+`DataCounts` text files and to NNMFit as a `custom_data` / `custom_dataset` pickle — the NNMFit
+branch that uses the array **verbatim without re-fluctuating it** (`nnm_fitter.py:487-501`). Each
+framework drawing its own pseudo-experiment would compare two different datasets and prove
+nothing.
+
+Result at seed 20260803 (combined 2D, SAY, 18 free parameters):
+
+| | value |
+|---|---|
+| PhyLiNO `-2lnL + chi2` | `7839.106994` (converged, EDM 1.9e-05) |
+| `2 ×` NNMFit | `7839.157827` (`ABNORMAL_TERMINATION_IN_LNSRCH`, 805 evaluations) |
+| difference | PhyLiNO **0.0508 lower** |
+
+Every parameter agrees well inside its own fitted uncertainty: 15 of 18 below 0.05σ, and the three
+largest are `PromptNorm` 0.221σ, `AstroNorm` 0.170σ, `SpectralIndex` 0.139σ. `PromptNorm` is the
+known bounds difference — NNMFit clips it at exactly 0.0, PhyLiNO has no bounds plumbing and walks
+to −0.123 — which also accounts for most of the likelihood gap and for the correlated shifts in
+the other two. PhyLiNO reaching the lower minimum while NNMFit's line search gives up is a
+minimiser difference, not an objective difference; the fixed-point gates above already prove the
+objectives agree to 1e-16.
+
+**Two traps when regenerating the draw.** The pickle must be written by *NNMFit's* interpreter —
+one written by a newer numpy carries `numpy._core` references that NNMFit's numpy cannot unpickle
+— and `read_fit_result.py` needs the fit run *without* `--skip_save_config`, or the result carries
+no `settings` block for it to read.
 
 ## Histogram dumps
 
