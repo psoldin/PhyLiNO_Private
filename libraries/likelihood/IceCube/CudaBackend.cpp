@@ -236,7 +236,10 @@ namespace ana::ic {
     for (auto& d : dptrs) args.push_back(&d);           // input device pointers
     args.push_back(const_cast<void*>(params));          // params struct, by value
     args.push_back(&hist_ptr);                           // histogram
-    if (per_event >= 0) args.push_back(&pe_ptr);         // optional per-event
+    // The compiled kernel always declares a per_event parameter (write_pe gates
+    // whether it's touched), so the argument must always be present -- pe_ptr is
+    // 0 when per_event < 0, which the kernel never dereferences in that case.
+    args.push_back(&pe_ptr);                             // per-event (maybe unused)
 
     cu_check(cuLaunchKernel(fn,
                             static_cast<unsigned>(n_groups), 1, 1,

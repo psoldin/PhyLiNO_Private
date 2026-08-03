@@ -4,6 +4,7 @@
 
 #include "IceCube/ICWriteResults.h"
 
+#include <memory>
 #include <stdexcept>
 
 namespace ana::ic {
@@ -23,10 +24,15 @@ namespace ana::ic {
   }
 
   void ICExperimentModule::write_results(Fit& fit, std::string_view name) {
-    if (m_Likelihood == nullptr) {
-      throw std::logic_error("ICExperimentModule::write_results called before create_likelihood");
+    // Use the Fit's own likelihood, not the module-level m_Likelihood cache:
+    // the latter is shared/reassigned by every Fit constructed against this
+    // module (e.g. concurrently from the 2D-scan worker threads), so by the
+    // time write_results runs it may no longer refer to this fit's likelihood.
+    const auto likelihood = std::dynamic_pointer_cast<ICLikelihood>(fit.likelihood());
+    if (likelihood == nullptr) {
+      throw std::logic_error("ICExperimentModule::write_results: fit has no ICLikelihood");
     }
-    result::ic::write_ice_cube_results(fit, *m_Likelihood, *m_InputOptions, name);
+    result::ic::write_ice_cube_results(fit, *likelihood, *m_InputOptions, name);
   }
 
 }  // namespace ana::ic
