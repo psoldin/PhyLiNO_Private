@@ -114,8 +114,12 @@ namespace ana::ic {
   void ICLikelihood::initialize_data(const bool use_data) {
     const auto&         parameters = m_Options->inputOptions().input_parameters().parameters();
     std::vector<double> nominal(params::ic::number_of_parameters());
+    // asimov_value() is the start value unless the config separates the two
+    // ("AsimovValue", NNMFit's analysis.input_params). Separating them is what
+    // makes a fit start away from the truth it has to recover, and what lets a
+    // fixed-point evaluation land somewhere the likelihood is not saturated.
     for (std::size_t i = 0; i < nominal.size(); ++i)
-      nominal[i] = parameters[i].value();
+      nominal[i] = parameters[i].asimov_value();
 
     m_Parameter.reset_parameter(nominal.data());
 

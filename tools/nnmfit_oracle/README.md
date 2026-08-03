@@ -115,6 +115,45 @@ probe point, which makes the Poisson objective trivially 0 on both sides — a s
 absence of a baseline offset, not a parity gate. `--set NAME=VALUE` moves the point (PhyLiNO
 names; translated via the script's `NAME_MAP`).
 
+## The gradient livetime scaling (found 2026-08-03)
+
+NNMFit multiplies every SnowStorm gradient by `livetime_scaling = t_analysis / t_gradients`
+(`snowstorm_gradient.py:193`), reading `t_gradients` out of the config embedded in the gradient
+pickle. The tracks gradients were produced on MC with `livetime = 387231573.49 s` against an
+analysis livetime of `410978234.97 s` — a factor **1.061324187**. `export_nnmfit_inputs.py`
+defaulted `--livetime-scale` to 1.0 and nobody passed it, so `gradients_tracks.txt` carried
+`lt_scale 1.0` and every detector-systematic effect on tracks was 6% too small. The cascade
+gradients were made at the analysis livetime, so they were always correct — which is why only
+tracks disagreed.
+
+**Why every earlier gate missed it.** All the per-bin gates ran at the split values
+(`DOMEff = IceAbs = IceScat = 1`, hole-ice at its split), where `mu_delta` is identically zero and
+the scale factor multiplies nothing. It only appears once a detector parameter moves, and then as
+a smooth few-percent shift — indistinguishable from an interpolation artefact if you are only
+looking at one number. It was caught by the *likelihood value* gate below, at
+`DOMEff = 0.97`: tracks was 2.8% off (Δ = 338.14 in −2lnL) while cscd_cascade and cscd_muon agreed
+to 1e-14 at the same point.
+
+The exporter now derives the factor from the pickle and **refuses to run** without either
+`--analysis-livetime` or an explicit `--livetime-scale`, because silently defaulting to 1.0 is
+what made this invisible:
+
+```
+tools/export_nnmfit_inputs.py gradients \
+    /Users/soldin/Downloads/nnmfit_files/snowstorm_ftp_all.pickle \
+    /Users/soldin/Downloads/nnmfit_files/exported/gradients_tracks.txt \
+    --det-conf IC86_pass2_SnowStorm_v2_tracks --bins 1485 --zenith-bins 33 \
+    --analysis-livetime 410978234.97
+```
+
+Only the header line changes (`lt_scale`); `DetectorSystematics` applies it at runtime, including
+`lt_scale²` on the covariance term. Re-exporting the two cascade files reproduces them byte for
+byte.
+
+**The general lesson**, which is the reason this section exists: a per-bin comparison at the
+configuration's default point cannot see any term that is zero there. Detector systematics, Barr
+slopes and `CRGrad` are all zero at defaults. Gate them at a moved point.
+
 ## Randomized start values
 
 `LLHFit --randomizeSeeds` perturbs the minimizer's start point, the counterpart of NNMFit's

@@ -152,6 +152,30 @@ def export_template(entry, out, bins, zenith_bins):
     print(f"wrote {out}: {bins} bins, template sum {fnum(template.sum())} s^-1")
 
 
+def gradient_livetime(entry, det_conf):
+    """The livetime the gradients were computed at, from the pickle's own settings.
+
+    NNMFit scales every gradient by `t_analysis / t_gradients`
+    (snowstorm_gradient.py:193) and reads `t_gradients` out of the config it
+    embedded in the gradient pickle. The tracks gradients were produced on MC
+    with a livetime 6% shorter than the analysis livetime, so exporting them
+    unscaled silently shrinks every detector-systematic effect -- invisible at
+    the split values, where the gradient term is identically zero, and a ~3%
+    likelihood error as soon as a detector parameter moves.
+
+    Both config layouts NNMFit supports are handled: the newer one nests the
+    per-dataset entries under "datasets", the older one has them at top level.
+    """
+    settings = entry.get("settings")
+    if not settings or "config" not in settings:
+        return None
+    config = settings["config"]
+    datasets = config.get("datasets", config)
+    if det_conf not in datasets or "livetime" not in datasets[det_conf]:
+        return None
+    return float(datasets[det_conf]["livetime"])
+
+
 def export_gradients(entry, out, bins, livetime_scale, zenith_bins):
     missing = [s for s in SYSTEMATICS if s not in entry]
     if missing:
@@ -237,10 +261,20 @@ def main():
         "zenith axis or a single zenith bin.",
     )
     p.add_argument(
+        "--analysis-livetime",
+        type=float,
+        default=None,
+        help="the analysis livetime (seconds) for kind=gradients. The gradient "
+        "livetime is read from the pickle's own embedded config, and the ratio "
+        "becomes NNMFit's livetime_scaling. Required unless --livetime-scale is "
+        "given explicitly.",
+    )
+    p.add_argument(
         "--livetime-scale",
         type=float,
-        default=1.0,
-        help="analysis livetime / gradient livetime (NNMFit livetime_scaling)",
+        default=None,
+        help="analysis livetime / gradient livetime (NNMFit livetime_scaling), "
+        "overriding the value derived from --analysis-livetime",
     )
     p.add_argument(
         "--ra-bins",
@@ -259,7 +293,29 @@ def main():
             sys.exit("kind=galactic needs --ra-bins >= 2")
         export_galactic(entry, args.out_path, args.bins, args.zenith_bins, args.ra_bins)
     else:
-        export_gradients(entry, args.out_path, args.bins, args.livetime_scale, args.zenith_bins)
+        # Never fall back to 1.0 silently: that is exactly what produced a
+        # 6%-too-small gradient term for tracks, undetectable at the split
+        # values where the term vanishes.
+        scale = args.livetime_scale
+        if scale is None:
+            if args.analysis_livetime is None:
+                sys.exit(
+                    "kind=gradients needs --analysis-livetime (the sample's livetime "
+                    "in seconds, as in the PhyLiNO config) so the NNMFit livetime_scaling "
+                    "can be derived, or an explicit --livetime-scale"
+                )
+            t_gradients = gradient_livetime(entry, args.det_conf)
+            if t_gradients is None:
+                sys.exit(
+                    f"cannot read the gradient livetime for '{args.det_conf}' out of the "
+                    f"pickle's embedded settings; pass --livetime-scale explicitly"
+                )
+            scale = args.analysis_livetime / t_gradients
+            print(
+                f"livetime scaling {scale!r} "
+                f"(analysis {args.analysis_livetime!r} / gradients {t_gradients!r})"
+            )
+        export_gradients(entry, args.out_path, args.bins, scale, args.zenith_bins)
 
 
 if __name__ == "__main__":

@@ -26,11 +26,18 @@ def main():
     parser.add_argument("config")
     parser.add_argument("--fix", action="append", nargs=2, default=[],
                         metavar=("NAME", "VALUE"))
+    parser.add_argument("--inject", action="append", nargs=2, default=[],
+                        metavar=("NAME", "VALUE"),
+                        help="value used when generating the Asimov data, "
+                             "independent of --fix (NNMFitter's inject_vars)")
     parser.add_argument("--json", dest="json_path")
     args = parser.parse_args()
 
     config_hdl = AnalysisConfig.from_yaml_files(args.config)
-    fitter = NNMFitter(config_hdl)
+    # inject_vars only reaches the Asimov branch (nnm_fitter.py:373-384), where
+    # it overwrites the variable values the expectation graph is evaluated at.
+    # --fix then pins the *evaluation* point, so the two can differ.
+    fitter = NNMFitter(config_hdl, inject_vars=args.inject or None)
 
     fixed = {name: float(value) for name, value in args.fix}
 
@@ -51,6 +58,7 @@ def main():
         "llh_value": float(llh),
         "point": {k: float(v) for k, v in res_dict.items()},
         "fixed": fixed,
+        "injected": {name: float(value) for name, value in args.inject},
         "analysis_type": config_hdl.analysis_config["analysis_type"],
         "llh": config_hdl.analysis_config["llh"],
     }

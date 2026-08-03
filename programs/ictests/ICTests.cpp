@@ -1757,3 +1757,31 @@ TEST(ParameterSeedingTest, SameSeedSameDraw) {
   EXPECT_EQ(draw(4242), draw(4242));
   EXPECT_NE(draw(4242), draw(4243));
 }
+
+// The Asimov generation point must be separable from the minimiser start value
+// (NNMFit's analysis.input_params vs its minimizer seeds), while a config that
+// omits "AsimovValue" keeps generating Asimov at the start value.
+TEST(InputParameterTest, AsimovValueDefaultsToStartValue) {
+  static constexpr char kJson[] = R"JSON(
+{
+  "Parameter": [
+    { "Name": "legacy",    "StartValue": 1.5, "StepWidth": 0.1, "Fixed": false, "Constrained": false },
+    { "Name": "separated", "StartValue": 1.5, "StepWidth": 0.1, "AsimovValue": 2.25,
+      "Fixed": false, "Constrained": false }
+  ]
+}
+)JSON";
+
+  boost::property_tree::ptree pt;
+  std::istringstream          iss(kJson);
+  boost::property_tree::read_json(iss, pt);
+
+  const io::InputParameter parameters(pt.get_child("Parameter"));
+  ASSERT_TRUE(parameters.size() == 2);
+
+  EXPECT_EQ(parameters.parameters()[0].value(), 1.5);
+  EXPECT_EQ(parameters.parameters()[0].asimov_value(), 1.5);
+
+  EXPECT_EQ(parameters.parameters()[1].value(), 1.5);
+  EXPECT_EQ(parameters.parameters()[1].asimov_value(), 2.25);
+}

@@ -80,7 +80,13 @@ def run(cmd, **kwargs):
 
 
 def build_probe_config(base_config, out_config, overrides, likelihood, use_data):
-    """Every parameter Fixed, values from the base config unless overridden."""
+    """Every parameter Fixed, values from the base config unless overridden.
+
+    The base config's values stay in "AsimovValue", so the Asimov set is
+    generated at the unmodified point while the evaluation happens at the
+    overridden one. That is the only way to give the Poisson term something to
+    measure: evaluated at its own truth it is exactly 0 by construction.
+    """
     with open(base_config) as f:
         cfg = json.load(f)
 
@@ -94,7 +100,10 @@ def build_probe_config(base_config, out_config, overrides, likelihood, use_data)
         raise SystemExit(f"--set named parameters not in {base_config}: {sorted(missing)}")
 
     point = {}
+    asimov_point = {}
     for param in cfg["Parameter"]:
+        asimov_point[param["Name"]] = float(param.get("AsimovValue", param["StartValue"]))
+        param["AsimovValue"] = asimov_point[param["Name"]]
         if param["Name"] in overrides:
             param["StartValue"] = overrides[param["Name"]]
         param["Fixed"] = True
@@ -102,7 +111,7 @@ def build_probe_config(base_config, out_config, overrides, likelihood, use_data)
 
     with open(out_config, "w") as f:
         json.dump(cfg, f, indent=2)
-    return point
+    return point, asimov_point
 
 
 def phylino_llh(probe_config, workdir):
@@ -139,41 +148,60 @@ def nnmfit_parameter_names(nnmfit_config):
     return set(json.loads(out.stdout.strip().splitlines()[-1]))
 
 
-def nnmfit_llh(nnmfit_config, point, workdir):
-    """Evaluate NNMFit's likelihood with every parameter fixed, via
-    nnmfit_eval_llh.py (which asserts do_fit took its evaluate-only branch)."""
+def to_nnmfit_names(point, known, what):
+    """Translate a PhyLiNO parameter point into NNMFit's names.
+
+    Entries whose NNMFit counterpart is not a fit parameter of this config are
+    dropped: PhyLiNO's parameter enum is fixed-size (params::ic), so a config
+    carries names its model does not use -- AstroGamma1/2, AstroEBreak and the
+    galactic norms in a single-power-law, no-galactic setup.
+    """
     unmapped = sorted(set(point) - set(NAME_MAP))
     if unmapped:
         raise SystemExit(f"no NNMFit name known for: {unmapped} (extend NAME_MAP)")
 
-    known = nnmfit_parameter_names(nnmfit_config)
-
-    fixed = {}
+    translated = {}
     skipped = []
     for phylino_name, value in point.items():
         nnmfit_name = NAME_MAP[phylino_name]
         if nnmfit_name not in known:
-            # Not a fit parameter of this NNMFit config -- its model does not
-            # use it. Nothing to pin; the evaluated_only check below still
-            # guarantees no parameter was left free.
             skipped.append(f"{phylino_name} ({nnmfit_name})")
             continue
-        if nnmfit_name in fixed and fixed[nnmfit_name] != value:
+        if nnmfit_name in translated and translated[nnmfit_name] != value:
             raise SystemExit(
                 f"{phylino_name} and another parameter both map to NNMFit's "
                 f"'{nnmfit_name}' but hold different values "
-                f"({value} vs {fixed[nnmfit_name]}); NNMFit has only one such "
-                f"parameter, so the point is not representable there"
+                f"({value} vs {translated[nnmfit_name]}); NNMFit has only one "
+                f"such parameter, so the point is not representable there"
             )
-        fixed[nnmfit_name] = value
+        translated[nnmfit_name] = value
 
     if skipped:
-        print(f"not fit parameters of this NNMFit config, skipped: {sorted(skipped)}")
+        print(f"{what}: not fit parameters of this NNMFit config, skipped: {sorted(skipped)}")
+
+    return translated
+
+
+def nnmfit_llh(nnmfit_config, point, asimov_point, workdir):
+    """Evaluate NNMFit's likelihood with every parameter fixed, via
+    nnmfit_eval_llh.py (which asserts do_fit took its evaluate-only branch).
+
+    asimov_point is passed as --inject, i.e. the point the Asimov data is built
+    at, mirroring PhyLiNO's "AsimovValue". When it equals the evaluation point
+    nothing is injected, so the command stays what it was.
+    """
+    known = nnmfit_parameter_names(nnmfit_config)
+
+    fixed = to_nnmfit_names(point, known, "evaluation point")
+    injected = to_nnmfit_names(asimov_point, known, "Asimov point")
 
     out_json = os.path.join(workdir, "nnmfit_evaluated.json")
     cmd = [NNMFIT_PYTHON, NNMFIT_EVAL_LLH, nnmfit_config, "--json", out_json]
     for name, value in sorted(fixed.items()):
         cmd += ["--fix", name, repr(value)]
+    if injected != fixed:
+        for name, value in sorted(injected.items()):
+            cmd += ["--inject", name, repr(value)]
     run(cmd)
 
     with open(out_json) as handle:
@@ -204,11 +232,17 @@ def main():
     print(f"workdir: {workdir}")
 
     probe_config = os.path.join(workdir, "probe.json")
-    point = build_probe_config(args.phylino_config, probe_config, overrides,
-                               args.likelihood, args.use_data)
+    point, asimov_point = build_probe_config(args.phylino_config, probe_config,
+                                             overrides, args.likelihood, args.use_data)
+
+    moved = {k: (asimov_point[k], v) for k, v in point.items() if asimov_point[k] != v}
+    if moved:
+        print("evaluating away from the Asimov point:")
+        for name, (truth, value) in sorted(moved.items()):
+            print(f"  {name}: Asimov {truth} -> evaluated at {value}")
 
     ours = phylino_llh(probe_config, workdir)
-    theirs = nnmfit_llh(args.nnmfit_config, point, workdir)
+    theirs = nnmfit_llh(args.nnmfit_config, point, asimov_point, workdir)
 
     expected = 2.0 * theirs
     deviation = abs(ours - expected) / max(1.0, abs(expected))

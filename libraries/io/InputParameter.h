@@ -141,7 +141,13 @@ namespace io {
         // the start value and the step width, which is what every config meant
         // before the two were separable, so existing configs keep their pulls.
         , m_PriorValue(parameter.get<double>("PriorValue", m_Value))
-        , m_PriorWidth(parameter.get<double>("PriorWidth", m_Uncertainty)) {
+        , m_PriorWidth(parameter.get<double>("PriorWidth", m_Uncertainty))
+        // The point the Asimov data is generated at, NNMFit's
+        // analysis.input_params / run_fit.py --inject. Optional: it defaults to
+        // the start value, which is what the Asimov set was always built from,
+        // so existing configs are unaffected. Separating the two is what lets a
+        // fit (or a fixed-point evaluation) sit somewhere other than the truth.
+        , m_AsimovValue(parameter.get<double>("AsimovValue", m_Value)) {
       }
 
       /**
@@ -164,11 +170,19 @@ namespace io {
       /** Width (sigma) of the Gaussian pull on a constrained parameter. */
       [[nodiscard]] double prior_width() const noexcept { return m_PriorWidth; }
 
+      /**
+       * Value used when generating the Asimov data set ("AsimovValue"),
+       * defaulting to the start value. Only the data generation reads it; the
+       * minimizer always starts from value().
+       */
+      [[nodiscard]] double asimov_value() const noexcept { return m_AsimovValue; }
+
      private:
       double m_Value;        ///< The start value of the parameter.
       double m_Uncertainty;  ///< The minimiser step width.
       double m_PriorValue;   ///< Central value of the Gaussian pull.
       double m_PriorWidth;   ///< Width of the Gaussian pull.
+      double m_AsimovValue;  ///< Value the Asimov data is generated at.
     };
   };
 
