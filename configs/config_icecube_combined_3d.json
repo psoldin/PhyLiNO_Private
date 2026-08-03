@@ -114,28 +114,33 @@
       "StartValue": 1.77,
       "StepWidth": 0.1,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0,
+      "UpperBound": 5.0
     },
     {
       "Name": "SpectralIndex",
       "StartValue": 2.4,
       "StepWidth": 0.1,
       "Fixed": true,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 1.0
     },
     {
       "Name": "ConvNorm",
       "StartValue": 1.0,
       "StepWidth": 0.1,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0
     },
     {
       "Name": "PromptNorm",
       "StartValue": 0.5,
       "StepWidth": 0.1,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0
     },
     {
       "Name": "BarrH",
@@ -144,7 +149,9 @@
       "PriorValue": 0.0,
       "PriorWidth": 0.15,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": -0.8,
+      "UpperBound": 0.8
     },
     {
       "Name": "BarrW",
@@ -153,7 +160,9 @@
       "PriorValue": 0.0,
       "PriorWidth": 0.4,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": -0.6,
+      "UpperBound": 0.6
     },
     {
       "Name": "BarrY",
@@ -162,7 +171,9 @@
       "PriorValue": 0.0,
       "PriorWidth": 0.3,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": -0.6,
+      "UpperBound": 0.6
     },
     {
       "Name": "BarrZ",
@@ -171,7 +182,9 @@
       "PriorValue": 0.0,
       "PriorWidth": 0.12,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": -0.244,
+      "UpperBound": 0.6
     },
     {
       "Name": "CRGrad",
@@ -180,14 +193,18 @@
       "PriorValue": 0.0,
       "PriorWidth": 1.0,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": -1.0,
+      "UpperBound": 2.0
     },
     {
       "Name": "DeltaGamma",
       "StartValue": 0.0,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": -1.0,
+      "UpperBound": 1.0
     },
     {
       "Name": "MuonNorm",
@@ -196,91 +213,113 @@
       "PriorValue": 1.0,
       "PriorWidth": 0.5,
       "Fixed": false,
-      "Constrained": true
+      "Constrained": true,
+      "LowerBound": 0.0
     },
     {
       "Name": "MuonGunNorm",
       "StartValue": 1.0,
       "StepWidth": 0.1,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0
     },
     {
       "Name": "VetoThreshold",
       "StartValue": 0.0,
       "StepWidth": 0.1,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": -1.301,
+      "UpperBound": 1.301
     },
     {
       "Name": "DOMEff",
       "StartValue": 1.0,
       "StepWidth": 0.02,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1
     },
     {
       "Name": "IceAbs",
       "StartValue": 1.0,
       "StepWidth": 0.02,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1
     },
     {
       "Name": "IceScat",
       "StartValue": 1.0,
       "StepWidth": 0.02,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1
     },
     {
       "Name": "HoleIceP0",
       "StartValue": 0.24901831812365854,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": -0.1,
+      "UpperBound": 0.5980366362473171
     },
     {
       "Name": "HoleIceP1",
       "StartValue": -0.05678798504997925,
       "StepWidth": 0.02,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": -0.1135759700999585,
+      "UpperBound": 0.0
     },
     {
       "Name": "GalacticNorm0",
       "StartValue": 1.0,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0
     },
     {
       "Name": "GalacticNorm1",
       "StartValue": 1.0,
       "StepWidth": 0.05,
       "Fixed": true,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 0.0
     },
     {
       "Name": "AstroGamma1",
       "StartValue": 1.31,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": -10.0,
+      "UpperBound": 3.0
     },
     {
       "Name": "AstroGamma2",
       "StartValue": 2.74,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 2.0,
+      "UpperBound": 4.0
     },
     {
       "Name": "AstroEBreak",
       "StartValue": 4.4,
       "StepWidth": 0.05,
       "Fixed": false,
-      "Constrained": false
+      "Constrained": false,
+      "LowerBound": 3.6,
+      "UpperBound": 5.0
     }
   ]
 }

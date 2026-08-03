@@ -54,9 +54,25 @@ def main():
     parser.add_argument("phylino_config")
     parser.add_argument("nnmfit_config")
     parser.add_argument("out_config")
+    parser.add_argument(
+        "--also-from",
+        action="append",
+        default=[],
+        metavar="NNMFIT_CONFIG",
+        help="additional NNMFit config to take ranges from, for parameters the "
+        "primary one does not define (a single-power-law config has no "
+        "gamma_1/gamma_2/e_break, a 2D one no cringefits_norm). The primary "
+        "config always wins where both define a parameter -- astro_norm is "
+        "[0, None] in the 2D config but [0, 5] in the 3D one.",
+    )
     args = parser.parse_args()
 
     _, bounds = AnalysisConfig.from_yaml_files(args.nnmfit_config).get_params_and_bounds()
+    for extra in args.also_from:
+        _, extra_bounds = AnalysisConfig.from_yaml_files(extra).get_params_and_bounds()
+        for name, value in extra_bounds.items():
+            bounds.setdefault(name, value)
+
     cfg = json.load(open(args.phylino_config))
 
     applied, skipped = 0, []

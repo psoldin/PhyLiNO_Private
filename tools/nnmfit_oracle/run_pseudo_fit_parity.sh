@@ -13,6 +13,9 @@
 #   NNMFit  : analysis_type "custom_data" + "custom_dataset" pickle, the branch
 #             that uses the array verbatim without re-fluctuating it
 #
+# NNMFit's parameter ranges are copied onto the PhyLiNO config as well
+# (apply_nnmfit_bounds.py), so the two minimisers explore the same region.
+#
 # Usage: tools/nnmfit_oracle/run_pseudo_fit_parity.sh [OUT_DIR] [SEED]
 set -euo pipefail
 
@@ -30,7 +33,9 @@ LIKELIHOOD="${LIKELIHOOD:-SAY}"
 mkdir -p "$OUT_DIR"
 
 echo "=== Stage 1: Asimov prediction at the truth point (every parameter fixed) ==="
-"$HERE/make_probe_config.py" "$PHYLINO_CONFIG" "$OUT_DIR/truth.json"
+# Called through an interpreter rather than relying on the executable bit: not
+# every script in this directory carries it.
+python3 "$HERE/make_probe_config.py" "$PHYLINO_CONFIG" "$OUT_DIR/truth.json"
 (cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/truth.json" --fitOnly --silent)
 mv "$OUT_DIR/Output.json" "$OUT_DIR/truth_output.json"
 
@@ -51,8 +56,17 @@ cfg["IceCube"]["Likelihood"] = likelihood
 cfg["IceCube"]["Backend"] = "cpu"
 for name, sample in cfg["IceCube"]["Samples"].items():
     sample["DataCounts"] = f"{out_dir}/pseudo/pseudo_{name}.txt"
-json.dump(cfg, open(f"{out_dir}/pseudo_fit_phylino.json", "w"), indent=2)
+json.dump(cfg, open(f"{out_dir}/pseudo_fit_unbounded.json", "w"), indent=2)
 EOF
+
+# NNMFit bounds every fit variable, so a comparison against an unbounded PhyLiNO
+# fit measures the bounds difference on top of everything else: without this the
+# minima differed by 0.05 in -2lnL and PromptNorm by 0.22 sigma, purely because
+# PhyLiNO could reach a region NNMFit could not. Applying the same ranges brings
+# that to 1.2e-05 and 0.002 sigma. A config that already carries bounds is
+# unaffected -- the values written here are the same ones.
+"$PY" "$HERE/apply_nnmfit_bounds.py" \
+    "$OUT_DIR/pseudo_fit_unbounded.json" "$NNMFIT_CONFIG" "$OUT_DIR/pseudo_fit_phylino.json"
 (cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/pseudo_fit_phylino.json" --fitOnly --silent)
 mv "$OUT_DIR/Output.json" "$OUT_DIR/phylino_fit.json"
 
@@ -69,8 +83,12 @@ EOF
 # --use_default_param_seeds: NNMFit randomizes its seeds by default, and only a
 # shared start point makes the two trajectories comparable.
 "$PY" "$RUN_FIT" --configs "$OUT_DIR/pseudo_fit_nnmfit.yaml" \
-    -o "$OUT_DIR/nnmfit_fit.pickle" --use_default_param_seeds --skip_save_config
-"$HERE/read_fit_result.py" "$OUT_DIR/nnmfit_fit.pickle" --json "$OUT_DIR/nnmfit_fit.json" >/dev/null
+    -o "$OUT_DIR/nnmfit_fit.pickle" --use_default_param_seeds
+# NOT --skip_save_config: that omits the "settings" block, and read_fit_result.py
+# reads analysis_type/llh out of it (TypeError: 'NoneType' object is not subscriptable).
+# NNMFit's interpreter: the result pickle holds numpy arrays its numpy wrote.
+"$PY" "$HERE/read_fit_result.py" "$OUT_DIR/nnmfit_fit.pickle" \
+    --json "$OUT_DIR/nnmfit_fit.json" >/dev/null
 
 echo
 echo "=== Stage 5: diff ==="
