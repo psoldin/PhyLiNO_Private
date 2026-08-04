@@ -42,19 +42,8 @@ namespace ana {
 
     // Initialize the likelihood of the selected experiment. Each Fit builds its
     // own, so this is safe to run concurrently across scan workers -- unlike
-    // the factory call below, it touches no shared ROOT state.
+    // the factory call in setup_minimizer(), it touches no shared ROOT state.
     m_Likelihood = m_Module->create_likelihood(m_Options);
-
-    // ROOT::Math::Factory::CreateMinimizer goes through ROOT's plugin manager,
-    // which is not safe to enter from multiple threads at once; that is the
-    // only part of this constructor that needs serializing; everything else
-    // here operates on this Fit's own state and may run in parallel with other
-    // scan workers building their Fits at the same time.
-    {
-      static std::mutex mutex;
-      std::unique_lock  lock{mutex};
-      m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
-    }
 
     // Initialize the functor object
     m_Functor = std::make_shared<ROOT::Math::Functor>(m_Likelihood.get(),
@@ -71,8 +60,18 @@ namespace ana {
     const bool  randomize        = input_options.randomize_seeds();
     const auto& input_parameters = input_options.input_parameters();
 
-    m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(
-        ROOT::Math::Factory::CreateMinimizer("Minuit2", input_options.minimizer_algo()));
+    // ROOT::Math::Factory::CreateMinimizer goes through ROOT's plugin manager,
+    // which is not safe to enter from multiple threads at once. This is the
+    // only shared ROOT state the whole setup touches, and it is reached both
+    // when a Fit is built and on every restart, so the lock lives here rather
+    // than around the constructor: scan workers build and restart their fits
+    // concurrently, and everything else below is this Fit's own state.
+    {
+      static std::mutex mutex;
+      std::unique_lock  lock{mutex};
+      m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(
+          ROOT::Math::Factory::CreateMinimizer("Minuit2", input_options.minimizer_algo()));
+    }
     if (!m_Minimizer)
       throw std::runtime_error("Fit: ROOT has no Minuit2 minimizer called '" + input_options.minimizer_algo() + "'");
 
