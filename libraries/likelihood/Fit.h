@@ -7,6 +7,7 @@
 // STL includes
 #include <chrono>
 #include <memory>
+#include <vector>
 
 // ROOT includes
 #include <Math/Factory.h>
@@ -50,7 +51,16 @@ namespace ana {
 
     std::shared_ptr<Likelihood> m_Likelihood;
 
-    void setup_minimizer();
+    /**
+     * Build m_Minimizer and declare every parameter on it.
+     *
+     * `start_override`, when given, replaces the configured start values --
+     * that is how a restart resumes from where the previous Migrad stopped.
+     * The minimizer object itself is always new: reusing one that stalled
+     * carries its broken covariance into the next attempt, which measurably
+     * ends worse than starting a fresh one at the same point.
+     */
+    void setup_minimizer(const std::vector<double>* start_override = nullptr);
   };
 
 }  // namespace ana

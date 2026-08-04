@@ -86,6 +86,32 @@ namespace io {
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
 
+    /**
+     * How often a Migrad that reported failure is restarted, each time on a
+     * freshly built minimizer seeded where the previous attempt stopped
+     * (--fitRetries, default 3). See Fit::minimize() for the measurements.
+     *
+     * Each restart costs a full Migrad, so this is capped rather than looped
+     * until convergence; 0 disables the loop.
+     */
+    [[nodiscard]] int fit_retries() const noexcept { return m_FitRetries; }
+
+    /**
+     * Minuit2 strategy (--minuitStrategy, default 1). 2 buys more accurate
+     * numerical derivatives and more frequent Hessian refreshes for roughly
+     * twice the function calls, which is the other standard answer to a Migrad
+     * that stalls in a line search.
+     */
+    [[nodiscard]] int minuit_strategy() const noexcept { return m_MinuitStrategy; }
+
+    /**
+     * Which Minuit2 algorithm the fit runs (--minimizerAlgo, default "Migrad").
+     * "Combined" is MnCombinedMinimizer: Migrad, and on failure Simplex followed
+     * by Migrad again. Simplex needs no derivatives, so it leaves a stalled
+     * point instead of rebuilding a Hessian at it.
+     */
+    [[nodiscard]] const std::string& minimizer_algo() const noexcept { return m_MinimizerAlgo; }
+
     /** Result output format ("json" or "protobuf"), as passed via --output-format. */
     [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
 
@@ -118,6 +144,9 @@ namespace io {
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
+    int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
+    int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
+    std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 
     std::string m_ConfigFile; /**< The configuration file path. */
