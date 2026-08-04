@@ -25,11 +25,11 @@ namespace io::ic {
     arrow::Result<std::shared_ptr<arrow::Table>> read_parquet_file(const std::string& filename) {
       ARROW_ASSIGN_OR_RAISE(auto input, arrow::io::ReadableFile::Open(filename));
       // std::unique_ptr<parquet::arrow::FileReader> reader;
-      ARROW_ASSIGN_OR_RAISE(auto reader,
-                            parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
-      // std::unique_ptr<parquet::arrow::FileReader> reader;
-      // ARROW_RETURN_NOT_OK(
-      //     parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
+      // ARROW_ASSIGN_OR_RAISE(auto reader,
+      //                       parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
+      std::unique_ptr<parquet::arrow::FileReader> reader;
+      ARROW_RETURN_NOT_OK(
+          parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
 
       std::shared_ptr<arrow::Table> table;
       ARROW_RETURN_NOT_OK(reader->ReadTable(&table));

@@ -24,10 +24,6 @@ namespace ana {
     , m_FitDuration(0)
     , m_Converged(false)
     , m_FitPerformed(false) {
-    // Lock the mutex to ensure that the minimizer is not created in parallel due to ROOT limitations
-    static std::mutex mutex;
-    std::unique_lock  lock{mutex};
-
 #ifdef _OPENMP
     // Process-wide: OpenMP has no per-object thread pool, unlike the
     // std::async sample-level concurrency in ICLikelihood, which is gated
@@ -44,8 +40,21 @@ namespace ana {
       throw std::invalid_argument("Experiment " + m_Module->name() + " expects " + std::to_string(n_parameter) + " parameters, but the config file provides " + std::to_string(n_config));
     }
 
-    // Initialize the likelihood of the selected experiment
+    // Initialize the likelihood of the selected experiment. Each Fit builds its
+    // own, so this is safe to run concurrently across scan workers -- unlike
+    // the factory call below, it touches no shared ROOT state.
     m_Likelihood = m_Module->create_likelihood(m_Options);
+
+    // ROOT::Math::Factory::CreateMinimizer goes through ROOT's plugin manager,
+    // which is not safe to enter from multiple threads at once; that is the
+    // only part of this constructor that needs serializing; everything else
+    // here operates on this Fit's own state and may run in parallel with other
+    // scan workers building their Fits at the same time.
+    {
+      static std::mutex mutex;
+      std::unique_lock  lock{mutex};
+      m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
+    }
 
     // Initialize the functor object
     m_Functor = std::make_shared<ROOT::Math::Functor>(m_Likelihood.get(),
