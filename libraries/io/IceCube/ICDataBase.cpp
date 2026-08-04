@@ -15,6 +15,7 @@
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <arrow/table.h>
+#include <arrow/util/config.h>  // ARROW_VERSION_MAJOR, for the OpenFile signature below
 
 #include <parquet/arrow/reader.h>
 
@@ -24,12 +25,16 @@ namespace io::ic {
 
     arrow::Result<std::shared_ptr<arrow::Table>> read_parquet_file(const std::string& filename) {
       ARROW_ASSIGN_OR_RAISE(auto input, arrow::io::ReadableFile::Open(filename));
-      // std::unique_ptr<parquet::arrow::FileReader> reader;
-      // ARROW_ASSIGN_OR_RAISE(auto reader,
-      //                       parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
+
+      // Arrow 19 replaced the out-parameter form of parquet::arrow::OpenFile
+      // with one returning a Result. Both are in use here: the HPC cluster
+      // builds against an older Arrow than a current Homebrew install.
+#if ARROW_VERSION_MAJOR >= 19
+      ARROW_ASSIGN_OR_RAISE(auto reader, parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
+#else
       std::unique_ptr<parquet::arrow::FileReader> reader;
-      ARROW_RETURN_NOT_OK(
-          parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
+      ARROW_RETURN_NOT_OK(parquet::arrow::OpenFile(input, arrow::default_memory_pool(), &reader));
+#endif
 
       std::shared_ptr<arrow::Table> table;
       ARROW_RETURN_NOT_OK(reader->ReadTable(&table));
