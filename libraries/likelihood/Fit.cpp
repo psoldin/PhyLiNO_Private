@@ -65,7 +65,7 @@ namespace ana {
     setup_minimizer();
   }
 
-  void Fit::setup_minimizer(const std::vector<double>* start_override) {
+  void Fit::setup_minimizer(const std::vector<double>* start_override, const std::vector<bool>* fixed_override) {
     const auto& input_options    = m_Options->inputOptions();
     const bool  silent           = input_options.silent();
     const bool  randomize        = input_options.randomize_seeds();
@@ -119,10 +119,14 @@ namespace ana {
       const std::optional<double>& lower = parameters[i].lower_bound();
       const std::optional<double>& upper = parameters[i].upper_bound();
 
+      // A parameter the caller fixed is a constraint, not a start point: its
+      // value is the point being evaluated and must be reseeded exactly.
+      const bool fixed_here = fixed_override != nullptr && (*fixed_override)[i];
+
       // Migrad can leave a parameter sitting exactly on a limit, where Minuit2's
       // internal arcsin transformation is singular -- reseeding a restart there
       // would hand the next attempt an immovable parameter.
-      if (start_override != nullptr && (lower || upper)) {
+      if (start_override != nullptr && !fixed_here && (lower || upper)) {
         const double margin = 1.0e-3 * parameters[i].uncertainty();
         if (lower) start = std::max(start, *lower + margin);
         if (upper) start = std::min(start, *upper - margin);
@@ -173,6 +177,14 @@ namespace ana {
     }
 
     for (std::size_t i = 0; i < parameters.size(); ++i) {
+      // What the caller fixed on the previous minimizer outranks the module's
+      // opinion: a scan point fixes its scanned parameters exactly this way,
+      // and freeing one here would turn that point into a free fit.
+      if (fixed_override != nullptr && (*fixed_override)[i]) {
+        m_Minimizer->FixVariable(i);
+        continue;
+      }
+
       if (m_Module->keep_parameter_free(i))
         continue;
 
@@ -214,11 +226,18 @@ namespace ana {
     for (int attempt = 1; !m_Converged && attempt <= retries; ++attempt) {
       const std::vector<double> resume(m_Minimizer->X(), m_Minimizer->X() + n_parameters);
 
+      // Which variables are fixed is read off the minimizer rather than the
+      // config: the scans fix their scanned parameters on it directly, and a
+      // rebuild from the config alone would free them.
+      std::vector<bool> was_fixed(n_parameters);
+      for (std::size_t i = 0; i < n_parameters; ++i)
+        was_fixed[i] = m_Minimizer->IsFixedVariable(static_cast<unsigned int>(i));
+
       if (!m_Options->inputOptions().silent())
         std::cout << "Migrad did not converge (EDM " << m_Minimizer->Edm() << "); restart " << attempt << " of " << retries
                   << " from its last point\n";
 
-      setup_minimizer(&resume);
+      setup_minimizer(&resume, &was_fixed);
       m_Converged = m_Minimizer->Minimize();
     }
 

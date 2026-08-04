@@ -59,8 +59,15 @@ namespace ana {
      * The minimizer object itself is always new: reusing one that stalled
      * carries its broken covariance into the next attempt, which measurably
      * ends worse than starting a fresh one at the same point.
+     *
+     * `fixed_override` carries over which variables were fixed on the previous
+     * minimizer, which is not the same set the config declares: the scans fix
+     * the two scanned parameters on the minimizer itself, and a rebuild that
+     * only replayed the config would quietly free them and turn a scan point
+     * into a free fit.
      */
-    void setup_minimizer(const std::vector<double>* start_override = nullptr);
+    void setup_minimizer(const std::vector<double>* start_override = nullptr,
+                         const std::vector<bool>*   fixed_override = nullptr);
   };
 
 }  // namespace ana
