@@ -7,7 +7,7 @@ target_include_directories(ICTests PRIVATE ${Boost_INCLUDE_DIR})
 
 # The scan refinement is header-only and pulls in nothing from the fit, so its
 # tests are a separate, fast target.
-add_executable(AdaptiveGridTests AdaptiveGridTests.cpp)
+add_executable(AdaptiveGridTests AdaptiveGridTests.cpp AdaptiveScan1DTests.cpp ScanSeedsTests.cpp)
 target_link_libraries(AdaptiveGridTests PRIVATE GTest::gtest_main)
 target_include_directories(AdaptiveGridTests PRIVATE ${CMAKE_SOURCE_DIR}/programs/LLHFit)
 

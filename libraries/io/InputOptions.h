@@ -69,6 +69,19 @@ namespace io {
      */
     [[nodiscard]] int scan_workers() const noexcept { return m_ScanWorkers; }
 
+    /**
+     * Start each scan fit from the converged parameters of the nearest scan
+     * point already fitted, instead of from the configured start values
+     * (--scanWarmStart, on by default). Neighbouring scan points differ only in
+     * the scanned parameter, so the previous point's nuisance parameters leave
+     * the minimizer close to the answer and it spends its iterations polishing
+     * rather than travelling.
+     *
+     * Ignored when --randomizeSeeds is given: that option exists to spread the
+     * start points on purpose.
+     */
+    [[nodiscard]] bool scan_warm_start() const noexcept { return m_ScanWarmStart; }
+
     [[nodiscard]] const boost::property_tree::ptree& config_tree() const noexcept { return m_ConfigTree; }
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
@@ -100,6 +113,7 @@ namespace io {
     bool   m_UseMultiThreading;      /**< Flag indicating if the fit may use multiple threads. */
     int    m_MultiThreadingCores{-1}; /**< OpenMP team size; -1 keeps the environment default. */
     int    m_ScanWorkers{1};          /**< Grid points the 2D scan fits concurrently. */
+    bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
