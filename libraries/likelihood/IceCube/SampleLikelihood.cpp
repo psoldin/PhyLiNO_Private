@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <fstream>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -198,8 +199,11 @@ namespace ana::ic {
     if (cfg.wants_template())
       m_Template.emplace(cfg.mc_binning, cfg.template_file, cfg.template_norm_index, cfg.livetime);
 
+    // The bin scale is empty unless the sample reuses gradients exported from the
+    // unfiltered sample under a topology cut, in which case ICDataBase measured
+    // the surviving weight fraction per bin.
     if (!cfg.gradient_file.empty())
-      m_Systematics.emplace(cfg.mc_binning, cfg.gradient_file);
+      m_Systematics.emplace(cfg.mc_binning, cfg.gradient_file, std::span<const double>(sample.topology_bin_fraction));
 
     // Galactic templates are already 3D: NNMFit's histogram components are never
     // binned, so the exported file carries the analysis binning's RA structure.

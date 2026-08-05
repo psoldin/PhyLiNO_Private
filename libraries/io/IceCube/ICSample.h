@@ -59,6 +59,13 @@ namespace io::ic {
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;
 
+    // Fraction of this bin's nominal MC weight that survived the sample's
+    // topology cut, one entry per MC bin; empty when the sample has no cut.
+    // Only consumer: DetectorSystematics, which rescales gradients exported from
+    // the unfiltered sample. Not a reweighting of the prediction -- the per-event
+    // columns above are already cut, so they need no correction.
+    std::vector<double> topology_bin_fraction;
+
     // --- CSR bucket layout, built by sort_into_bins() ---
     // After sorting, events of analysis bin b occupy the contiguous range
     // [bin_offsets[b], bin_offsets[b+1]) in every per-event column, so flux

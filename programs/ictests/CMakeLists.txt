@@ -1,5 +1,8 @@
 add_executable(ICTests ICTests.cpp)
-target_link_libraries(ICTests PRIVATE io icecube GTest::gtest_main)
+# Arrow/Parquet are PRIVATE to `icecube`; ICTests links them itself to write the
+# small parquet fixtures the ICDataBase read tests load.
+target_link_libraries(ICTests PRIVATE io icecube GTest::gtest_main
+                      Arrow::arrow_shared Parquet::parquet_shared)
 # io's Boost include dir is PRIVATE (not propagated to consumers); ICTests
 # needs it directly to include boost/property_tree headers for the
 # parse_samples() test. Boost itself is already a link dependency of io.

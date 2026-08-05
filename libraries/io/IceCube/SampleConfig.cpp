@@ -107,6 +107,48 @@ namespace io::ic {
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' has a \"Template\" entry but declares neither 'muontemplate' nor 'muon'");
 
+      if (sample.scale_gradients_to_topology && !sample.filters_topology())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' sets Gradients.ScaleToTopology but has no topology cut; there is nothing to "
+                                 "rescale to and the flag would hide a later config mistake");
+      if (sample.scale_gradients_to_topology && sample.gradient_file.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' sets Gradients.ScaleToTopology but no Gradients.File");
+
+      if (sample.filters_topology() && sample.topology_branch.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' has Topology.Values but an empty Topology.Branch");
+      if (!sample.topology_branch.empty() && !sample.filters_topology())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' has a Topology.Branch but no Topology.Values; the cut would keep nothing");
+
+      // Every pre-binned input was exported from the full sample. Cutting events
+      // out of the parquet without re-exporting them would leave the templates,
+      // the gradients and the counts describing a selection the prediction no
+      // longer has, which is a normalisation error no gate downstream can see.
+      if (sample.filters_topology()) {
+        if (!sample.template_file.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines a topology cut with a muon template; the template was exported from "
+                                   "the unfiltered sample and would no longer match. Re-export it, then drop this "
+                                   "check for that file");
+        if (!sample.gradient_file.empty() && !sample.scale_gradients_to_topology)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines a topology cut with a SnowStorm gradient file; the gradients were "
+                                   "exported from the unfiltered sample and would no longer match. Re-export them, "
+                                   "or set Gradients.ScaleToTopology to rescale them by each bin's surviving "
+                                   "weight fraction (an approximation, see SampleConfig)");
+        if (!sample.galactic.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines a topology cut with a galactic template; the template was exported "
+                                   "from the unfiltered sample and would no longer match. Re-export it, then drop "
+                                   "this check for that file");
+        if (!sample.data_counts_path.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines a topology cut with pre-binned \"DataCounts\"; the counts are not "
+                                   "filtered by this framework, so the cut would only apply to the prediction");
+      }
+
       if (!sample.galactic.empty() && !has_ra_axis(sample.binning))
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' declares a galactic template but its binning has no Ra axis; the "
@@ -121,7 +163,8 @@ namespace io::ic {
     }
 
     // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
-    // "Gradients": { "File": ... } and "Oscillations": { "File": ..., "Branch": ... },
+    // "Gradients": { "File": ... }, "Oscillations": { "File": ..., "Branch": ... },
+    // "Topology": { "Branch": ..., "Values": "1, 2" } and "Galactic": { ... },
     // all optional.
     void parse_component_files(const boost::property_tree::ptree& node, SampleConfig& sample) {
       if (const auto tmpl = node.get_child_optional("Template")) {
@@ -137,12 +180,32 @@ namespace io::ic {
                                    "' is not a known template norm (expected MuonNorm or MuonGunNorm)");
       }
 
-      if (const auto gradients = node.get_child_optional("Gradients"))
-        sample.gradient_file = gradients->get<std::string>("File");
+      if (const auto gradients = node.get_child_optional("Gradients")) {
+        sample.gradient_file                = gradients->get<std::string>("File");
+        sample.scale_gradients_to_topology  = gradients->get<bool>("ScaleToTopology", false);
+      }
 
       if (const auto osc = node.get_child_optional("Oscillations")) {
         sample.oscillation_file   = osc->get<std::string>("File");
         sample.oscillation_branch = osc->get<std::string>("Branch", sample.oscillation_branch);
+      }
+
+      if (const auto topology = node.get_child_optional("Topology")) {
+        sample.topology_branch = topology->get<std::string>("Branch");
+
+        for (const std::string& value : split_trim(topology->get<std::string>("Values"), ',')) {
+          std::size_t consumed = 0;
+          int         parsed   = 0;
+          try {
+            parsed = std::stoi(value, &consumed);
+          } catch (const std::exception&) {
+            consumed = 0;
+          }
+          if (consumed != value.size())
+            throw std::runtime_error("parse_samples: sample '" + sample.name + "' Topology.Values entry '" + value +
+                                     "' is not an integer class label");
+          sample.topology_values.push_back(parsed);
+        }
       }
 
       if (const auto galactic = node.get_child_optional("Galactic")) {
@@ -196,16 +259,16 @@ namespace io::ic {
             "parse_samples: sample '" + sample_name + "' references unknown binning '" + binning_name + "'");
 
       samples.push_back(SampleConfig {
-          .name       = sample_name,
-          .enabled    = sample_node.get<bool>("enabled", true),
-          .binning    = it->second,
-          .mc_binning = drop_ra_axis(it->second),
-          .parquet    = sample_node.get<std::string>("parquet"),
-          .data_path  = sample_node.get<std::string>("data", ""),
+          .name             = sample_name,
+          .enabled          = sample_node.get<bool>("enabled", true),
+          .binning          = it->second,
+          .mc_binning       = drop_ra_axis(it->second),
+          .parquet          = sample_node.get<std::string>("parquet"),
+          .data_path        = sample_node.get<std::string>("data", ""),
           .data_counts_path = sample_node.get<std::string>("DataCounts", ""),
-          .livetime   = sample_node.get<double>("livetime", 1.0),
-          .components = split_trim(sample_node.get<std::string>("components", ""), ','),
-          .branches   = parse_branches(sample_node),
+          .livetime         = sample_node.get<double>("livetime", 1.0),
+          .components       = split_trim(sample_node.get<std::string>("components", ""), ','),
+          .branches         = parse_branches(sample_node),
       });
 
       SampleConfig& sample = samples.back();

@@ -1,5 +1,6 @@
 #include "DetectorSystematics.h"
 #include "IceCube/Binning.h"
+#include "IceCube/ICDataBase.h"
 #include "IceCube/ICParameter.h"
 #include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
@@ -11,9 +12,12 @@
 #include "SampleLikelihood.h"
 #include "TemplateFlux.h"
 
+#include <arrow/api.h>
+#include <arrow/io/file.h>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <gtest/gtest.h>
+#include <parquet/arrow/writer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -22,7 +26,9 @@
 #include <cstdint>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <memory>
+#include <utility>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -437,6 +443,77 @@ TEST(SampleConfigTest, ParsesOscillationEntry) {
   ASSERT_TRUE(samples[1].oscillation_file.empty());
   // Default branch name applies even without an explicit "Branch" key.
   ASSERT_TRUE(samples[1].oscillation_branch == "osc_survival");
+}
+
+// "Topology": { "Branch": ..., "Values": ... } is parsed into integer class
+// labels, and the combinations that would silently mis-normalise the prediction
+// are rejected at parse time rather than at read time.
+TEST(SampleConfigTest, ParsesAndValidatesTopology) {
+  static constexpr char kTemplate[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "grid": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "s": { "binning": "grid", "parquet": "s.parquet", "components": "astro"EXTRA }
+    }
+  }
+}
+)JSON";
+
+  auto parse_with = [](const std::string& extra) {
+    std::string json(kTemplate);
+    json.replace(json.find("EXTRA"), std::strlen("EXTRA"), extra);
+    boost::property_tree::ptree pt;
+    std::istringstream          iss(json);
+    boost::property_tree::read_json(iss, pt);
+    return io::ic::parse_samples(pt.get_child("IceCube"));
+  };
+
+  auto throws = [&parse_with](const std::string& extra) {
+    try {
+      static_cast<void>(parse_with(extra));
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // No "Topology" block: no cut, and the sample keeps every event.
+  const auto plain = parse_with("");
+  ASSERT_TRUE(!plain[0].filters_topology());
+  ASSERT_TRUE(plain[0].topology_branch.empty());
+
+  const auto filtered = parse_with(R"(, "Topology": { "Branch": "classification", "Values": "1, 2" })");
+  ASSERT_TRUE(filtered[0].filters_topology());
+  ASSERT_TRUE(filtered[0].topology_branch == "classification");
+  ASSERT_TRUE(filtered[0].topology_values.size() == 2);
+  ASSERT_TRUE(filtered[0].topology_values[0] == 1);
+  ASSERT_TRUE(filtered[0].topology_values[1] == 2);
+
+  // Negative labels are legal; anything that is not a whole integer is not.
+  ASSERT_TRUE(!throws(R"(, "Topology": { "Branch": "c", "Values": "-1" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "c", "Values": "1.5" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "c", "Values": "track" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "c", "Values": "1abc" })"));
+
+  // A half-specified block is a config error, not a silent no-op in either
+  // direction: an empty branch cannot be read, an empty value list keeps nothing.
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "", "Values": "1" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "c", "Values": "" })"));
+
+  // Every pre-binned input was exported from the unfiltered sample, so pairing
+  // one with a cut would leave it describing a selection the prediction no
+  // longer has -- a normalisation error nothing downstream can detect.
+  const std::string cut = R"(, "Topology": { "Branch": "c", "Values": "1" })";
+  ASSERT_TRUE(throws(cut + R"(, "Gradients": { "File": "g.txt" })"));
+  ASSERT_TRUE(throws(cut + R"(, "DataCounts": "counts.txt")"));
+  ASSERT_TRUE(!throws(R"(, "Gradients": { "File": "g.txt" })"));  // without the cut: fine
 }
 
 // A sample whose analysis binning carries an RA axis keeps a second, RA-free
@@ -1996,4 +2073,199 @@ TEST(InputParameterTest, BoundsRejectBadConfigs) {
   EXPECT_NO_THROW(parse(R"JSON({"Parameter": [
     { "Name": "onedge", "StartValue": 0.0, "StepWidth": 0.1, "LowerBound": 0.0,
       "Fixed": false, "Constrained": false }]})JSON"));
+}
+
+// --- ICDataBase parquet reading -------------------------------------------
+//
+// These write throwaway parquet fixtures and load them through the real
+// ICDataBase, which is the only way to gate the per-event selection: it happens
+// inside read_sample()/read_data_histogram(), between the arrow columns and the
+// binned prediction, and no in-memory ICSample fixture can reach it.
+
+namespace {
+
+  // One double column, in the row order given.
+  std::shared_ptr<arrow::Array> double_array(const std::vector<double>& values) {
+    arrow::DoubleBuilder builder;
+    EXPECT_TRUE(builder.AppendValues(values).ok());
+    std::shared_ptr<arrow::Array> array;
+    EXPECT_TRUE(builder.Finish(&array).ok());
+    return array;
+  }
+
+  void write_parquet(const std::string&                                                     path,
+                     const std::vector<std::pair<std::string, std::vector<double>>>&        columns) {
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : columns) {
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(double_array(values));
+    }
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink,
+                                           static_cast<int64_t>(table->num_rows()))
+                    .ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  // The four standard-mask columns, all passing, as the typed columns
+  // ICDataBase::standard_mask expects (uint8 flags, int32 fit statuses).
+  void append_passing_mask_columns(std::vector<std::shared_ptr<arrow::Field>>& fields,
+                                   std::vector<std::shared_ptr<arrow::Array>>& arrays,
+                                   const std::string& reco_energy, int64_t n_rows) {
+    auto flag = [n_rows](bool is_uint8) {
+      std::shared_ptr<arrow::Array> array;
+      if (is_uint8) {
+        arrow::UInt8Builder builder;
+        EXPECT_TRUE(builder.AppendValues(std::vector<uint8_t>(n_rows, 1)).ok());
+        EXPECT_TRUE(builder.Finish(&array).ok());
+      } else {
+        arrow::Int32Builder builder;
+        EXPECT_TRUE(builder.AppendValues(std::vector<int32_t>(n_rows, 0)).ok());
+        EXPECT_TRUE(builder.Finish(&array).ok());
+      }
+      return array;
+    };
+
+    for (const auto& [name, is_uint8] : std::vector<std::pair<std::string, bool>>{
+             {reco_energy + "_exists", true},
+             {reco_energy + "_fit_status", false},
+             {"reco_dir_exists", true},
+             {"reco_dir_fit_status", false}}) {
+      fields.push_back(arrow::field(name, is_uint8 ? arrow::uint8() : arrow::int32()));
+      arrays.push_back(flag(is_uint8));
+    }
+  }
+
+}  // namespace
+
+// The topology cut must reach the MC, not only the data: filtering one side
+// alone changes the prediction relative to the measurement with no diagnostic.
+TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
+  const std::string mc_path   = "ictests_topology_mc.parquet";
+  const std::string data_path = "ictests_topology_data.parquet";
+
+  // Six MC events, all inside the binning below; classification carries three
+  // classes plus one NaN, which no configured label may match.
+  const std::vector<double> classification{1.0, 2.0, 1.0, 3.0, 2.0,
+                                           std::numeric_limits<double>::quiet_NaN()};
+  // Reco energy is in GeV; the axis takes log10 of it, so these land in [2, 7).
+  const std::vector<double> reco_energy{1.0e3, 3.0e3, 1.0e4, 3.0e4, 1.0e5, 3.0e5};
+  const std::vector<double> reco_zenith{2.0, 2.0, 2.0, 2.0, 2.0, 2.0};  // cos = -0.416, in range
+
+  write_parquet(mc_path, {{"energy_truncated", reco_energy},
+                          {"zenith_MPEFit", reco_zenith},
+                          {"MCPrimaryEnergy", {1.0e3, 2.0e3, 3.0e3, 4.0e3, 5.0e3, 6.0e3}},
+                          {"powerlaw", {1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8}},
+                          {"classification", classification}});
+
+  // Data: four events, same binning, two of class 1.
+  {
+    const std::vector<double> data_class{1.0, 2.0, 1.0, 3.0};
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : std::vector<std::pair<std::string, std::vector<double>>>{
+             {"energy_truncated", {1.0e3, 3.0e3, 1.0e4, 3.0e4}},
+             {"zenith_MPEFit", {2.0, 2.0, 2.0, 2.0}},
+             {"classification", data_class}}) {
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(double_array(values));
+    }
+    append_passing_mask_columns(fields, arrays, "energy_truncated", 4);
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 4).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto load = [&](const std::vector<int>& labels) {
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet         = mc_path;
+    cfg.data_path       = data_path;
+    cfg.components      = {"astro"};
+    cfg.topology_branch = labels.empty() ? "" : "classification";
+    cfg.topology_values = labels;
+    return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
+  };
+
+  auto data_total = [](const io::ic::ICDataBase& db) {
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    return total;
+  };
+
+  const auto unfiltered = load({});
+  ASSERT_TRUE(unfiltered.sample(0).size() == 6);
+  ASSERT_TRUE(data_total(unfiltered) == 4.0);
+
+  // One class: MC and data are cut by the same rule. The NaN row is dropped.
+  const auto tracks_only = load({1});
+  ASSERT_TRUE(tracks_only.sample(0).size() == 2);
+  ASSERT_TRUE(data_total(tracks_only) == 2.0);
+
+  // Several classes are a union, not a last-one-wins.
+  const auto two_classes = load({1, 2});
+  ASSERT_TRUE(two_classes.sample(0).size() == 4);
+  ASSERT_TRUE(data_total(two_classes) == 3.0);
+
+  // A label no event carries selects nothing rather than falling back to all.
+  const auto none = load({7});
+  ASSERT_TRUE(none.sample(0).empty());
+  ASSERT_TRUE(data_total(none) == 0.0);
+
+  // The kept events must be the class-1 ones, not merely the right count: a
+  // mask applied at the wrong offset would keep the same number of rows.
+  const auto& kept = tracks_only.sample(0);
+  ASSERT_TRUE(kept.e_true.size() == 2);
+  ASSERT_TRUE(kept.e_true[0] == 1.0e3);
+  ASSERT_TRUE(kept.e_true[1] == 3.0e3);
+
+  std::remove(mc_path.c_str());
+  std::remove(data_path.c_str());
+}
+
+// A topology column that is not stored as a double would be reinterpreted by
+// the unchecked DoubleArray cast in get_double_column, silently filtering on
+// garbage. It must fail the load instead.
+TEST(ICDataBaseTest, RejectsNonDoubleTopologyColumn) {
+  const std::string path = "ictests_topology_int.parquet";
+  {
+    std::vector<std::shared_ptr<arrow::Field>> fields{
+        arrow::field("energy_truncated", arrow::float64()),
+        arrow::field("zenith_MPEFit", arrow::float64()),
+        arrow::field("MCPrimaryEnergy", arrow::float64()),
+        arrow::field("powerlaw", arrow::float64()),
+        arrow::field("classification", arrow::int32())};
+
+    arrow::Int32Builder            labels;
+    std::shared_ptr<arrow::Array>  label_array;
+    EXPECT_TRUE(labels.AppendValues(std::vector<int32_t>{1, 2}).ok());
+    EXPECT_TRUE(labels.Finish(&label_array).ok());
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays{
+        double_array({1.0e3, 1.0e4}), double_array({2.0, 2.0}), double_array({1.0e3, 2.0e3}),
+        double_array({1.0e-8, 1.0e-8}), label_array};
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 2).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning        binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+  io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+  cfg.parquet         = path;
+  cfg.components      = {"astro"};
+  cfg.topology_branch = "classification";
+  cfg.topology_values = {1};
+
+  EXPECT_THROW(io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg}), std::runtime_error);
+  std::remove(path.c_str());
 }

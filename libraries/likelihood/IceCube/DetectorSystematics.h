@@ -28,10 +28,18 @@ namespace ana::ic {
    * cascade samples share the _5up one) and are read from the text file produced
    * by tools/export_nnmfit_inputs.py, whose systematics order matches
    * params::ic {DOMEff .. HoleIceP1}. O(nBins) work: CPU only.
+   *
+   * `bin_scale` (empty = all ones) multiplies every gradient at load time. Its
+   * only use is a sample carrying a topology cut whose gradients were exported
+   * from the unfiltered sample: the gradients are absolute per-bin count deltas,
+   * so they must be scaled to the surviving fraction of each bin. Errors scale
+   * with it and the covariances with its square, so that mu and sigma^2 keep the
+   * relation they had before. See SampleConfig::scale_gradients_to_topology.
    */
   class DetectorSystematics {
    public:
-    DetectorSystematics(const io::ic::Binning& binning, const std::string& gradient_file);
+    DetectorSystematics(const io::ic::Binning& binning, const std::string& gradient_file,
+                        std::span<const double> bin_scale = {});
     ~DetectorSystematics() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);

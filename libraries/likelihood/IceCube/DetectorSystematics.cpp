@@ -22,12 +22,35 @@ namespace ana::ic {
 
   }  // namespace
 
-  DetectorSystematics::DetectorSystematics(const io::ic::Binning& binning,
-                                           const std::string&     gradient_file) {
+  DetectorSystematics::DetectorSystematics(const io::ic::Binning&        binning,
+                                           const std::string&            gradient_file,
+                                           const std::span<const double> bin_scale) {
     const int total_bins = binning.total_bins();
     m_MuDelta.assign(total_bins, 0.0);
     m_SsqDelta.assign(total_bins, 0.0);
     load(gradient_file, total_bins);
+
+    if (bin_scale.empty()) return;
+    if (bin_scale.size() != static_cast<std::size_t>(total_bins))
+      throw std::runtime_error("DetectorSystematics: bin scale has " + std::to_string(bin_scale.size()) +
+                               " entries, the binning has " + std::to_string(total_bins));
+
+    // Scaled once here rather than per call: the factors come from the MC and do
+    // not move during the fit.
+    for (int b = 0; b < total_bins; ++b) {
+      const double f = bin_scale[b];
+      for (int k = 0; k < params::ic::nDetSysParams; ++k) {
+        m_Gradient[k][b] *= f;
+        m_GradientError[k][b] *= f;
+      }
+      for (int p = 0; p < nPairs; ++p)
+        m_Covariance[p][b] *= f * f;
+    }
+
+    double mean = 0.0;
+    for (const double f : bin_scale) mean += f;
+    std::cout << "DetectorSystematics: rescaled gradients to the topology-filtered sample (mean bin factor "
+              << mean / static_cast<double>(bin_scale.size()) << ")\n";
   }
 
   void DetectorSystematics::load(const std::string& path, const int total_bins) {

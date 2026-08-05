@@ -1,5 +1,6 @@
 #include "ICDataBase.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -49,12 +50,40 @@ namespace io::ic {
       if (!col)
         return arrow::Status::Invalid("ICDataBase: missing required column '" + name + "'");
 
+      // The cast below is unchecked, so an int-typed column would be reinterpreted
+      // as doubles and read as garbage rather than failing. Every weight branch is
+      // a double, but config-named columns (topology) can be anything.
+      if (col->type()->id() != arrow::Type::DOUBLE)
+        return arrow::Status::Invalid("ICDataBase: column '" + name + "' has type " + col->type()->ToString() +
+                                      ", expected double");
+
       auto                array = std::static_pointer_cast<arrow::DoubleArray>(col->chunk(0));
       std::vector<double> out;
       out.reserve(array->length());
       for (int64_t i = 0, n = array->length(); i < n; ++i)
         out.push_back(array->IsNull(i) ? 0.0 : array->Value(i));
       return out;
+    }
+
+    // The sample's configured topology cut, as a dense keep-mask over the table's
+    // rows: an event is kept if its topology column equals one of the configured
+    // class labels. Returns an empty mask when no cut is configured, which callers
+    // read as "keep everything". The labels are compared as doubles rather than
+    // casting the column to int: a NaN or a non-integral entry then compares false
+    // instead of hitting the undefined-behaviour cast.
+    arrow::Result<std::vector<bool>> topology_mask(const arrow::Table& table, const SampleConfig& cfg) {
+      if (!cfg.filters_topology())
+        return std::vector<bool>{};
+
+      ARROW_ASSIGN_OR_RAISE(auto column, get_double_column(table, cfg.topology_branch));
+
+      std::vector<bool> keep(column.size(), false);
+      for (std::size_t i = 0; i < column.size(); ++i) {
+        const double value = column[i];
+        keep[i] = std::ranges::any_of(cfg.topology_values,
+                                      [value](const int label) { return value == static_cast<double>(label); });
+      }
+      return keep;
     }
 
     // NNMFit's standard mask (MaskHandler._make_standard_mask): an event passes
@@ -185,16 +214,71 @@ namespace io::ic {
         scale(g);
     }
 
+    // Events the configured topology cut rejects are marked out-of-range rather
+    // than compacted here: sort_into_bins() already drops bin_idx < 0 from every
+    // per-event column at once, so the cut needs no per-column bookkeeping of its
+    // own and cannot go stale when a column is added.
+    ARROW_ASSIGN_OR_RAISE(const auto topology_keeps, topology_mask(*table, cfg));
+    if (!topology_keeps.empty() && topology_keeps.size() != out.e_true.size())
+      return arrow::Status::Invalid("ICDataBase: topology column '" + cfg.topology_branch + "' has " +
+                                    std::to_string(topology_keeps.size()) + " rows, the weight columns have " +
+                                    std::to_string(out.e_true.size()));
+
     // Assign each event to an analysis bin from its reco energy and zenith.
     const std::size_t N = out.e_true.size();
     out.bin_idx.resize(N);
+
+    // Per-bin surviving weight fraction, for gradients exported from the
+    // unfiltered sample (see ICSample::topology_bin_fraction). The weight used is
+    // the sum of the baselines the sample declares, i.e. the nominal composition
+    // before any parameter is applied; the ratio is livetime-independent, so it
+    // does not matter that this runs before the livetime scaling above.
+    const bool          want_fraction = cfg.filters_topology() && cfg.scale_gradients_to_topology;
+    std::vector<double> kept_weight;
+    std::vector<double> full_weight;
+    if (want_fraction) {
+      kept_weight.assign(cfg.mc_binning.total_bins(), 0.0);
+      full_weight.assign(cfg.mc_binning.total_bins(), 0.0);
+    }
+    auto nominal_weight = [&out](const std::size_t i) {
+      double w = 0.0;
+      if (!out.astro_baseline.empty()) w += out.astro_baseline[i];
+      if (!out.conv_baseline.empty()) w += out.conv_baseline[i];
+      if (!out.prompt_baseline.empty()) w += out.prompt_baseline[i];
+      return w;
+    };
+
+    std::size_t topology_dropped = 0;
     for (std::size_t i = 0; i < N; ++i) {
       const std::array<double, 2> reco{e_reco[i], reco_zenith[i]};
-      out.bin_idx[i] = cfg.mc_binning.bin_index(reco);
+      const int                   bin  = cfg.mc_binning.bin_index(reco);
+      const bool                  kept = topology_keeps.empty() || topology_keeps[i];
+
+      if (want_fraction && bin >= 0) {
+        const double w = nominal_weight(i);
+        full_weight[bin] += w;
+        if (kept) kept_weight[bin] += w;
+      }
+
+      out.bin_idx[i] = kept ? bin : -1;
+      if (!kept) ++topology_dropped;
+    }
+
+    if (want_fraction) {
+      out.topology_bin_fraction.assign(full_weight.size(), 0.0);
+      for (std::size_t b = 0; b < full_weight.size(); ++b)
+        // An empty bin has no gradient worth keeping either, so 0 is the right
+        // fill: it cannot be a division and must not default to 1.
+        out.topology_bin_fraction[b] = full_weight[b] > 0.0 ? kept_weight[b] / full_weight[b] : 0.0;
     }
 
     // Compact to in-range events, group by bin, build the CSR index.
     out.sort_into_bins(cfg.mc_binning.total_bins());
+
+    if (cfg.filters_topology())
+      std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
+                << topology_dropped << " of " << N << " rows ("
+                << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(N)) << "%)\n";
 
     std::cout << "IceCube sample '" << cfg.name << "' loaded: " << N << " rows, "
               << out.size() << " in analysis range ("
@@ -262,6 +346,14 @@ namespace io::ic {
       ARROW_ASSIGN_OR_RAISE(ra, get_double_column(*table, b.reco_ra));
     }
 
+    // The same topology cut the MC path applies, so both sides of the likelihood
+    // see one selection.
+    ARROW_ASSIGN_OR_RAISE(const auto topology_keeps, topology_mask(*table, cfg));
+    if (!topology_keeps.empty() && topology_keeps.size() != n_rows)
+      return arrow::Status::Invalid("ICDataBase: topology column '" + cfg.topology_branch + "' has " +
+                                    std::to_string(topology_keeps.size()) + " rows, the data file has " +
+                                    std::to_string(n_rows));
+
     // NNMFit's standard mask: apply it to real data (the MC baselines are
     // measured pre-cut and read_sample does not apply it there). Compact to the
     // passing rows rather than poisoning failing ones with a sentinel: NaN would
@@ -275,7 +367,12 @@ namespace io::ic {
     masked_zenith.reserve(n_rows);
     if (needs_ra)
       masked_ra.reserve(n_rows);
+    std::size_t topology_dropped = 0;
     for (std::size_t i = 0; i < n_rows; ++i) {
+      if (!topology_keeps.empty() && !topology_keeps[i]) {
+        ++topology_dropped;
+        continue;
+      }
       if (passes[i]) {
         masked_energy.push_back(energy[i]);
         masked_zenith.push_back(zenith[i]);
@@ -283,10 +380,20 @@ namespace io::ic {
           masked_ra.push_back(ra[i]);
       }
     }
-    if (masked_energy.size() != n_rows)
-      std::cout << "IceCube data '" << cfg.name << "': standard mask dropped " << (n_rows - masked_energy.size())
-                << " of " << n_rows << " rows ("
-                << (100.0 * static_cast<double>(n_rows - masked_energy.size()) / static_cast<double>(n_rows))
+
+    if (cfg.filters_topology())
+      std::cout << "IceCube data '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
+                << topology_dropped << " of " << n_rows << " rows ("
+                << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(n_rows)) << "%)\n";
+
+    // The standard-mask report counts only the rows the mask itself rejected, so a
+    // topology cut does not inflate it.
+    const std::size_t after_topology = n_rows - topology_dropped;
+    if (masked_energy.size() != after_topology)
+      std::cout << "IceCube data '" << cfg.name << "': standard mask dropped "
+                << (after_topology - masked_energy.size()) << " of " << after_topology << " rows ("
+                << (100.0 * static_cast<double>(after_topology - masked_energy.size()) /
+                    static_cast<double>(after_topology))
                 << "%)\n";
 
     out          = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)

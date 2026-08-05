@@ -90,6 +90,16 @@ namespace io::ic {
     // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
     std::string gradient_file;
 
+    // "Gradients": { "ScaleToTopology": true }: reuse a gradient file exported
+    // from the unfiltered sample with a topology cut active, rescaling each bin's
+    // gradient by the fraction of that bin's nominal weight the cut kept. The
+    // gradients are absolute per-bin count deltas, so applying them unscaled to a
+    // subsample would overstate the detector systematics by 1/fraction. This is
+    // an approximation -- it assumes every topology class responds to the
+    // detector parameters the same way -- and is no substitute for re-exporting
+    // the gradients per class. Only legal together with a topology cut.
+    bool scale_gradients_to_topology = false;
+
     // Galactic-plane templates, in config order. Empty unless the analysis binning
     // has an Ra axis (parse_samples rejects the combination otherwise).
     std::vector<GalacticTemplateConfig> galactic;
@@ -99,6 +109,18 @@ namespace io::ic {
     // the atmospheric baselines at load time. "" = no oscillation reweight.
     std::string oscillation_file;
     std::string oscillation_branch = "osc_survival";
+
+    // Per-event topology cut ("Topology": { "Branch": ..., "Values": "1, 2" }):
+    // keep only the events whose `topology_branch` column equals one of
+    // `topology_values`. Applied to the MC parquet and to a data parquet alike,
+    // before binning, so both sides of the likelihood see the same selection.
+    // Empty `topology_values` = no cut. Pre-binned inputs (muon/galactic
+    // templates, SnowStorm gradients, "DataCounts") were exported from the
+    // unfiltered sample, so parse_samples() rejects combining them with a cut.
+    std::string      topology_branch;
+    std::vector<int> topology_values;
+
+    [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty(); }
 
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,
