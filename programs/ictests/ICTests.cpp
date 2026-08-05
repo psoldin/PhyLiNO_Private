@@ -21,6 +21,8 @@
 #include <cstring>
 #include <cstdint>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -970,6 +972,67 @@ TEST(GpuBackendTest, SessionOutputsFreedOnDestruction) {
   }
 
   EXPECT_EQ(backend->live_output_count(), 0u);
+}
+
+// Scan workers build their fits and evaluate them concurrently over one shared
+// backend, each on its own stream/queue. Building and evaluating several
+// sessions at once must give exactly what one session gives on its own -- a
+// race in the shared kernel/column caches, or two sessions sharing a command
+// stream, would show up here and nowhere else.
+TEST(GpuBackendTest, ConcurrentSessionsMatchSequential) {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  if (!MetalBackend::available()) {
+    GTEST_SKIP() << "Metal backend is unavailable";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "concurrent_sessions_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  std::vector<double> values     = nominal_parameter_values();
+  ParameterWrapper    nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(values.data());
+
+  values[params::ic::AstroNorm]  = 1.7;
+  values[params::ic::ConvNorm]   = 1.3;
+  values[params::ic::PromptNorm] = 0.4;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(values.data());
+
+  const auto evaluate = [&](const std::shared_ptr<ana::ic::GpuSession>& session) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), session, /*use_say=*/true);
+    likelihood.generate_asimov(nominal);
+    return likelihood.partial_llh(perturbed);
+  };
+
+  // One session at a time, on a backend of its own: the reference.
+  const auto sequential_backend = std::make_shared<MetalBackend>();
+  const double expected         = evaluate(sequential_backend->create_session());
+  ASSERT_TRUE(std::isfinite(expected));
+
+  // Sessions built and run concurrently over one shared backend. The sessions
+  // are created on this thread and the work is done on the workers, which is
+  // how ICLikelihood drives them.
+  constexpr int      kWorkers = 8;
+  const auto         shared   = std::make_shared<MetalBackend>();
+  std::vector<std::future<double>> results;
+  results.reserve(kWorkers);
+  for (int i = 0; i < kWorkers; ++i)
+    results.push_back(std::async(std::launch::async, evaluate, shared->create_session()));
+
+  for (auto& result : results)
+    EXPECT_DOUBLE_EQ(result.get(), expected);
+
+  // ... and the sharing really happened: one set of kernels, one set of columns.
+  EXPECT_EQ(shared->kernel_compile_count(), 3u);
+  EXPECT_EQ(shared->column_count(), sequential_backend->column_count());
 }
 
 // An "astro"-only sample must run on a sample whose atmospheric columns were

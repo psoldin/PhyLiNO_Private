@@ -33,8 +33,7 @@ namespace ana::ic {
     constexpr std::uint32_t kThreadsPerGroup = 256;  // must match every kernel
 
     struct MetalState {
-      id<MTLDevice>       dev;
-      id<MTLCommandQueue> queue;
+      id<MTLDevice> dev;
 
       // Guards everything below. Scan workers build their Fits -- and therefore
       // their sessions -- concurrently, so the warmup paths that populate these
@@ -68,6 +67,12 @@ namespace ana::ic {
 
     struct MetalSessionState {
       std::deque<SessionRow> rows;
+
+      // This sample's own command queue, the Metal analogue of a CUDA stream.
+      // Samples are evaluated concurrently and scan workers run whole fits
+      // concurrently, so their command buffers must be able to overlap rather
+      // than queue up behind one another.
+      id<MTLCommandQueue> queue;
     };
 
     // Register a shared backend buffer in this session's table as a non-owning
@@ -86,10 +91,9 @@ namespace ana::ic {
       if (!dev)
         throw std::runtime_error("MetalBackend: no Metal device available");
 
-      auto* s  = new MetalState;
-      s->dev   = dev;
-      s->queue = [dev newCommandQueue];
-      m_State  = s;
+      auto* s = new MetalState;
+      s->dev  = dev;
+      m_State = s;
     }
   }
 
@@ -127,7 +131,18 @@ namespace ana::ic {
     : m_Backend(std::move(backend)) {
     if (!m_Backend)
       throw std::runtime_error("MetalSession: null backend");
-    m_State = new MetalSessionState;
+
+    auto* b = static_cast<MetalState*>(m_Backend->m_State);
+    auto* s = new MetalSessionState;
+    s->queue = [b->dev newCommandQueue];
+    if (!s->queue) {
+      delete s;
+      // Deliberately fatal rather than falling back to the CPU path for this one
+      // sample: scan points that silently used different code paths would not be
+      // comparable with each other.
+      throw std::runtime_error("MetalSession: could not create a command queue");
+    }
+    m_State = s;
   }
 
   MetalSession::~MetalSession() {
@@ -243,7 +258,7 @@ namespace ana::ic {
     @autoreleasepool {
       id<MTLComputePipelineState> pso = b->pipelines.at(std::string(name));
 
-      id<MTLCommandBuffer>         cb  = [b->queue commandBuffer];
+      id<MTLCommandBuffer>         cb  = [s->queue commandBuffer];
       id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
       [enc setComputePipelineState:pso];
       for (int i = 0; i < n_inputs; ++i)

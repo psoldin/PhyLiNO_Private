@@ -102,6 +102,11 @@ namespace ana::ic {
       // deque so that contents()'s pointer into a row's host mirror survives a
       // later alloc_output on the same session.
       std::deque<SessionRow> rows;
+
+      // This sample's own stream. Samples are evaluated concurrently and scan
+      // workers run whole fits concurrently, so the launches must be able to
+      // overlap; synchronising per stream is what allows that.
+      CUstream stream = nullptr;
     };
 
     // Register a shared backend column in this session's table as a non-owning
@@ -185,7 +190,23 @@ namespace ana::ic {
     : m_Backend(std::move(backend)) {
     if (!m_Backend)
       throw std::runtime_error("CudaSession: null backend");
-    m_State = new CudaSessionState;
+
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    auto* s = new CudaSessionState;
+    try {
+      cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
+      // CU_STREAM_NON_BLOCKING, not the default flags: a default-flag stream
+      // implicitly synchronises against the legacy default stream, which would
+      // serialise every session against every other one and defeat the point.
+      cu_check(cuStreamCreate(&s->stream, CU_STREAM_NON_BLOCKING), "cuStreamCreate");
+    } catch (...) {
+      delete s;
+      // Deliberately fatal rather than falling back to the CPU path for this one
+      // sample: scan points that silently used different code paths would not be
+      // comparable with each other.
+      throw;
+    }
+    m_State = s;
   }
 
   CudaSession::~CudaSession() {
@@ -200,6 +221,7 @@ namespace ana::ic {
       if (row.dptr) cuMemFree(row.dptr);
       if (b) b->liveOutputs.fetch_sub(1, std::memory_order_relaxed);
     }
+    if (s->stream) cuStreamDestroy(s->stream);
     delete s;
   }
 
@@ -374,21 +396,27 @@ namespace ana::ic {
     cu_check(cuLaunchKernel(fn,
                             static_cast<unsigned>(n_groups), 1, 1,
                             kThreadsPerGroup, 1, 1,
-                            0, nullptr, args.data(), nullptr),
+                            0, s->stream, args.data(), nullptr),
              "cuLaunchKernel");
-    cu_check(cuCtxSynchronize(), "cuCtxSynchronize");
 
-    // Refresh host mirrors of the outputs so contents()/contents_f64() return a
-    // CPU pointer. The per-event copy is skipped by the caller passing
-    // per_event < 0 when the weights are not needed (e.g. the Poisson path).
+    // Queue the host-mirror refreshes behind the launch on the same stream, so
+    // contents()/contents_f64() can return a CPU pointer. The per-event copy is
+    // skipped by the caller passing per_event < 0 when the weights are not
+    // needed (e.g. the Poisson path).
     auto refresh = [&](int handle) {
       SessionRow& row = s->rows[handle];
       void* dst = b->fp64 ? static_cast<void*>(row.host64.data())
                           : static_cast<void*>(row.host32.data());
-      cu_check(cuMemcpyDtoH(dst, row.dptr, row.n_elems * row.elem_bytes), "cuMemcpyDtoH(output)");
+      cu_check(cuMemcpyDtoHAsync(dst, row.dptr, row.n_elems * row.elem_bytes, s->stream),
+               "cuMemcpyDtoHAsync(output)");
     };
     refresh(hist);
     if (per_event >= 0) refresh(per_event);
+
+    // Per stream, not cuCtxSynchronize: waiting on the whole context would block
+    // on every other session's work too, which is exactly the serialisation the
+    // streams exist to avoid.
+    cu_check(cuStreamSynchronize(s->stream), "cuStreamSynchronize");
   }
 
   const float* CudaSession::contents(int handle) const noexcept {
