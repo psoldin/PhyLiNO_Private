@@ -16,6 +16,7 @@
 #include <cuda.h>
 #include <nvrtc.h>
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -86,6 +87,12 @@ namespace ana::ic {
       std::unordered_map<const void*, int>        colCache;  // source ptr -> index into columns
       std::unordered_map<std::string, CUfunction> funcs;     // kernel name -> fn
       std::vector<CUmodule>                       modules;   // kept alive for funcs
+
+      // Test-visible counters (see GpuBackend). Atomic rather than derived from
+      // the containers above, so reading one needs no lock and cannot throw.
+      std::atomic<std::size_t> columnCount{0};
+      std::atomic<std::size_t> kernelCount{0};
+      std::atomic<std::size_t> liveOutputs{0};
 
       // Byte size of a scalar column/output element in the active precision.
       [[nodiscard]] std::size_t scalar_bytes() const noexcept { return fp64 ? 8 : 4; }
@@ -159,6 +166,21 @@ namespace ana::ic {
         std::static_pointer_cast<CudaBackend>(shared_from_this()));
   }
 
+  std::size_t CudaBackend::column_count() const noexcept {
+    auto* s = static_cast<CudaState*>(m_State);
+    return s->columnCount.load(std::memory_order_relaxed);
+  }
+
+  std::size_t CudaBackend::kernel_compile_count() const noexcept {
+    auto* s = static_cast<CudaState*>(m_State);
+    return s->kernelCount.load(std::memory_order_relaxed);
+  }
+
+  std::size_t CudaBackend::live_output_count() const noexcept {
+    auto* s = static_cast<CudaState*>(m_State);
+    return s->liveOutputs.load(std::memory_order_relaxed);
+  }
+
   CudaSession::CudaSession(std::shared_ptr<CudaBackend> backend)
     : m_Backend(std::move(backend)) {
     if (!m_Backend)
@@ -173,8 +195,11 @@ namespace ana::ic {
     if (b && b->ctx) cuCtxSetCurrent(b->ctx);
     // Free only what this session allocated: alias rows point at backend columns
     // that other sessions are still using.
-    for (auto& row : s->rows)
-      if (row.owning && row.dptr) cuMemFree(row.dptr);
+    for (auto& row : s->rows) {
+      if (!row.owning) continue;
+      if (row.dptr) cuMemFree(row.dptr);
+      if (b) b->liveOutputs.fetch_sub(1, std::memory_order_relaxed);
+    }
     delete s;
   }
 
@@ -229,6 +254,7 @@ namespace ana::ic {
 
     b->modules.push_back(mod);
     b->funcs[key] = fn;
+    b->kernelCount.fetch_add(1, std::memory_order_relaxed);
   }
 
   int CudaSession::upload_column(const double* data, std::size_t n) {
@@ -255,6 +281,7 @@ namespace ana::ic {
 
     b->colCache[data] = static_cast<int>(b->columns.size());
     b->columns.push_back(c);
+    b->columnCount.fetch_add(1, std::memory_order_relaxed);
     return alias_row(s, c, b->scalar_bytes());
   }
 
@@ -281,6 +308,7 @@ namespace ana::ic {
 
     b->colCache[data] = static_cast<int>(b->columns.size());
     b->columns.push_back(c);
+    b->columnCount.fetch_add(1, std::memory_order_relaxed);
     return alias_row(s, c, kOffsetBytes);
   }
 
@@ -304,6 +332,7 @@ namespace ana::ic {
 
     const int handle = static_cast<int>(s->rows.size());
     s->rows.push_back(std::move(row));
+    b->liveOutputs.fetch_add(1, std::memory_order_relaxed);
     return handle;
   }
 

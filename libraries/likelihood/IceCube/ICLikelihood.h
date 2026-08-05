@@ -21,14 +21,18 @@ namespace ana::ic {
    * meta level.
    *
    * Owns the ICDataBase whose ICSamples the per-sample flux components read;
-   * both are handed over by ICExperimentModule::create_likelihood so heavy
-   * parquet loading only happens when IceCube is the selected experiment.
+   * it and the GPU backend are handed over by
+   * ICExperimentModule::create_likelihood, which caches both, so the parquet
+   * load, the device context, the kernel compiles and the column uploads happen
+   * once per process rather than once per Fit -- a scan builds one Fit per grid
+   * point. A null backend selects the CPU path.
    */
   class ICLikelihood : public Likelihood {
    public:
     ICLikelihood(std::shared_ptr<io::Options>              options,
                  std::shared_ptr<const io::ic::ICDataBase> data_base,
-                 const io::ic::ICInputOptions&             input_options);
+                 const io::ic::ICInputOptions&             input_options,
+                 std::shared_ptr<GpuBackend>               gpu_backend = nullptr);
     ~ICLikelihood() override = default;
 
     [[nodiscard]] double calculate_likelihood(const double* parameter) override;
@@ -46,9 +50,9 @@ namespace ana::ic {
     // Declared first so it (and its ICSamples) outlives the sample likelihoods below.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
 
-    // One GPU backend (Metal or CUDA) behind every sample's session (null on the
-    // CPU path), so per-event columns like e_true / bin_offsets are uploaded
-    // only once. Declared before the sample members so it outlives them.
+    // The module's GPU backend (Metal or CUDA) behind every sample's session,
+    // null on the CPU path. Held so it outlives the sessions below -- which the
+    // sessions also enforce themselves, since each keeps the backend alive.
     std::shared_ptr<GpuBackend> m_GpuBackend;
 
     std::vector<std::unique_ptr<SampleLikelihood>> m_Samples;

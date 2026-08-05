@@ -15,6 +15,7 @@
 
 #include "../../io/IceCube/ICConstants.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -47,6 +48,12 @@ namespace ana::ic {
       std::unordered_map<const void*, int>             colCache;  // source ptr -> index into columns
       std::unordered_map<std::string,
                          id<MTLComputePipelineState>>  pipelines; // kernel name -> pso
+
+      // Test-visible counters (see GpuBackend). Atomic rather than derived from
+      // the containers above, so reading one needs no lock and cannot throw.
+      std::atomic<std::size_t> columnCount{0};
+      std::atomic<std::size_t> kernelCount{0};
+      std::atomic<std::size_t> liveOutputs{0};
     };
 
     // One row of a session's flat handle table. `owning` distinguishes an output
@@ -101,6 +108,21 @@ namespace ana::ic {
         std::static_pointer_cast<MetalBackend>(shared_from_this()));
   }
 
+  std::size_t MetalBackend::column_count() const noexcept {
+    auto* s = static_cast<MetalState*>(m_State);
+    return s->columnCount.load(std::memory_order_relaxed);
+  }
+
+  std::size_t MetalBackend::kernel_compile_count() const noexcept {
+    auto* s = static_cast<MetalState*>(m_State);
+    return s->kernelCount.load(std::memory_order_relaxed);
+  }
+
+  std::size_t MetalBackend::live_output_count() const noexcept {
+    auto* s = static_cast<MetalState*>(m_State);
+    return s->liveOutputs.load(std::memory_order_relaxed);
+  }
+
   MetalSession::MetalSession(std::shared_ptr<MetalBackend> backend)
     : m_Backend(std::move(backend)) {
     if (!m_Backend)
@@ -109,9 +131,14 @@ namespace ana::ic {
   }
 
   MetalSession::~MetalSession() {
+    auto* s = static_cast<MetalSessionState*>(m_State);
+    if (!s) return;
+    auto* b = static_cast<MetalState*>(m_Backend->m_State);
+    for (const auto& row : s->rows)
+      if (row.owning) b->liveOutputs.fetch_sub(1, std::memory_order_relaxed);
     // ARC releases every row; the backend's columns survive because it holds its
     // own strong reference to them.
-    delete static_cast<MetalSessionState*>(m_State);
+    delete s;
   }
 
   void MetalSession::ensure_kernel(const char* name, const char* source) {
@@ -141,6 +168,7 @@ namespace ana::ic {
         throw std::runtime_error(std::string("MetalBackend: pipeline for '") + name + "' failed: " +
                                  (err ? err.localizedDescription.UTF8String : "unknown"));
       b->pipelines[key] = pso;
+      b->kernelCount.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
@@ -161,6 +189,7 @@ namespace ana::ic {
                                              options:MTLResourceStorageModeShared];
       b->colCache[data] = static_cast<int>(b->columns.size());
       b->columns.push_back(buf);
+      b->columnCount.fetch_add(1, std::memory_order_relaxed);
       return alias_row(s, buf);
     }
   }
@@ -182,6 +211,7 @@ namespace ana::ic {
                                              options:MTLResourceStorageModeShared];
       b->colCache[data] = static_cast<int>(b->columns.size());
       b->columns.push_back(buf);
+      b->columnCount.fetch_add(1, std::memory_order_relaxed);
       return alias_row(s, buf);
     }
   }
@@ -195,6 +225,7 @@ namespace ana::ic {
       std::memset(buf.contents, 0, n * sizeof(float));
       const int handle = static_cast<int>(s->rows.size());
       s->rows.push_back(SessionRow{buf, true});
+      b->liveOutputs.fetch_add(1, std::memory_order_relaxed);
       return handle;
     }
   }

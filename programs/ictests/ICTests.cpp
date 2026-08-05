@@ -898,6 +898,80 @@ TEST(SampleLikelihoodTest, MetalSaySsqMatchesCpu) {
   }
 }
 
+// The point of splitting the backend from the session is that the expensive
+// half is paid once per process rather than once per Fit. A scan builds one Fit
+// per grid point, so a second sample over the same backend must upload no new
+// column and compile no new kernel -- and a session must give its output buffers
+// back when it dies, or the saving is traded for a leak that grows per point.
+// None of that is observable from the fit results, hence the counters.
+TEST(GpuBackendTest, SharedBackendUploadsAndCompilesOnce) {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+
+  if (!MetalBackend::available()) {
+    GTEST_SKIP() << "Metal backend is unavailable";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "shared_backend_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const auto backend = std::make_shared<MetalBackend>();
+
+  SampleLikelihood first(sample, cfg, synthetic_settings(), backend->create_session(),
+                         /*use_say=*/true);
+  const std::size_t columns_after_first = backend->column_count();
+  const std::size_t kernels_after_first = backend->kernel_compile_count();
+
+  ASSERT_GT(columns_after_first, 0u);
+  // powerlaw_hist, atmo_hist, say_ssq.
+  ASSERT_EQ(kernels_after_first, 3u);
+
+  SampleLikelihood second(sample, cfg, synthetic_settings(), backend->create_session(),
+                          /*use_say=*/true);
+  EXPECT_EQ(backend->column_count(), columns_after_first);
+  EXPECT_EQ(backend->kernel_compile_count(), kernels_after_first);
+}
+
+TEST(GpuBackendTest, SessionOutputsFreedOnDestruction) {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+
+  if (!MetalBackend::available()) {
+    GTEST_SKIP() << "Metal backend is unavailable";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "session_lifetime_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const auto backend = std::make_shared<MetalBackend>();
+  ASSERT_EQ(backend->live_output_count(), 0u);
+
+  std::size_t live_while_alive = 0;
+  for (int i = 0; i < 5; ++i) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), backend->create_session(),
+                                /*use_say=*/true);
+    if (i == 0) {
+      live_while_alive = backend->live_output_count();
+      ASSERT_GT(live_while_alive, 0u);
+    }
+    // Every iteration must cost the same: outputs are per session, never pooled
+    // across them, so a session that failed to free would show up as growth.
+    EXPECT_EQ(backend->live_output_count(), live_while_alive);
+  }
+
+  EXPECT_EQ(backend->live_output_count(), 0u);
+}
+
 // An "astro"-only sample must run on a sample whose atmospheric columns were
 // never read: no atmospheric flux is constructed, the prediction is the
 // astrophysical component alone, and the atmospheric parameters have no effect

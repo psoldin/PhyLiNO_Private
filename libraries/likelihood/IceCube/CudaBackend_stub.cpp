@@ -20,6 +20,10 @@ namespace ana::ic {
 
   std::shared_ptr<GpuSession> CudaBackend::create_session() { return nullptr; }
 
+  std::size_t CudaBackend::column_count() const noexcept { return 0; }
+  std::size_t CudaBackend::kernel_compile_count() const noexcept { return 0; }
+  std::size_t CudaBackend::live_output_count() const noexcept { return 0; }
+
   CudaSession::CudaSession(std::shared_ptr<CudaBackend> backend)
     : m_Backend(std::move(backend)) {}
 

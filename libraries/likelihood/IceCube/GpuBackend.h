@@ -147,6 +147,23 @@ namespace ana::ic {
 
     /** A new session over this backend, for one sample. */
     [[nodiscard]] virtual std::shared_ptr<GpuSession> create_session() = 0;
+
+    /** Distinct MC columns currently uploaded to the device. Grows only when a
+        session uploads a column no other session has. */
+    [[nodiscard]] virtual std::size_t column_count() const noexcept = 0;
+
+    /** Kernels compiled so far. Grows only on the first ensure_kernel for a
+        given name, whichever session makes it. */
+    [[nodiscard]] virtual std::size_t kernel_compile_count() const noexcept = 0;
+
+    /** Output buffers currently alive across every session over this backend.
+        Must return to its previous value when a session is destroyed -- with the
+        backend outliving the fits, an output that is never freed is a leak that
+        grows once per scan point.
+
+        These three counters exist for the tests: deduplication and freeing are
+        the properties this split is for, and neither is otherwise observable. */
+    [[nodiscard]] virtual std::size_t live_output_count() const noexcept = 0;
   };
 
 }  // namespace ana::ic

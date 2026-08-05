@@ -2,54 +2,24 @@
 
 #include "../../io/IceCube/ICParameter.h"
 #include "../../io/Options.h"
-#include "CudaBackend.h"
-#include "MetalBackend.h"
 
 #include <cmath>
 #include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ana::ic {
 
-  namespace {
-
-    // One shared GPU backend behind all samples' sessions; nullptr => CPU path. A
-    // requested GPU backend falls back to CPU if no matching device is present.
-    std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind  kind,
-                                                 const io::ic::GpuPrecision precision) {
-      switch (kind) {
-        case io::ic::BackendKind::Cpu:
-          return nullptr;
-        case io::ic::BackendKind::Metal:
-          if (!MetalBackend::available()) {
-            std::cout << "ICLikelihood: Metal backend requested but no device available; using CPU\n";
-            return nullptr;
-          }
-          return std::make_shared<MetalBackend>();
-        case io::ic::BackendKind::Cuda: {
-          if (!CudaBackend::available()) {
-            std::cout << "ICLikelihood: CUDA backend requested but no device available; using CPU\n";
-            return nullptr;
-          }
-          const bool fp64 = precision == io::ic::GpuPrecision::Fp64;
-          std::cout << "ICLikelihood: CUDA backend using " << (fp64 ? "FP64" : "FP32") << " kernels\n";
-          return std::make_shared<CudaBackend>(fp64);
-        }
-      }
-      return nullptr;
-    }
-
-  }  // namespace
-
   ICLikelihood::ICLikelihood(std::shared_ptr<io::Options>              options,
                              std::shared_ptr<const io::ic::ICDataBase> data_base,
-                             const io::ic::ICInputOptions&             input_options)
+                             const io::ic::ICInputOptions&             input_options,
+                             std::shared_ptr<GpuBackend>               gpu_backend)
     : Likelihood(std::move(options), params::ic::number_of_parameters())
     , m_DataBase(std::move(data_base))
-    , m_GpuBackend(make_gpu_backend(input_options.backend_kind(), input_options.gpu_precision()))
+    , m_GpuBackend(std::move(gpu_backend))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
     const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
     std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";

@@ -20,6 +20,10 @@ namespace ana::ic {
 
   std::shared_ptr<GpuSession> MetalBackend::create_session() { return nullptr; }
 
+  std::size_t MetalBackend::column_count() const noexcept { return 0; }
+  std::size_t MetalBackend::kernel_compile_count() const noexcept { return 0; }
+  std::size_t MetalBackend::live_output_count() const noexcept { return 0; }
+
   MetalSession::MetalSession(std::shared_ptr<MetalBackend> backend)
     : m_Backend(std::move(backend)) {}
 

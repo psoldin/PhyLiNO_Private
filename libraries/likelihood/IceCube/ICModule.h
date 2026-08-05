@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ExperimentModule.h"
+#include "GpuBackend.h"
 #include "ICLikelihood.h"
 
 #include "IceCube/ICDataBase.h"
@@ -40,10 +41,15 @@ namespace ana::ic {
    private:
     std::shared_ptr<io::ic::ICInputOptions>   m_InputOptions;
     // Cached immutable MC sample; loaded once, reused across Fit constructions.
-    // The only state the module keeps: the likelihood itself belongs to the Fit
-    // that created it, so several Fits can run concurrently on one module.
+    // The likelihood itself belongs to the Fit that created it, so several Fits
+    // can run concurrently on one module.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
-    std::mutex                                m_DataBaseMutex;
+    // Cached GPU backend (null on the CPU path), so the device context, the
+    // compiled kernels and the uploaded MC columns are paid for once rather than
+    // once per scan point. Declared after m_DataBase so it is destroyed first:
+    // its column cache is keyed on the raw ICSample column pointers.
+    std::shared_ptr<GpuBackend>               m_GpuBackend;
+    std::mutex                                m_CacheMutex;
   };
 
 }  // namespace ana::ic

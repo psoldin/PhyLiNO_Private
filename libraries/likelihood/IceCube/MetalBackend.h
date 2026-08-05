@@ -49,6 +49,10 @@ namespace ana::ic {
 
     [[nodiscard]] std::shared_ptr<GpuSession> create_session() override;
 
+    [[nodiscard]] std::size_t column_count() const noexcept override;
+    [[nodiscard]] std::size_t kernel_compile_count() const noexcept override;
+    [[nodiscard]] std::size_t live_output_count() const noexcept override;
+
    private:
     friend class MetalSession;
     void* m_State = nullptr;  // opaque MetalState* (Obj-C++), nullptr in the stub
