@@ -17,6 +17,8 @@
 #include <nvrtc.h>
 
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -70,7 +72,17 @@ namespace ana::ic {
       CUcontext ctx  = nullptr;
       bool      fp64 = false;  // FP64 compute path when true
 
-      std::vector<Column>                         columns;   // shared column allocations
+      // Guards everything below. Scan workers build their Fits -- and therefore
+      // their sessions -- concurrently, so the warmup paths that populate these
+      // run on several threads at once. The hot path (dispatch) takes no lock:
+      // it only reads funcs, which is stable once every kernel is compiled, and
+      // its own session's rows.
+      std::mutex mutex;
+
+      // deque, not vector: dispatch reads device pointers out of a session's
+      // alias rows while another thread may still be appending columns, and a
+      // reallocation would move the elements under it.
+      std::deque<Column>                          columns;   // shared column allocations
       std::unordered_map<const void*, int>        colCache;  // source ptr -> index into columns
       std::unordered_map<std::string, CUfunction> funcs;     // kernel name -> fn
       std::vector<CUmodule>                       modules;   // kept alive for funcs
@@ -80,7 +92,9 @@ namespace ana::ic {
     };
 
     struct CudaSessionState {
-      std::vector<SessionRow> rows;
+      // deque so that contents()'s pointer into a row's host mirror survives a
+      // later alloc_output on the same session.
+      std::deque<SessionRow> rows;
     };
 
     // Register a shared backend column in this session's table as a non-owning
@@ -110,7 +124,12 @@ namespace ana::ic {
     s->fp64  = fp64;
     try {
       cu_check(cuDeviceGet(&s->dev, 0), "cuDeviceGet");
-      cu_check(cuCtxCreate(&s->ctx, 0, s->dev), "cuCtxCreate");
+      // The device's primary context, not a fresh one: a context created with
+      // cuCtxCreate is current only on the creating thread, and this backend is
+      // shared across the scan workers that build sessions and dispatch on
+      // them. The primary context can be made current on any of them.
+      cu_check(cuDevicePrimaryCtxRetain(&s->ctx, s->dev), "cuDevicePrimaryCtxRetain");
+      cu_check(cuCtxSetCurrent(s->ctx), "cuCtxSetCurrent");
     } catch (...) {
       delete s;
       throw;
@@ -121,10 +140,11 @@ namespace ana::ic {
   CudaBackend::~CudaBackend() {
     auto* s = static_cast<CudaState*>(m_State);
     if (!s) return;
+    if (s->ctx) cuCtxSetCurrent(s->ctx);
     for (auto& c : s->columns)
       if (c.dptr) cuMemFree(c.dptr);
     for (CUmodule m : s->modules) cuModuleUnload(m);
-    if (s->ctx) cuCtxDestroy(s->ctx);
+    if (s->ctx) cuDevicePrimaryCtxRelease(s->dev);
     delete s;
   }
 
@@ -149,6 +169,8 @@ namespace ana::ic {
   CudaSession::~CudaSession() {
     auto* s = static_cast<CudaSessionState*>(m_State);
     if (!s) return;
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    if (b && b->ctx) cuCtxSetCurrent(b->ctx);
     // Free only what this session allocated: alias rows point at backend columns
     // that other sessions are still using.
     for (auto& row : s->rows)
@@ -160,6 +182,12 @@ namespace ana::ic {
 
   void CudaSession::ensure_kernel(const char* name, const char* source) {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    // Held across the NVRTC compile: concurrent sessions asking for the same
+    // kernel must not each compile it. Only the first pays; the compile happens
+    // once per process for each of the three kernels.
+    const std::scoped_lock lock(b->mutex);
+    cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
+
     const std::string key(name);
     if (b->funcs.count(key)) return;
 
@@ -207,6 +235,9 @@ namespace ana::ic {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
     auto* s = static_cast<CudaSessionState*>(m_State);
 
+    const std::scoped_lock lock(b->mutex);
+    cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
+
     if (auto it = b->colCache.find(data); it != b->colCache.end())
       return alias_row(s, b->columns[it->second], b->scalar_bytes());
 
@@ -234,6 +265,9 @@ namespace ana::ic {
     // offsets stay uint32 in both precisions
     constexpr std::size_t kOffsetBytes = sizeof(std::uint32_t);
 
+    const std::scoped_lock lock(b->mutex);
+    cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
+
     if (auto it = b->colCache.find(data); it != b->colCache.end())
       return alias_row(s, b->columns[it->second], kOffsetBytes);
 
@@ -253,6 +287,11 @@ namespace ana::ic {
   int CudaSession::alloc_output(std::size_t n) {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
     auto* s = static_cast<CudaSessionState*>(m_State);
+
+    // No lock: the row goes into this session's own table. The context still has
+    // to be bound, because the allocation happens on whichever worker thread
+    // built this fit.
+    cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
 
     SessionRow row;
     row.n_elems    = n;

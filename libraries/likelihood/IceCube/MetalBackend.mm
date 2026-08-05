@@ -17,6 +17,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -33,7 +35,15 @@ namespace ana::ic {
       id<MTLDevice>       dev;
       id<MTLCommandQueue> queue;
 
-      std::vector<id<MTLBuffer>>                       columns;   // shared column buffers
+      // Guards everything below. Scan workers build their Fits -- and therefore
+      // their sessions -- concurrently, so the warmup paths that populate these
+      // run on several threads at once. MTLDevice itself is thread-safe; these
+      // C++ containers are not. The hot path (dispatch) takes no lock.
+      std::mutex mutex;
+
+      // deque, not vector: dispatch reads a session's alias rows while another
+      // thread may still be appending columns.
+      std::deque<id<MTLBuffer>>                        columns;   // shared column buffers
       std::unordered_map<const void*, int>             colCache;  // source ptr -> index into columns
       std::unordered_map<std::string,
                          id<MTLComputePipelineState>>  pipelines; // kernel name -> pso
@@ -50,7 +60,7 @@ namespace ana::ic {
     };
 
     struct MetalSessionState {
-      std::vector<SessionRow> rows;
+      std::deque<SessionRow> rows;
     };
 
     // Register a shared backend buffer in this session's table as a non-owning
@@ -106,6 +116,10 @@ namespace ana::ic {
 
   void MetalSession::ensure_kernel(const char* name, const char* source) {
     auto* b = static_cast<MetalState*>(m_Backend->m_State);
+    // Held across the compile: concurrent sessions asking for the same kernel
+    // must not each build a pipeline for it.
+    const std::scoped_lock lock(b->mutex);
+
     const std::string key(name);
     if (b->pipelines.count(key)) return;
 
@@ -134,6 +148,8 @@ namespace ana::ic {
     auto* b = static_cast<MetalState*>(m_Backend->m_State);
     auto* s = static_cast<MetalSessionState*>(m_State);
 
+    const std::scoped_lock lock(b->mutex);
+
     if (auto it = b->colCache.find(data); it != b->colCache.end())
       return alias_row(s, b->columns[it->second]);
 
@@ -152,6 +168,8 @@ namespace ana::ic {
   int MetalSession::upload_offsets(const std::size_t* data, std::size_t n) {
     auto* b = static_cast<MetalState*>(m_Backend->m_State);
     auto* s = static_cast<MetalSessionState*>(m_State);
+
+    const std::scoped_lock lock(b->mutex);
 
     if (auto it = b->colCache.find(data); it != b->colCache.end())
       return alias_row(s, b->columns[it->second]);
