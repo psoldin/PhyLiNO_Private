@@ -35,7 +35,7 @@ namespace ana::ic {
     };
 
     // One group per analysis bin over the CSR-sorted sample. Buffer order matches
-    // the GpuBackend convention: inputs (e_true, conv/prompt baseline+alt, 4 Barr
+    // the GpuSession convention: inputs (e_true, conv/prompt baseline+alt, 4 Barr
     // gradients, bin_offsets), params, hist, per_event.
     constexpr const char* kKernelMetal = R"METAL(
       #include <metal_stdlib>
@@ -221,7 +221,7 @@ namespace ana::ic {
                                    const io::ic::Binning&        binning,
                                    const double                  conv_delta_gamma_e_ref,
                                    const double                  prompt_delta_gamma_e_ref,
-                                   std::shared_ptr<GpuBackend>   gpu,
+                                   std::shared_ptr<GpuSession>   gpu,
                                    const bool                    need_per_event,
                                    const bool                    use_veto,
                                    const double                  veto_anchor_energy,

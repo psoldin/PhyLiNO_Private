@@ -3,8 +3,11 @@
 #include "GpuBackend.h"
 
 #include <cstddef>
+#include <memory>
 
 namespace ana::ic {
+
+  class CudaSession;
 
   /**
    * NVIDIA-CUDA implementation of GpuBackend, mirroring MetalBackend. Kernels are
@@ -12,6 +15,10 @@ namespace ana::ic {
    * and launched through the CUDA driver API, so the flux components drive it
    * through the same pure-C++ facade and the CUDA headers stay confined to
    * CudaBackend.cpp.
+   *
+   * The backend owns the device context, the compiled modules and the uploaded
+   * MC columns -- everything identical across samples and fits. One CudaSession
+   * per sample owns that sample's output buffers.
    *
    * Unlike Apple unified memory, discrete NVIDIA device memory is not host
    * mapped, so each output buffer keeps a host mirror that dispatch() refreshes
@@ -44,6 +51,31 @@ namespace ana::ic {
     [[nodiscard]] GpuLanguage language() const noexcept override { return GpuLanguage::Cuda; }
     [[nodiscard]] bool        is_fp64() const noexcept override { return m_Fp64; }
 
+    [[nodiscard]] std::shared_ptr<GpuSession> create_session() override;
+
+   private:
+    friend class CudaSession;
+    void* m_State = nullptr;   // opaque CudaState*, nullptr in the stub
+    bool  m_Fp64  = false;     // FP64 compute path when true
+  };
+
+  /**
+   * One sample's view of a CudaBackend: owns that sample's output buffers (with
+   * their host mirrors) and the handle table, forwards kernel compiles and
+   * column uploads to the shared backend. See GpuSession for the handle-space
+   * contract.
+   */
+  class CudaSession final : public GpuSession {
+   public:
+    explicit CudaSession(std::shared_ptr<CudaBackend> backend);
+    ~CudaSession() override;
+
+    CudaSession(const CudaSession&)            = delete;
+    CudaSession& operator=(const CudaSession&) = delete;
+
+    [[nodiscard]] GpuLanguage language() const noexcept override { return GpuLanguage::Cuda; }
+    [[nodiscard]] bool        is_fp64() const noexcept override;
+
     void ensure_kernel(const char* name, const char* source) override;
     int  upload_column(const double* data, std::size_t n) override;
     int  upload_offsets(const std::size_t* data, std::size_t n) override;
@@ -60,8 +92,8 @@ namespace ana::ic {
     [[nodiscard]] const double* contents_f64(int handle) const noexcept override;
 
    private:
-    void* m_State = nullptr;   // opaque CudaState*, nullptr in the stub
-    bool  m_Fp64  = false;     // FP64 compute path when true
+    std::shared_ptr<CudaBackend> m_Backend;  // keeps the shared cache alive
+    void*                        m_State = nullptr;  // opaque CudaSessionState*
   };
 
 }  // namespace ana::ic

@@ -28,7 +28,7 @@ namespace ana::ic {
     };
 
     // One group per analysis bin over the CSR-sorted sample; grid-stride sum +
-    // in-group tree reduction. Buffer order matches the GpuBackend convention:
+    // in-group tree reduction. Buffer order matches the GpuSession convention:
     // inputs (e_true, baseline, bin_offsets), params, hist, per_event.
     constexpr const char* kKernelMetal = R"METAL(
       #include <metal_stdlib>
@@ -137,7 +137,7 @@ namespace ana::ic {
                              const double                e_ref_gev,
                              const double                reference_index,
                              const bool                  per_type_norm,
-                             std::shared_ptr<GpuBackend> gpu,
+                             std::shared_ptr<GpuSession> gpu,
                              const bool                  need_per_event,
                              const io::ic::AstroModel    model,
                              const bool                  use_multi_threading)

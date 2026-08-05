@@ -49,7 +49,7 @@ namespace ana::ic {
     SampleLikelihood(const io::ic::ICSample&     sample,
                      const io::ic::SampleConfig& cfg,
                      const GlobalFluxSettings&   settings,
-                     std::shared_ptr<GpuBackend> gpu,
+                     std::shared_ptr<GpuSession> gpu,
                      bool                        use_say);
 
     /** Recompute prediction for the current parameters; return this sample's -2lnL (no pulls). */
@@ -130,7 +130,7 @@ namespace ana::ic {
     // the flux components' GPU-resident per-event weight buffers. Set up in the
     // constructor when a backend is present, SAY is active and at least one
     // per-event component exists; m_hSsq == -1 selects the CPU fallback.
-    std::shared_ptr<GpuBackend> m_Gpu;
+    std::shared_ptr<GpuSession> m_Gpu;
     int                         m_hSsqOffsets = -1;
     int                         m_hSsq        = -1;
 

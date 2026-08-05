@@ -6,6 +6,7 @@
 #include "CudaBackend.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace ana::ic {
 
@@ -17,12 +18,21 @@ namespace ana::ic {
 
   bool CudaBackend::available() noexcept { return false; }
 
-  void CudaBackend::ensure_kernel(const char*, const char*) {}
-  int  CudaBackend::upload_column(const double*, std::size_t) { return -1; }
-  int  CudaBackend::upload_offsets(const std::size_t*, std::size_t) { return -1; }
-  int  CudaBackend::alloc_output(std::size_t) { return -1; }
-  void CudaBackend::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
-  const float*  CudaBackend::contents(int) const noexcept { return nullptr; }
-  const double* CudaBackend::contents_f64(int) const noexcept { return nullptr; }
+  std::shared_ptr<GpuSession> CudaBackend::create_session() { return nullptr; }
+
+  CudaSession::CudaSession(std::shared_ptr<CudaBackend> backend)
+    : m_Backend(std::move(backend)) {}
+
+  CudaSession::~CudaSession() = default;
+
+  bool CudaSession::is_fp64() const noexcept { return false; }
+
+  void CudaSession::ensure_kernel(const char*, const char*) {}
+  int  CudaSession::upload_column(const double*, std::size_t) { return -1; }
+  int  CudaSession::upload_offsets(const std::size_t*, std::size_t) { return -1; }
+  int  CudaSession::alloc_output(std::size_t) { return -1; }
+  void CudaSession::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
+  const float*  CudaSession::contents(int) const noexcept { return nullptr; }
+  const double* CudaSession::contents_f64(int) const noexcept { return nullptr; }
 
 }  // namespace ana::ic

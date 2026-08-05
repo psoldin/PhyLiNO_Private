@@ -854,8 +854,10 @@ TEST(SampleLikelihoodTest, MetalSaySsqMatchesCpu) {
                                  .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
+  const auto backend = std::make_shared<MetalBackend>();
+
   SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
-  SampleLikelihood gpu(sample, cfg, synthetic_settings(), std::make_shared<MetalBackend>(), /*use_say=*/true);
+  SampleLikelihood gpu(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
 
   const std::vector<double> nominal_values = nominal_parameter_values();
   ParameterWrapper          nominal(params::ic::number_of_parameters());

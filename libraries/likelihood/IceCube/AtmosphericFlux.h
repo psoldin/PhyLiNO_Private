@@ -41,7 +41,7 @@ namespace ana::ic {
    * unaffected (the veto columns are never read for it, see ICDataBase).
    *
    * The histogram holds conv_i + prompt_i summed per analysis bin. When a
-   * GpuBackend is supplied the per-event loop runs on the GPU; otherwise the
+   * GpuSession is supplied the per-event loop runs on the GPU; otherwise the
    * CPU OMP+SIMD path is used (and serves as the validation oracle).
    */
   class AtmosphericFlux {
@@ -50,7 +50,7 @@ namespace ana::ic {
                     const io::ic::Binning&        binning,
                     double                        conv_delta_gamma_e_ref,
                     double                        prompt_delta_gamma_e_ref,
-                    std::shared_ptr<GpuBackend>   gpu                 = nullptr,
+                    std::shared_ptr<GpuSession>   gpu                 = nullptr,
                     bool                          need_per_event      = false,
                     bool                          use_veto            = false,
                     double                        veto_anchor_energy  = 100.0,
@@ -89,9 +89,10 @@ namespace ana::ic {
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when a GPU backend is selected; shared with the other flux
-    // components (so e_true / bin_offsets are uploaded once).
-    std::shared_ptr<GpuBackend>                      m_Gpu;
+    // Non-null when a GPU backend is selected; shared with this sample's other
+    // flux components, and behind it with every other sample and fit (so
+    // e_true / bin_offsets are uploaded once per process).
+    std::shared_ptr<GpuSession>                      m_Gpu;
     int                                              m_hETrue      = -1;
     int                                              m_hConvBase   = -1;
     int                                              m_hConvAlt    = -1;

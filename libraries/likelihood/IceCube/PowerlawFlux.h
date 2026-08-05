@@ -46,7 +46,7 @@ namespace ana::ic {
    *
    * Recalculates when the parameters the active model uses changed (AstroNorm
    * and SpectralIndex; AstroNorm, AstroGamma1, AstroGamma2 and AstroEBreak in
-   * broken-power-law mode). When a GpuBackend is supplied the per-event loop
+   * broken-power-law mode). When a GpuSession is supplied the per-event loop
    * runs on the GPU; otherwise the CPU OMP+SIMD path is used (and serves as the
    * validation oracle).
    */
@@ -57,7 +57,7 @@ namespace ana::ic {
                  double                         e_ref_gev,
                  double                         reference_index,
                  bool                           per_type_norm,
-                 std::shared_ptr<GpuBackend>    gpu            = nullptr,
+                 std::shared_ptr<GpuSession>    gpu            = nullptr,
                  bool                           need_per_event = false,
                  io::ic::AstroModel             model          = io::ic::AstroModel::Powerlaw,
                  bool                           use_multi_threading = true);
@@ -93,9 +93,10 @@ namespace ana::ic {
     std::vector<double>     m_Histogram;
     std::vector<double>     m_PerEventWeight;
 
-    // Non-null when a GPU backend is selected; shared with the other flux
-    // components (so e_true / bin_offsets are uploaded once).
-    std::shared_ptr<GpuBackend>   m_Gpu;
+    // Non-null when a GPU backend is selected; shared with this sample's other
+    // flux components, and behind it with every other sample and fit (so
+    // e_true / bin_offsets are uploaded once per process).
+    std::shared_ptr<GpuSession>   m_Gpu;
     int                           m_hETrue    = -1;
     int                           m_hBaseline = -1;
     int                           m_hOffsets  = -1;

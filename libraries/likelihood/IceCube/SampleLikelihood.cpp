@@ -55,7 +55,7 @@ namespace ana::ic {
     // over the per-event weight buffers the flux kernels already produced, so
     // the weights never leave the GPU. Same one-group-per-bin / 256-thread
     // tree-reduction layout as the flux kernels; buffer order follows the
-    // GpuBackend convention: inputs (astro_pe, atmo_pe, bin_offsets), params,
+    // GpuSession convention: inputs (astro_pe, atmo_pe, bin_offsets), params,
     // hist (the ssq output); no per_event output.
     struct SsqParams {
       int has_astro;
@@ -166,7 +166,7 @@ namespace ana::ic {
   SampleLikelihood::SampleLikelihood(const io::ic::ICSample&     sample,
                                      const io::ic::SampleConfig& cfg,
                                      const GlobalFluxSettings&   settings,
-                                     std::shared_ptr<GpuBackend> gpu,
+                                     std::shared_ptr<GpuSession> gpu,
                                      const bool                  use_say)
     : m_Sample(sample)
     , m_Config(cfg)

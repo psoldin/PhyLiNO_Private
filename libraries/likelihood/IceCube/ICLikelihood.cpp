@@ -16,7 +16,7 @@ namespace ana::ic {
 
   namespace {
 
-    // One shared GPU backend for all samples' flux components; nullptr => CPU path. A
+    // One shared GPU backend behind all samples' sessions; nullptr => CPU path. A
     // requested GPU backend falls back to CPU if no matching device is present.
     std::shared_ptr<GpuBackend> make_gpu_backend(const io::ic::BackendKind  kind,
                                                  const io::ic::GpuPrecision precision) {
@@ -83,8 +83,13 @@ namespace ana::ic {
       for (const auto& c : cfg.components)
         std::cout << ' ' << c;
       std::cout << '\n';
+      // One session per sample, not one per fit: calculate_likelihood already
+      // evaluates samples concurrently, so a shared session would serialise them
+      // on its single command stream. The device, the compiled kernels and the
+      // uploaded MC columns stay shared behind the sessions.
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
-          m_DataBase->sample(k), cfg, settings, m_GpuBackend, use_say));
+          m_DataBase->sample(k), cfg, settings,
+          m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say));
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");

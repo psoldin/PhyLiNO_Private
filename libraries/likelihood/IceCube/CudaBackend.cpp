@@ -4,6 +4,10 @@
 // NVRTC does it at runtime -- so this is an ordinary .cpp built only when the
 // CUDA toolkit is found (guarded in CMakeLists.txt); a stub replaces it
 // otherwise.
+//
+// Split of state: CudaState is process-wide and holds what is identical for
+// every sample and every fit (context, compiled modules, uploaded MC columns);
+// CudaSessionState holds one sample's output buffers and its handle table.
 
 #include "CudaBackend.h"
 
@@ -16,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ana::ic {
@@ -39,15 +44,23 @@ namespace ana::ic {
                                  nvrtcGetErrorString(r));
     }
 
-    // One device allocation plus, for outputs, a host mirror dispatch() refreshes
-    // so contents() can hand back a CPU pointer like the Metal shared-memory path.
-    // Scalar columns/outputs are 4 B (float) in FP32 mode or 8 B (double) in FP64
-    // mode; CSR offsets are always 4 B (uint32). Only the host mirror matching the
-    // active precision is populated.
-    struct Buffer {
+    // A device allocation the backend owns: one uploaded MC column, shared by
+    // every session. Scalar columns are 4 B (float) in FP32 mode or 8 B (double)
+    // in FP64 mode; CSR offsets are always 4 B (uint32).
+    struct Column {
+      CUdeviceptr dptr    = 0;
+      std::size_t n_elems = 0;
+    };
+
+    // One row of a session's flat handle table. An owning row is an output this
+    // session allocated and must free; a non-owning row aliases a backend column
+    // so that callers see one flat handle space (see GpuSession). Only owning
+    // rows carry a host mirror -- columns are never read back.
+    struct SessionRow {
       CUdeviceptr         dptr       = 0;
-      std::size_t         n_elems    = 0;  // element count
+      std::size_t         n_elems    = 0;
       std::size_t         elem_bytes = 4;  // 4 = float/uint32, 8 = double
+      bool                owning     = false;
       std::vector<float>  host32;          // output mirror in FP32 mode
       std::vector<double> host64;          // output mirror in FP64 mode
     };
@@ -57,14 +70,32 @@ namespace ana::ic {
       CUcontext ctx  = nullptr;
       bool      fp64 = false;  // FP64 compute path when true
 
-      std::vector<Buffer>                         buffers;   // handle -> buffer
-      std::unordered_map<const void*, int>        colCache;  // source ptr -> handle
+      std::vector<Column>                         columns;   // shared column allocations
+      std::unordered_map<const void*, int>        colCache;  // source ptr -> index into columns
       std::unordered_map<std::string, CUfunction> funcs;     // kernel name -> fn
       std::vector<CUmodule>                       modules;   // kept alive for funcs
 
       // Byte size of a scalar column/output element in the active precision.
       [[nodiscard]] std::size_t scalar_bytes() const noexcept { return fp64 ? 8 : 4; }
     };
+
+    struct CudaSessionState {
+      std::vector<SessionRow> rows;
+    };
+
+    // Register a shared backend column in this session's table as a non-owning
+    // alias, so callers see one flat handle space (see GpuSession).
+    int alias_row(CudaSessionState* s, const Column& col, std::size_t elem_bytes) {
+      SessionRow row;
+      row.dptr       = col.dptr;
+      row.n_elems    = col.n_elems;
+      row.elem_bytes = elem_bytes;
+      row.owning     = false;
+
+      const int handle = static_cast<int>(s->rows.size());
+      s->rows.push_back(std::move(row));
+      return handle;
+    }
 
   }  // namespace
 
@@ -90,8 +121,8 @@ namespace ana::ic {
   CudaBackend::~CudaBackend() {
     auto* s = static_cast<CudaState*>(m_State);
     if (!s) return;
-    for (auto& b : s->buffers)
-      if (b.dptr) cuMemFree(b.dptr);
+    for (auto& c : s->columns)
+      if (c.dptr) cuMemFree(c.dptr);
     for (CUmodule m : s->modules) cuModuleUnload(m);
     if (s->ctx) cuCtxDestroy(s->ctx);
     delete s;
@@ -103,17 +134,41 @@ namespace ana::ic {
     return cuDeviceGetCount(&count) == CUDA_SUCCESS && count > 0;
   }
 
-  void CudaBackend::ensure_kernel(const char* name, const char* source) {
-    auto* s = static_cast<CudaState*>(m_State);
+  std::shared_ptr<GpuSession> CudaBackend::create_session() {
+    return std::make_shared<CudaSession>(
+        std::static_pointer_cast<CudaBackend>(shared_from_this()));
+  }
+
+  CudaSession::CudaSession(std::shared_ptr<CudaBackend> backend)
+    : m_Backend(std::move(backend)) {
+    if (!m_Backend)
+      throw std::runtime_error("CudaSession: null backend");
+    m_State = new CudaSessionState;
+  }
+
+  CudaSession::~CudaSession() {
+    auto* s = static_cast<CudaSessionState*>(m_State);
+    if (!s) return;
+    // Free only what this session allocated: alias rows point at backend columns
+    // that other sessions are still using.
+    for (auto& row : s->rows)
+      if (row.owning && row.dptr) cuMemFree(row.dptr);
+    delete s;
+  }
+
+  bool CudaSession::is_fp64() const noexcept { return m_Backend->is_fp64(); }
+
+  void CudaSession::ensure_kernel(const char* name, const char* source) {
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
     const std::string key(name);
-    if (s->funcs.count(key)) return;
+    if (b->funcs.count(key)) return;
 
     // Compile to PTX for the device's compute capability; the driver JITs it to
     // SASS at module load (mirrors Metal newLibraryWithSource -> pipeline state).
     int major = 0, minor = 0;
-    cu_check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, s->dev),
+    cu_check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, b->dev),
              "compute-capability major");
-    cu_check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, s->dev),
+    cu_check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, b->dev),
              "compute-capability minor");
     const std::string arch =
         "--gpu-architecture=compute_" + std::to_string(major) + std::to_string(minor);
@@ -144,70 +199,76 @@ namespace ana::ic {
     CUfunction fn = nullptr;
     cu_check(cuModuleGetFunction(&fn, mod, name), "cuModuleGetFunction");  // needs extern "C"
 
-    s->modules.push_back(mod);
-    s->funcs[key] = fn;
+    b->modules.push_back(mod);
+    b->funcs[key] = fn;
   }
 
-  int CudaBackend::upload_column(const double* data, std::size_t n) {
-    auto* s = static_cast<CudaState*>(m_State);
-    if (auto it = s->colCache.find(data); it != s->colCache.end())
-      return it->second;
+  int CudaSession::upload_column(const double* data, std::size_t n) {
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    auto* s = static_cast<CudaSessionState*>(m_State);
 
-    Buffer b;
-    b.n_elems    = n;
-    b.elem_bytes = s->scalar_bytes();
-    cu_check(cuMemAlloc(&b.dptr, n * b.elem_bytes), "cuMemAlloc(column)");
-    if (s->fp64) {
+    if (auto it = b->colCache.find(data); it != b->colCache.end())
+      return alias_row(s, b->columns[it->second], b->scalar_bytes());
+
+    Column c;
+    c.n_elems = n;
+    cu_check(cuMemAlloc(&c.dptr, n * b->scalar_bytes()), "cuMemAlloc(column)");
+    if (b->fp64) {
       // Already double: upload straight from the source column, no conversion.
-      cu_check(cuMemcpyHtoD(b.dptr, data, n * sizeof(double)), "cuMemcpyHtoD(column)");
+      cu_check(cuMemcpyHtoD(c.dptr, data, n * sizeof(double)), "cuMemcpyHtoD(column)");
     } else {
       std::vector<float> f(n);
       for (std::size_t i = 0; i < n; ++i) f[i] = static_cast<float>(data[i]);
-      cu_check(cuMemcpyHtoD(b.dptr, f.data(), n * sizeof(float)), "cuMemcpyHtoD(column)");
+      cu_check(cuMemcpyHtoD(c.dptr, f.data(), n * sizeof(float)), "cuMemcpyHtoD(column)");
     }
 
-    const int handle = static_cast<int>(s->buffers.size());
-    s->buffers.push_back(std::move(b));
-    s->colCache[data] = handle;
-    return handle;
+    b->colCache[data] = static_cast<int>(b->columns.size());
+    b->columns.push_back(c);
+    return alias_row(s, c, b->scalar_bytes());
   }
 
-  int CudaBackend::upload_offsets(const std::size_t* data, std::size_t n) {
-    auto* s = static_cast<CudaState*>(m_State);
-    if (auto it = s->colCache.find(data); it != s->colCache.end())
-      return it->second;
+  int CudaSession::upload_offsets(const std::size_t* data, std::size_t n) {
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    auto* s = static_cast<CudaSessionState*>(m_State);
+
+    // offsets stay uint32 in both precisions
+    constexpr std::size_t kOffsetBytes = sizeof(std::uint32_t);
+
+    if (auto it = b->colCache.find(data); it != b->colCache.end())
+      return alias_row(s, b->columns[it->second], kOffsetBytes);
 
     std::vector<std::uint32_t> u(n);
     for (std::size_t i = 0; i < n; ++i) u[i] = static_cast<std::uint32_t>(data[i]);
 
-    Buffer b;
-    b.n_elems    = n;
-    b.elem_bytes = sizeof(std::uint32_t);  // offsets stay uint32 in both precisions
-    cu_check(cuMemAlloc(&b.dptr, n * sizeof(std::uint32_t)), "cuMemAlloc(offsets)");
-    cu_check(cuMemcpyHtoD(b.dptr, u.data(), n * sizeof(std::uint32_t)), "cuMemcpyHtoD(offsets)");
+    Column c;
+    c.n_elems = n;
+    cu_check(cuMemAlloc(&c.dptr, n * kOffsetBytes), "cuMemAlloc(offsets)");
+    cu_check(cuMemcpyHtoD(c.dptr, u.data(), n * kOffsetBytes), "cuMemcpyHtoD(offsets)");
 
-    const int handle = static_cast<int>(s->buffers.size());
-    s->buffers.push_back(std::move(b));
-    s->colCache[data] = handle;
+    b->colCache[data] = static_cast<int>(b->columns.size());
+    b->columns.push_back(c);
+    return alias_row(s, c, kOffsetBytes);
+  }
+
+  int CudaSession::alloc_output(std::size_t n) {
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    auto* s = static_cast<CudaSessionState*>(m_State);
+
+    SessionRow row;
+    row.n_elems    = n;
+    row.elem_bytes = b->scalar_bytes();
+    row.owning     = true;
+    if (b->fp64) row.host64.assign(n, 0.0);
+    else         row.host32.assign(n, 0.0f);
+    cu_check(cuMemAlloc(&row.dptr, n * row.elem_bytes), "cuMemAlloc(output)");
+    cu_check(cuMemsetD8(row.dptr, 0, n * row.elem_bytes), "cuMemsetD8(output)");
+
+    const int handle = static_cast<int>(s->rows.size());
+    s->rows.push_back(std::move(row));
     return handle;
   }
 
-  int CudaBackend::alloc_output(std::size_t n) {
-    auto* s = static_cast<CudaState*>(m_State);
-    Buffer b;
-    b.n_elems    = n;
-    b.elem_bytes = s->scalar_bytes();
-    if (s->fp64) b.host64.assign(n, 0.0);
-    else         b.host32.assign(n, 0.0f);
-    cu_check(cuMemAlloc(&b.dptr, n * b.elem_bytes), "cuMemAlloc(output)");
-    cu_check(cuMemsetD8(b.dptr, 0, n * b.elem_bytes), "cuMemsetD8(output)");
-
-    const int handle = static_cast<int>(s->buffers.size());
-    s->buffers.push_back(std::move(b));
-    return handle;
-  }
-
-  void CudaBackend::dispatch(const char* name,
+  void CudaSession::dispatch(const char* name,
                              const int*  inputs,
                              const int   n_inputs,
                              const void* params,
@@ -215,21 +276,22 @@ namespace ana::ic {
                              const int   hist,
                              const int   per_event,
                              const std::size_t n_groups) {
-    auto* s = static_cast<CudaState*>(m_State);
+    auto* b = static_cast<CudaState*>(m_Backend->m_State);
+    auto* s = static_cast<CudaSessionState*>(m_State);
     // CUDA driver contexts are thread-local; dispatch() may run on a worker
     // thread (ICLikelihood computes samples concurrently), so bind the backend's
     // context here. Idempotent and cheap when it is already current.
-    cu_check(cuCtxSetCurrent(s->ctx), "cuCtxSetCurrent");
-    CUfunction fn = s->funcs.at(std::string(name));
+    cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
+    CUfunction fn = b->funcs.at(std::string(name));
 
     // cuLaunchKernel wants an array of pointers to each argument. Kernel
     // signature order matches the buffer convention: inputs..., params (by
     // value), hist, per_event. Keep every pointer arg in a stable lvalue.
     std::vector<CUdeviceptr> dptrs;
     dptrs.reserve(static_cast<std::size_t>(n_inputs));
-    for (int i = 0; i < n_inputs; ++i) dptrs.push_back(s->buffers[inputs[i]].dptr);
-    CUdeviceptr hist_ptr = s->buffers[hist].dptr;
-    CUdeviceptr pe_ptr   = per_event >= 0 ? s->buffers[per_event].dptr : 0;
+    for (int i = 0; i < n_inputs; ++i) dptrs.push_back(s->rows[inputs[i]].dptr);
+    CUdeviceptr hist_ptr = s->rows[hist].dptr;
+    CUdeviceptr pe_ptr   = per_event >= 0 ? s->rows[per_event].dptr : 0;
 
     std::vector<void*> args;
     args.reserve(static_cast<std::size_t>(n_inputs) + 3);
@@ -252,23 +314,23 @@ namespace ana::ic {
     // CPU pointer. The per-event copy is skipped by the caller passing
     // per_event < 0 when the weights are not needed (e.g. the Poisson path).
     auto refresh = [&](int handle) {
-      Buffer& b = s->buffers[handle];
-      void* dst = s->fp64 ? static_cast<void*>(b.host64.data())
-                          : static_cast<void*>(b.host32.data());
-      cu_check(cuMemcpyDtoH(dst, b.dptr, b.n_elems * b.elem_bytes), "cuMemcpyDtoH(output)");
+      SessionRow& row = s->rows[handle];
+      void* dst = b->fp64 ? static_cast<void*>(row.host64.data())
+                          : static_cast<void*>(row.host32.data());
+      cu_check(cuMemcpyDtoH(dst, row.dptr, row.n_elems * row.elem_bytes), "cuMemcpyDtoH(output)");
     };
     refresh(hist);
     if (per_event >= 0) refresh(per_event);
   }
 
-  const float* CudaBackend::contents(int handle) const noexcept {
-    auto* s = static_cast<CudaState*>(m_State);
-    return s->buffers[handle].host32.data();
+  const float* CudaSession::contents(int handle) const noexcept {
+    auto* s = static_cast<CudaSessionState*>(m_State);
+    return s->rows[handle].host32.data();
   }
 
-  const double* CudaBackend::contents_f64(int handle) const noexcept {
-    auto* s = static_cast<CudaState*>(m_State);
-    return s->buffers[handle].host64.data();
+  const double* CudaSession::contents_f64(int handle) const noexcept {
+    auto* s = static_cast<CudaSessionState*>(m_State);
+    return s->rows[handle].host64.data();
   }
 
 }  // namespace ana::ic

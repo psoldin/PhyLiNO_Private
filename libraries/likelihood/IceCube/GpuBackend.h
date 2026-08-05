@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 namespace ana::ic {
@@ -26,14 +27,26 @@ namespace ana::ic {
   enum class GpuLanguage { Metal, Cuda };
 
   /**
-   * Pure-C++ facade over a GPU compute backend for the IceCube per-event flux
-   * loops. MetalBackend (Apple) and CudaBackend (NVIDIA) implement it; the
-   * concrete Metal / Obj-C++ and CUDA driver types stay confined to their
-   * translation units. ICLikelihood picks one backend and shares the single
-   * instance across every flux component, so per-event columns (e_true,
-   * bin_offsets, ...) are uploaded once.
+   * Pure-C++ facade over the GPU work of one IceCube sample. MetalSession
+   * (Apple) and CudaSession (NVIDIA) implement it; the concrete Metal / Obj-C++
+   * and CUDA driver types stay confined to their translation units.
    *
-   * Only per-event-reduce-to-histogram components belong on a backend. Per-bin
+   * A session is what the flux components hold. It owns everything private to
+   * one sample -- its output buffers and, from the stream phase on, its own
+   * command stream/queue -- while the resources that are identical across every
+   * sample and every fit (device, compiled kernels, uploaded MC columns) live on
+   * the shared GpuBackend behind it. ensure_kernel/upload_column/upload_offsets
+   * forward there and are deduplicated process-wide; alloc_output allocates here
+   * and is freed when the session dies.
+   *
+   * Handles from both sides index one flat table owned by the session: a
+   * forwarded upload registers the shared buffer as a non-owning alias row, an
+   * alloc_output adds an owning row. Callers therefore never have to know which
+   * side a handle came from -- which matters because they mix: SampleLikelihood
+   * binds two per-event output buffers and the shared bin-offsets column in a
+   * single inputs[] array when it dispatches say_ssq.
+   *
+   * Only per-event-reduce-to-histogram components belong on a session. Per-bin
    * components (TemplateFlux, DetectorSystematics: O(nBins) work) stay on the
    * CPU; GPU launch overhead would exceed their compute.
    *
@@ -41,27 +54,42 @@ namespace ana::ic {
    * 0..n_inputs-1 (bin_offsets last), the params struct at n_inputs, the
    * histogram at n_inputs+1, and the optional per-event buffer at n_inputs+2.
    * The kernel takes the params struct by value / as a constant buffer, in that
-   * same position. Precision: FP32 weights + block/threadgroup tree reduction.
+   * same position. Precision: FP32 weights + block/threadgroup tree reduction,
+   * unless the backend is_fp64().
+   *
+   * A session is owned by one SampleLikelihood and is not thread-safe; two
+   * samples that run concurrently hold two sessions.
    */
-  class GpuBackend {
+  class GpuSession {
    public:
-    virtual ~GpuBackend() = default;
+    virtual ~GpuSession() = default;
 
-    /** Source dialect ensure_kernel() expects for this backend. */
+    /** Source dialect ensure_kernel() expects. Mirrors the backend's. */
     [[nodiscard]] virtual GpuLanguage language() const noexcept = 0;
 
-    /** Compile + cache a compute pipeline for `name` from `source`. Idempotent:
-        a second call with the same name is a no-op. */
+    /** True when the backend computes in FP64 (double) instead of FP32. Only
+        CUDA can return true -- Apple GPUs have no double support, so Metal is
+        always FP32. Flux components read this to pick the FP64 kernel dialect,
+        build a double-typed params struct, and read results back via
+        contents_f64(). */
+    [[nodiscard]] virtual bool is_fp64() const noexcept { return false; }
+
+    /** Compile + cache a compute pipeline for `name` from `source` on the shared
+        backend. Idempotent process-wide: the second call with the same name is a
+        no-op, whichever session makes it. */
     virtual void ensure_kernel(const char* name, const char* source) = 0;
 
-    /** Upload an FP32 copy of a per-event double column. Identical source
-        pointers are deduplicated to one buffer. Returns a handle. */
+    /** Upload a per-event double column to the shared backend (converted to FP32
+        unless is_fp64()). Identical source pointers are deduplicated to one
+        buffer across every session. Returns a handle into this session's table. */
     virtual int upload_column(const double* data, std::size_t n) = 0;
 
     /** Upload CSR bin offsets as uint32 (deduplicated like columns). */
     virtual int upload_offsets(const std::size_t* data, std::size_t n) = 0;
 
-    /** Allocate a zeroed FP32 output buffer of n floats. Returns a handle. */
+    /** Allocate a zeroed output buffer of n scalars, owned by this session and
+        freed with it. Never deduplicated: two samples writing one histogram
+        would corrupt each other. Returns a handle. */
     virtual int alloc_output(std::size_t n) = 0;
 
     /** Dispatch n_groups groups of kernel `name`.
@@ -81,17 +109,44 @@ namespace ana::ic {
         backend. */
     [[nodiscard]] virtual const float* contents(int handle) const noexcept = 0;
 
-    /** True when this backend computes in FP64 (double) instead of FP32. Only
-        the CUDA backend can return true -- Apple GPUs have no double support, so
-        Metal is always FP32. Flux components read this to pick the FP64 kernel
-        dialect, build a double-typed params struct, and read results back via
-        contents_f64(). Defaults to false so Metal and the stubs need no change. */
-    [[nodiscard]] virtual bool is_fp64() const noexcept { return false; }
-
     /** FP64 analogue of contents(): CPU-readable doubles of an output buffer,
         valid after the producing dispatch. Only meaningful on an FP64 backend;
         returns nullptr otherwise. */
     [[nodiscard]] virtual const double* contents_f64(int /*handle*/) const noexcept { return nullptr; }
+  };
+
+  /**
+   * The process-wide half of the GPU facade: one device/context, one compiled
+   * kernel cache, one copy of every uploaded MC column. MetalBackend and
+   * CudaBackend implement it.
+   *
+   * A backend is created once (ICExperimentModule caches it beside the
+   * ICDataBase whose columns it uploads) and hands out one GpuSession per
+   * sample. That split is the point of the type: a Fit is built per scan point,
+   * so anything a fit owns is paid for thousands of times, while the columns and
+   * the NVRTC/MSL compiles are identical every time and must be paid once.
+   *
+   * Backends must be held by shared_ptr -- create_session() keeps the backend
+   * alive for as long as any session it produced. The backend must in turn not
+   * outlive the ICDataBase it uploaded from: its column cache is keyed on the
+   * raw column pointers.
+   *
+   * create_session() and the warmup paths behind it are safe to call from
+   * several threads at once (scan workers build their Fits concurrently); the
+   * hot path on the returned session takes no shared lock.
+   */
+  class GpuBackend : public std::enable_shared_from_this<GpuBackend> {
+   public:
+    virtual ~GpuBackend() = default;
+
+    /** Source dialect the sessions' ensure_kernel() expects. */
+    [[nodiscard]] virtual GpuLanguage language() const noexcept = 0;
+
+    /** True when this backend computes in FP64 (double) instead of FP32. */
+    [[nodiscard]] virtual bool is_fp64() const noexcept { return false; }
+
+    /** A new session over this backend, for one sample. */
+    [[nodiscard]] virtual std::shared_ptr<GpuSession> create_session() = 0;
   };
 
 }  // namespace ana::ic

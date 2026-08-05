@@ -46,9 +46,9 @@ namespace ana::ic {
     // Declared first so it (and its ICSamples) outlives the sample likelihoods below.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
 
-    // One GPU backend (Metal or CUDA) shared by every sample's flux components
-    // (null on the CPU path), so per-event columns like e_true / bin_offsets are
-    // uploaded only once. Declared before the sample members so it outlives them.
+    // One GPU backend (Metal or CUDA) behind every sample's session (null on the
+    // CPU path), so per-event columns like e_true / bin_offsets are uploaded
+    // only once. Declared before the sample members so it outlives them.
     std::shared_ptr<GpuBackend> m_GpuBackend;
 
     std::vector<std::unique_ptr<SampleLikelihood>> m_Samples;
