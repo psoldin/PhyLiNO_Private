@@ -143,6 +143,15 @@ namespace {
     return name.str();
   }
 
+  /// Distinct from node_name(const scan::Node&) above: a regular-grid node
+  /// (i, j) sits at a different physical point than an adaptive-grid node of
+  /// the same integer coordinates, so the two must never share a resume file.
+  std::string node_name_regular(const scan::Node& node) {
+    std::stringstream name;
+    name << "OutputRegular_" << node.x << '_' << node.y;
+    return name.str();
+  }
+
 }  // namespace
 
 /**
@@ -324,6 +333,174 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   const scan::Surface surface = scan::refine(settings, seed_llh, evaluate, report);
 
   std::cout << "Scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
+}
+
+/**
+ * @brief Maps AstroNorm against SpectralIndex on a plain regular grid.
+ *
+ * Unlike perform_2d_scan, every point of the grid is fitted once instead of
+ * only where a contour needs resolving. The window and the default 30 x 30
+ * point count match the reference scan in
+ * shuyang/NT_roundtrip_fullE_numu (gamma_astro = SpectralIndex from 1.7 to
+ * 2.8, astro_norm = AstroNorm from 0 to 3, both on 30 evenly spaced points),
+ * so results line up point for point with those pickles.
+ *
+ * Points are named "OutputRegular_i_j" -- distinct from perform_2d_scan's
+ * "Output_i_j" -- so the two scans can share a directory without one's resume
+ * logic picking up the other's fit at the same integer coordinates but a
+ * different physical point.
+ *
+ * Not wired into the command line: call it in place of perform_2d_scan.
+ *
+ * @param points_x Number of grid points along SpectralIndex.
+ * @param points_y Number of grid points along AstroNorm.
+ */
+void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, int points_x = 30,
+                              int points_y = 30) {
+  constexpr double low_x  = 1.7;
+  constexpr double high_x = 2.8;
+  constexpr double low_y  = 0.0;
+  constexpr double high_y = 3.0;
+
+  using namespace ana::ic;
+  using enum params::ic::General;
+
+  if (points_x < 2 || points_y < 2)
+    throw std::runtime_error("perform_2d_scan_regular needs at least 2 points along each axis");
+
+  const int scan_workers = std::max(1, options->inputOptions().scan_workers());
+
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+
+  // Randomized start values exist to spread the start points on purpose, which
+  // seeding every fit from its neighbour would undo. The two do not combine.
+  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
+  if (options->inputOptions().scan_warm_start() && !warm_start)
+    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+
+  scanseed::Store<scan::Node> seeds;
+
+  const double spacing_x = (high_x - low_x) / (points_x - 1);
+  const double spacing_y = (high_y - low_y) / (points_y - 1);
+
+  auto position = [&](const scan::Node& node) { return std::pair{low_x + node.x * spacing_x, low_y + node.y * spacing_y}; };
+
+  {
+    nlohmann::json grid;
+    grid["SpectralIndex"] = {{"low", low_x}, {"high", high_x}, {"points", points_x}};
+    grid["AstroNorm"]     = {{"low", low_y}, {"high", high_y}, {"points", points_y}};
+
+    const std::string grid_path = "scan_grid_regular.json";
+    if (std::filesystem::exists(grid_path)) {
+      std::ifstream  existing_file(grid_path);
+      nlohmann::json existing = nlohmann::json::parse(existing_file);
+      if (existing != grid)
+        throw std::runtime_error(grid_path +
+                                 " in this directory describes a different grid; the OutputRegular_i_j files here belong to that "
+                                 "one. Scan into an empty directory instead.");
+    } else {
+      std::ofstream(grid_path) << grid.dump(2) << '\n';
+    }
+  }
+
+  // Only needed to seed the very first fits, before any grid point has a
+  // value of its own to seed from; there is no adaptive reference level here,
+  // so unlike perform_2d_scan the free fit's likelihood itself goes unused.
+  if (warm_start) {
+    ana::Fit seed_fit(options, module);
+    seed_fit.minimize();
+
+    const auto seed_min = seed_fit.get_minimizer();
+    if (seed_fit.converged() && std::isfinite(seed_min->MinValue()))
+      seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+
+    std::cout << "Seed fit: SpectralIndex = " << seed_min->X()[static_cast<int>(SpectralIndex)]
+               << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)] << (seed_fit.converged() ? "" : " (did not converge)")
+               << '\n';
+  }
+
+  std::vector<scan::Node> nodes;
+  nodes.reserve(static_cast<std::size_t>(points_x) * points_y);
+  for (int ix = 0; ix < points_x; ++ix)
+    for (int iy = 0; iy < points_y; ++iy)
+      nodes.push_back(scan::Node{ix, iy});
+
+  // Each worker builds its own Fit -- and therefore its own likelihood -- over
+  // the shared module, whose only state is the immutable MC sample. Points are
+  // handed out one at a time, so a slow fit does not stall the others.
+  const int        n_nodes   = static_cast<int>(nodes.size());
+  const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
+  std::atomic<int> next_index{0};
+  std::mutex       surface_mutex;
+
+  scan::Surface surface;
+  int           fits_performed = 0;
+
+  auto worker = [&]() {
+    for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
+      const scan::Node  node = nodes[pos];
+      const std::string name = node_name_regular(node);
+
+      if (const auto known = stored_fit(name, names)) {
+        // A resumed run puts the points it reads back into the store, so the
+        // fits it still has to do start from a neighbour just as they would
+        // have in the run that was interrupted.
+        if (warm_start && !known->parameters.empty())
+          seeds.store(node, known->parameters);
+
+        const std::scoped_lock lock(surface_mutex);
+        surface[node] = known->llh;
+        continue;
+      }
+
+      const auto [x, y] = position(node);
+
+      ana::Fit fit(options, module);
+      auto     min = fit.get_minimizer();
+      min->SetVariableValue(SpectralIndex, x);
+      min->SetVariableValue(AstroNorm, y);
+      min->FixVariable(AstroNorm);
+      min->FixVariable(SpectralIndex);
+
+      // The scanned pair is fixed above, so what is carried over is the
+      // nuisance parameters, and those barely move between adjacent grid points.
+      if (warm_start) {
+        const auto start = seeds.nearest(node, [&](const scan::Node& a, const scan::Node& b) {
+          return std::hypot(static_cast<double>(a.x - b.x) * spacing_x, static_cast<double>(a.y - b.y) * spacing_y);
+        });
+        if (!start.empty())
+          apply_start_values(*min, input_parameters, start);
+      }
+
+      fit.minimize();
+
+      result::write_results(fit, name);
+
+      if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
+        seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
+
+      // Minuit reporting "Edm is above max" is common at the edges of the
+      // window and still leaves a usable likelihood, so the value is taken
+      // whenever it is finite rather than only when the fit converged.
+      const std::scoped_lock lock(surface_mutex);
+      surface[node] = min->MinValue();
+      ++fits_performed;
+    }
+  };
+
+  std::cout << "Regular grid: " << n_nodes << " points (" << points_x << " x " << points_y << ")"
+            << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
+
+  std::vector<std::thread> workers;
+  workers.reserve(n_workers);
+  for (int w = 0; w < n_workers; ++w)
+    workers.emplace_back(worker);
+
+  for (auto& t : workers)
+    t.join();
+
+  std::cout << "Regular grid scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
 
 /**
@@ -554,8 +731,9 @@ int main(int argc, char** argv) {
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
-      perform_1d_scan(options, module, "AstroNorm");
-      // perform_2d_scan(options, module);
+      // perform_1d_scan(options, module, "AstroNorm");
+      perform_2d_scan(options, module);
+      // perform_2d_scan_regular(options, module);
     }
   } catch (const std::exception& e) {
     std::cout << e.what() << '\n';
