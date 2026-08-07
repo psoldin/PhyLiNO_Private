@@ -128,36 +128,62 @@ namespace ana::ic {
     m_Parameter.reset_parameter(parameter);
 
     // Samples are independent (own flux components, own histograms; m_Parameter
-    // is only read after the reset above), so their partial_llh calls run
+    // is only read after the reset above), so their partial_llh calls could run
     // concurrently. The shared GPU backend takes concurrent dispatches: its
     // pipeline/buffer maps are only mutated during construction and the Metal
     // command queue is thread-safe. The first sample runs inline on this thread
     // (so a single-sample fit spawns none) and the rest are joined in
     // sample-index order, keeping the result bit-identical to a sequential loop.
+    //
+    // DISABLED 2026-08-07 -- the cross-sample std::async path below is commented
+    // out, not deleted. It is correct; it is simply not worth its cost.
+    //
+    //   Why: the work is not spread across samples. tracks has 267,300 analysis
+    //   bins, cscd_cascade 2,646, cscd_muon 1 -- tracks alone is 99.0% of the
+    //   total, so Amdahl caps cross-sample parallelism at ~1.01x no matter how
+    //   many cores it gets. Measured on n25g0003 (24 dedicated cores, H100):
+    //   this path fully active with OMP_NUM_THREADS=1 ran 40.09 s against a
+    //   41.68 s serial baseline. It buys ~4%.
+    //
+    //   What it cost: it nests on top of the six `omp parallel for` regions
+    //   underneath it (SampleLikelihood.cpp:166, 351, 404; PowerlawFlux.cpp:256,
+    //   277; AtmosphericFlux.cpp:354), so every sample multiplied the OpenMP
+    //   thread count. With `-m` and OMP_NUM_THREADS=16 the process peaked at 53
+    //   OS threads on 24 cores, and libgomp's spin-wait barrier under that
+    //   oversubscription produced reproducible slowdowns -- 72.5 s at
+    //   OMP_NUM_THREADS=8, i.e. 0.57x, worse than running serially.
+    //
+    // With this path off, `-m` now means OpenMP only: one team, all cores, on
+    // the 267,300-bin loop that actually holds the runtime. See section 10 of
+    // OPTIMISATION_NOTES.txt for the full sweep.
+    //
+    // Re-enable only if the sample mix changes so that no single sample
+    // dominates -- and if you do, either drop OMP_NUM_THREADS to ~cores/n_samples
+    // or set OMP_WAIT_POLICY=passive, which removed the pathology in testing.
     double llh = 0.0;
 
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: No samples available");
 
-    if (m_UseMultiThreading) {
-      std::vector<std::future<double>> partial;
-      partial.reserve(m_Samples.size() - 1);
-
-      for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
-        partial.push_back(
-            std::async(std::launch::async, [this, &sample = m_Samples[i]] {
-              return sample->partial_llh(m_Parameter);
-            }));
-      }
-
-      llh = m_Samples[0]->partial_llh(m_Parameter);
-
-      for (auto& f : partial)
-        llh += f.get();
-    } else {
-      for (const auto& sample : m_Samples)
-        llh += sample->partial_llh(m_Parameter);
-    }
+    // if (m_UseMultiThreading) {
+    //   std::vector<std::future<double>> partial;
+    //   partial.reserve(m_Samples.size() - 1);
+    //
+    //   for (std::size_t i = 1, n = m_Samples.size(); i < n; ++i) {
+    //     partial.push_back(
+    //         std::async(std::launch::async, [this, &sample = m_Samples[i]] {
+    //           return sample->partial_llh(m_Parameter);
+    //         }));
+    //   }
+    //
+    //   llh = m_Samples[0]->partial_llh(m_Parameter);
+    //
+    //   for (auto& f : partial)
+    //     llh += f.get();
+    // } else {
+    for (const auto& sample : m_Samples)
+      llh += sample->partial_llh(m_Parameter);
+    // }
 
     // The pull term is -2 * NNMFit's log_prior: their Gaussian prior is
     // -((x - x0) / (sigma * sqrt(2)))^2 (LikelihoodBuilder.make_priors), so

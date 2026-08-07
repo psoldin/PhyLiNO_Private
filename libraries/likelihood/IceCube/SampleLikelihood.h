@@ -6,6 +6,7 @@
 #include "AtmosphericFlux.h"
 #include "DetectorSystematics.h"
 #include "GpuBackend.h"
+#include "GpuBinReduce.h"
 #include "PowerlawFlux.h"
 #include "TemplateFlux.h"
 
@@ -113,11 +114,18 @@ namespace ana::ic {
     // from sigma^2 (histogram_builder.py:307).
     std::vector<TemplateFlux> m_Galactic;
     std::vector<double>       m_GalacticTotal;  // sum over m_Galactic, analysis binning
+    // m_GalacticTotal is only re-summed when a galactic norm actually moved;
+    // this makes the very first assemble_prediction fill it regardless.
+    bool                      m_GalacticSeeded = false;
 
     // Analysis-binning buffers (RA axis included when the sample has one).
     std::vector<double> m_Predicted;
     std::vector<double> m_Data;
     std::vector<double> m_Ssq;
+    // lgamma(m_Data[b] + 1), refreshed by refresh_data_constants() whenever
+    // m_Data changes. A per-bin constant of the fit that the likelihood term
+    // would otherwise recompute on every evaluation.
+    std::vector<double> m_LogGammaDataPlus1;
 
     // MC-binning scratch: the per-event components and the 2D templates/gradients
     // are summed here, then spread over the RA axis (mu / n_ra, sigma^2 / n_ra^2 --
@@ -130,9 +138,9 @@ namespace ana::ic {
     // the flux components' GPU-resident per-event weight buffers. Set up in the
     // constructor when a backend is present, SAY is active and at least one
     // per-event component exists; m_hSsq == -1 selects the CPU fallback.
-    std::shared_ptr<GpuSession> m_Gpu;
-    int                         m_hSsqOffsets = -1;
-    int                         m_hSsq        = -1;
+    std::shared_ptr<GpuSession>  m_Gpu;
+    std::optional<GpuBinReduce>  m_SsqReduce;
+    int                          m_hSsq = -1;
 
     // NOTE: SampleLikelihood does not own a ParameterWrapper member (unlike
     // ICLikelihood's m_Parameter) -- the caller resets one shared ParameterWrapper
@@ -145,6 +153,10 @@ namespace ana::ic {
     // recalculated.
     bool assemble_prediction(const ParameterWrapper& parameter);
     void assemble_fluctuation();
+
+    /** Recompute the per-bin constants derived from m_Data. Call after every
+        write to m_Data and nowhere else. */
+    void refresh_data_constants();
   };
 
 }  // namespace ana::ic

@@ -27,9 +27,11 @@ namespace ana::ic {
       int broken;      // 0 = single power law, 1 = broken power law
     };
 
-    // One group per analysis bin over the CSR-sorted sample; grid-stride sum +
-    // in-group tree reduction. Buffer order matches the GpuSession convention:
-    // inputs (e_true, baseline, bin_offsets), params, hist, per_event.
+    // One group per *chunk* of the CSR-sorted sample (see ICSample's chunk
+    // decomposition and GpuBinReduce); grid-stride sum + in-group tree
+    // reduction, writing one partial per chunk that bin_gather then sums per
+    // bin. Buffer order matches the GpuSession convention: inputs (e_true,
+    // baseline, chunk_offsets), params, partial, per_event.
     constexpr const char* kKernelMetal = R"METAL(
       #include <metal_stdlib>
       using namespace metal;
@@ -41,17 +43,17 @@ namespace ana::ic {
       constant uint kThreadsPerGroup = 256;
 
       kernel void powerlaw_hist(
-          device const float*      e_true      [[buffer(0)]],
-          device const float*      baseline    [[buffer(1)]],
-          device const uint*       bin_offsets [[buffer(2)]],
-          constant PowerlawParams& p           [[buffer(3)]],
-          device float*            hist        [[buffer(4)]],
-          device float*            per_event   [[buffer(5)]],
-          uint bin [[threadgroup_position_in_grid]],
+          device const float*      e_true        [[buffer(0)]],
+          device const float*      baseline      [[buffer(1)]],
+          device const uint*       chunk_offsets [[buffer(2)]],
+          constant PowerlawParams& p             [[buffer(3)]],
+          device float*            partial       [[buffer(4)]],
+          device float*            per_event     [[buffer(5)]],
+          uint chunk [[threadgroup_position_in_grid]],
           uint tid [[thread_position_in_threadgroup]])
       {
-        const uint start = bin_offsets[bin];
-        const uint end   = bin_offsets[bin + 1];
+        const uint start = chunk_offsets[chunk];
+        const uint end   = chunk_offsets[chunk + 1];
         float acc = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           float w;
@@ -74,17 +76,17 @@ namespace ana::ic {
           if (tid < s) shared[tid] += shared[tid + s];
           threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        if (tid == 0) hist[bin] = shared[0];
+        if (tid == 0) partial[chunk] = shared[0];
       }
     )METAL";
 
-    // CUDA-C twin of the MSL kernel: one block per bin, 256 threads, block-stride
-    // sum + __shared__ tree reduction. extern "C" so cuModuleGetFunction resolves
-    // the unmangled name. The params struct is passed by value at the same
-    // position the Metal kernel takes its constant buffer. Written against a
-    // generic scalar `real` and power macro `RPOW`; cuda_kernel_source() prepends
-    // the typedef selecting float (FP32) or double (FP64), so one body serves
-    // both precisions.
+    // CUDA-C twin of the MSL kernel: one block per chunk, 256 threads,
+    // block-stride sum + __shared__ tree reduction. extern "C" so
+    // cuModuleGetFunction resolves the unmangled name. The params struct is
+    // passed by value at the same position the Metal kernel takes its constant
+    // buffer. Written against a generic scalar `real` and power macro `RPOW`;
+    // cuda_kernel_source() prepends the typedef selecting float (FP32) or double
+    // (FP64), so one body serves both precisions.
     constexpr const char* kKernelCudaBody = R"CUDA(
       struct PowerlawParams {
         real eff_norm; real inv_eref; real exponent; int write_pe;
@@ -94,16 +96,16 @@ namespace ana::ic {
       extern "C" __global__ void powerlaw_hist(
           const real*         e_true,
           const real*         baseline,
-          const unsigned int* bin_offsets,
+          const unsigned int* chunk_offsets,
           PowerlawParams      p,
-          real*               hist,
+          real*               partial,
           real*               per_event)
       {
-        const unsigned int bin      = blockIdx.x;
+        const unsigned int chunk    = blockIdx.x;
         const unsigned int tid      = threadIdx.x;
         const unsigned int nthreads = blockDim.x;
-        const unsigned int start    = bin_offsets[bin];
-        const unsigned int end      = bin_offsets[bin + 1];
+        const unsigned int start    = chunk_offsets[chunk];
+        const unsigned int end      = chunk_offsets[chunk + 1];
         real acc = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           real w;
@@ -126,7 +128,7 @@ namespace ana::ic {
           if (tid < s) sdata[tid] += sdata[tid + s];
           __syncthreads();
         }
-        if (tid == 0) hist[bin] = sdata[0];
+        if (tid == 0) partial[chunk] = sdata[0];
       }
     )CUDA";
 
@@ -164,10 +166,12 @@ namespace ana::ic {
       m_Gpu->ensure_kernel("powerlaw_hist", src);
       m_hETrue    = m_Gpu->upload_column(sample.e_true.data(), M);
       m_hBaseline = m_Gpu->upload_column(sample.astro_baseline.data(), M);
-      m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
+      m_Reduce.emplace(m_Gpu, sample, m_Histogram.size());
       m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
-      m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
-      std::cout << "PowerlawFlux: using GPU backend\n";
+      // The per-event weights are read only by say_ssq, never on the host.
+      m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M, /*readback=*/false) : -1;
+      std::cout << "PowerlawFlux: using GPU backend (" << m_Reduce->n_chunks() << " chunks over "
+                << m_Histogram.size() << " bins)\n";
     }
   }
 
@@ -212,18 +216,24 @@ namespace ana::ic {
         p.broken     = broken ? 1 : 0;
       };
 
-      const int inputs[] = {m_hETrue, m_hBaseline, m_hOffsets};
+      // Chunk-parallel: the kernel reduces each chunk to a partial, then
+      // gather() sums each bin's partials into m_hHist (see GpuBinReduce).
+      const int inputs[] = {m_hETrue, m_hBaseline, m_Reduce->chunk_offsets()};
       if (m_Gpu->is_fp64()) {
         PowerlawParamsT<double> p;
         fill(p);
-        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
+        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                        m_Reduce->n_chunks());
+        m_Reduce->gather(m_hHist);
         const double* hist = m_Gpu->contents_f64(m_hHist);
         for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
           m_Histogram[bin] = hist[bin];
       } else {
         PowerlawParamsT<float> p;
         fill(p);
-        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
+        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                        m_Reduce->n_chunks());
+        m_Reduce->gather(m_hHist);
         const float* hist = m_Gpu->contents(m_hHist);
         for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
           m_Histogram[bin] = static_cast<double>(hist[bin]);

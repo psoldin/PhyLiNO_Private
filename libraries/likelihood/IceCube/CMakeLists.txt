@@ -45,6 +45,8 @@ set(files
     ICModule.h
     ICModule.cpp
     GpuBackend.h
+    GpuBinReduce.h
+    GpuBinReduce.cpp
     MetalBackend.h
     CudaBackend.h
 )

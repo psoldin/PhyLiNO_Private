@@ -5,9 +5,11 @@
 #include "../../io/IceCube/ICSample.h"
 #include "../ParameterWrapper.h"
 #include "GpuBackend.h"
+#include "GpuBinReduce.h"
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -101,9 +103,11 @@ namespace ana::ic {
     std::array<int, params::ic::nBarrParams>         m_hBarr{};
     std::array<int, 3>                               m_hVetoConv{};
     std::array<int, 3>                               m_hVetoPrompt{};
-    int                                              m_hOffsets    = -1;
     int                                              m_hHist       = -1;
     int                                              m_hPerEvent   = -1;
+    // Owns the chunk-offset binding, the per-chunk partial buffer and the
+    // gather dispatch that turns those partials into m_hHist.
+    std::optional<GpuBinReduce>                      m_Reduce;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
     void recalculate_gpu(const ParameterWrapper& parameter) noexcept;

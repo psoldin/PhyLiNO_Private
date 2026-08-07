@@ -89,8 +89,16 @@ namespace ana::ic {
 
     /** Allocate a zeroed output buffer of n scalars, owned by this session and
         freed with it. Never deduplicated: two samples writing one histogram
-        would corrupt each other. Returns a handle. */
-    virtual int alloc_output(std::size_t n) = 0;
+        would corrupt each other. Returns a handle.
+
+        `readback` declares whether contents()/contents_f64() will ever be called
+        on this buffer. It is false for the buffers that only ever feed another
+        kernel -- the per-event weights consumed by say_ssq, and the per-chunk
+        partials consumed by bin_gather -- and on a discrete GPU that is the
+        difference between a bin-sized copy and an event-sized one across PCIe
+        every dispatch. Getting it wrong is not subtle: contents() on a
+        readback=false buffer returns a null/empty mirror. */
+    virtual int alloc_output(std::size_t n, bool readback = true) = 0;
 
     /** Dispatch n_groups groups of kernel `name`.
         inputs[0..n_inputs) bind at indices 0.., params at n_inputs, hist at

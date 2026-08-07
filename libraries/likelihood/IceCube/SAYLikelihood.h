@@ -13,4 +13,15 @@ namespace ana::ic {
    */
   [[nodiscard]] double say_bin_log_likelihood(double k, double mu, double ssq) noexcept;
 
+  /**
+   * The same term with lgamma(k + 1) supplied by the caller.
+   *
+   * k is fixed for the whole fit while mu and ssq move every evaluation, so this
+   * hoists one of the three lgamma calls out of the per-analysis-bin loop. The
+   * value must be exactly std::lgamma(k + 1.0) for the result to match the
+   * three-argument overload bit for bit.
+   */
+  [[nodiscard]] double say_bin_log_likelihood(double k, double mu, double ssq,
+                                              double lgamma_k_plus_1) noexcept;
+
 }  // namespace ana::ic

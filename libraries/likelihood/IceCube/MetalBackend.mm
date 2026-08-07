@@ -231,7 +231,10 @@ namespace ana::ic {
     }
   }
 
-  int MetalSession::alloc_output(std::size_t n) {
+  // `readback` is deliberately ignored: every buffer is MTLResourceStorageModeShared,
+  // so contents() hands back the buffer itself and there is no copy to skip. The
+  // flag only pays off on a discrete GPU (see CudaSession::alloc_output).
+  int MetalSession::alloc_output(std::size_t n, bool /*readback*/) {
     auto* b = static_cast<MetalState*>(m_Backend->m_State);
     auto* s = static_cast<MetalSessionState*>(m_State);
     @autoreleasepool {

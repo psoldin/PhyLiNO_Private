@@ -83,7 +83,7 @@ namespace ana::ic {
     void ensure_kernel(const char* name, const char* source) override;
     int  upload_column(const double* data, std::size_t n) override;
     int  upload_offsets(const std::size_t* data, std::size_t n) override;
-    int  alloc_output(std::size_t n) override;
+    int  alloc_output(std::size_t n, bool readback = true) override;
     void dispatch(const char* name,
                   const int*  inputs,
                   int         n_inputs,

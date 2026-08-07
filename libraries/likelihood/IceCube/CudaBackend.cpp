@@ -58,12 +58,15 @@ namespace ana::ic {
     // One row of a session's flat handle table. An owning row is an output this
     // session allocated and must free; a non-owning row aliases a backend column
     // so that callers see one flat handle space (see GpuSession). Only owning
-    // rows carry a host mirror -- columns are never read back.
+    // rows *declared readable* carry a host mirror -- columns are never read
+    // back, and neither are the outputs that exist purely to feed the next
+    // kernel (see alloc_output).
     struct SessionRow {
       CUdeviceptr         dptr       = 0;
       std::size_t         n_elems    = 0;
       std::size_t         elem_bytes = 4;  // 4 = float/uint32, 8 = double
       bool                owning     = false;
+      bool                readback   = false;
       std::vector<float>  host32;          // output mirror in FP32 mode
       std::vector<double> host64;          // output mirror in FP64 mode
     };
@@ -334,7 +337,7 @@ namespace ana::ic {
     return alias_row(s, c, kOffsetBytes);
   }
 
-  int CudaSession::alloc_output(std::size_t n) {
+  int CudaSession::alloc_output(std::size_t n, const bool readback) {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
     auto* s = static_cast<CudaSessionState*>(m_State);
 
@@ -347,8 +350,15 @@ namespace ana::ic {
     row.n_elems    = n;
     row.elem_bytes = b->scalar_bytes();
     row.owning     = true;
-    if (b->fp64) row.host64.assign(n, 0.0);
-    else         row.host32.assign(n, 0.0f);
+    row.readback   = readback;
+    // The mirror is only allocated for a buffer someone will actually read. The
+    // per-event buffers are event-sized (>10^7 for the tracks sample), so
+    // mirroring them unconditionally cost a nine-figure host allocation per
+    // session on top of the copy that filled it.
+    if (readback) {
+      if (b->fp64) row.host64.assign(n, 0.0);
+      else         row.host32.assign(n, 0.0f);
+    }
     cu_check(cuMemAlloc(&row.dptr, n * row.elem_bytes), "cuMemAlloc(output)");
     cu_check(cuMemsetD8(row.dptr, 0, n * row.elem_bytes), "cuMemsetD8(output)");
 
@@ -399,12 +409,18 @@ namespace ana::ic {
                             0, s->stream, args.data(), nullptr),
              "cuLaunchKernel");
 
-    // Queue the host-mirror refreshes behind the launch on the same stream, so
-    // contents()/contents_f64() can return a CPU pointer. The per-event copy is
-    // skipped by the caller passing per_event < 0 when the weights are not
-    // needed (e.g. the Poisson path).
+    // Queue the host-mirror refresh behind the launch on the same stream, so
+    // contents()/contents_f64() can return a CPU pointer.
+    //
+    // Only buffers allocated with readback=true are copied. The per-event
+    // weights deliberately are not: they exist to be read by the *next* kernel
+    // (say_ssq) and no caller ever asks for their host mirror, so copying them
+    // was moving one double per MC event per dispatch back over PCIe for
+    // nothing -- ~220 MB per likelihood evaluation on the 3D tracks sample, in
+    // front of the synchronise below.
     auto refresh = [&](int handle) {
       SessionRow& row = s->rows[handle];
+      if (!row.readback) return;
       void* dst = b->fp64 ? static_cast<void*>(row.host64.data())
                           : static_cast<void*>(row.host32.data());
       cu_check(cuMemcpyDtoHAsync(dst, row.dptr, row.n_elems * row.elem_bytes, s->stream),

@@ -34,9 +34,11 @@ namespace ana::ic {
       R   veto_e;
     };
 
-    // One group per analysis bin over the CSR-sorted sample. Buffer order matches
-    // the GpuSession convention: inputs (e_true, conv/prompt baseline+alt, 4 Barr
-    // gradients, bin_offsets), params, hist, per_event.
+    // One group per *chunk* of the CSR-sorted sample (see ICSample's chunk
+    // decomposition and GpuBinReduce), writing one partial per chunk that
+    // bin_gather then sums per bin. Buffer order matches the GpuSession
+    // convention: inputs (e_true, conv/prompt baseline+alt, 4 Barr gradients,
+    // 6 veto coefficients, chunk_offsets), params, partial, per_event.
     constexpr const char* kKernelMetal = R"METAL(
       #include <metal_stdlib>
       using namespace metal;
@@ -67,15 +69,15 @@ namespace ana::ic {
           device const float*  veto_pr_a    [[buffer(12)]],
           device const float*  veto_pr_b    [[buffer(13)]],
           device const float*  veto_pr_c    [[buffer(14)]],
-          device const uint*   bin_offsets  [[buffer(15)]],
+          device const uint*   chunk_offsets [[buffer(15)]],
           constant AtmoParams& p            [[buffer(16)]],
-          device float*        hist         [[buffer(17)]],
+          device float*        partial      [[buffer(17)]],
           device float*        per_event    [[buffer(18)]],
-          uint bin [[threadgroup_position_in_grid]],
+          uint chunk [[threadgroup_position_in_grid]],
           uint tid [[thread_position_in_threadgroup]])
       {
-        const uint start = bin_offsets[bin];
-        const uint end   = bin_offsets[bin + 1];
+        const uint start = chunk_offsets[chunk];
+        const uint end   = chunk_offsets[chunk + 1];
         float acc = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           const float et = e_true[i];
@@ -120,11 +122,11 @@ namespace ana::ic {
           if (tid < s) shared[tid] += shared[tid + s];
           threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        if (tid == 0) hist[bin] = shared[0];
+        if (tid == 0) partial[chunk] = shared[0];
       }
     )METAL";
 
-    // CUDA-C twin of the MSL kernel: one block per bin, 256 threads, block-stride
+    // CUDA-C twin of the MSL kernel: one block per chunk, 256 threads, block-stride
     // sum + __shared__ tree reduction. extern "C" so cuModuleGetFunction resolves
     // the unmangled name. The params struct is passed by value at the same
     // position the Metal kernel takes its constant buffer.
@@ -157,16 +159,16 @@ namespace ana::ic {
           const real*         veto_pr_a,
           const real*         veto_pr_b,
           const real*         veto_pr_c,
-          const unsigned int* bin_offsets,
+          const unsigned int* chunk_offsets,
           AtmoParams          p,
-          real*               hist,
+          real*               partial,
           real*               per_event)
       {
-        const unsigned int bin      = blockIdx.x;
+        const unsigned int chunk    = blockIdx.x;
         const unsigned int tid      = threadIdx.x;
         const unsigned int nthreads = blockDim.x;
-        const unsigned int start    = bin_offsets[bin];
-        const unsigned int end      = bin_offsets[bin + 1];
+        const unsigned int start    = chunk_offsets[chunk];
+        const unsigned int end      = chunk_offsets[chunk + 1];
         real acc = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           const real et = e_true[i];
@@ -211,7 +213,7 @@ namespace ana::ic {
           if (tid < s) sdata[tid] += sdata[tid + s];
           __syncthreads();
         }
-        if (tid == 0) hist[bin] = sdata[0];
+        if (tid == 0) partial[chunk] = sdata[0];
       }
     )CUDA";
 
@@ -263,10 +265,12 @@ namespace ana::ic {
         m_hVetoConv[k]   = m_UseVeto ? m_Gpu->upload_column(sample.veto_conv[k].data(), M) : m_hETrue;
         m_hVetoPrompt[k] = m_UseVeto ? m_Gpu->upload_column(sample.veto_prompt[k].data(), M) : m_hETrue;
       }
-      m_hOffsets  = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
+      m_Reduce.emplace(m_Gpu, sample, m_Histogram.size());
       m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
-      m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M) : -1;
-      std::cout << "AtmosphericFlux: using GPU backend\n";
+      // The per-event weights are read only by say_ssq, never on the host.
+      m_hPerEvent = m_NeedPerEvent ? m_Gpu->alloc_output(M, /*readback=*/false) : -1;
+      std::cout << "AtmosphericFlux: using GPU backend (" << m_Reduce->n_chunks() << " chunks over "
+                << m_Histogram.size() << " bins)\n";
     }
   }
 
@@ -293,21 +297,28 @@ namespace ana::ic {
           m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0);
     };
 
+    // Chunk-parallel: the kernel reduces each chunk to a partial, then gather()
+    // sums each bin's partials into m_hHist (see GpuBinReduce).
     const int inputs[] = {m_hETrue,        m_hConvBase,      m_hConvAlt,       m_hPromptBase,
                           m_hPromptAlt,    m_hBarr[0],       m_hBarr[1],       m_hBarr[2],
                           m_hBarr[3],      m_hVetoConv[0],   m_hVetoConv[1],   m_hVetoConv[2],
-                          m_hVetoPrompt[0], m_hVetoPrompt[1], m_hVetoPrompt[2], m_hOffsets};
+                          m_hVetoPrompt[0], m_hVetoPrompt[1], m_hVetoPrompt[2],
+                          m_Reduce->chunk_offsets()};
 
     if (m_Gpu->is_fp64()) {
       AtmoParamsT<double> p;
       fill(p);
-      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
+      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                      m_Reduce->n_chunks());
+      m_Reduce->gather(m_hHist);
       const double* hist = m_Gpu->contents_f64(m_hHist);
       for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = hist[bin];
     } else {
       AtmoParamsT<float> p;
       fill(p);
-      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_hHist, m_hPerEvent, m_Histogram.size());
+      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                      m_Reduce->n_chunks());
+      m_Reduce->gather(m_hHist);
       const float* hist = m_Gpu->contents(m_hHist);
       for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = static_cast<double>(hist[bin]);
     }

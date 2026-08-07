@@ -5,11 +5,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <fstream>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ana::ic {
 
@@ -54,10 +56,10 @@ namespace ana::ic {
 
     // SAY ssq reduction on the GPU: sums (astro_i + atmo_i)^2 per analysis bin
     // over the per-event weight buffers the flux kernels already produced, so
-    // the weights never leave the GPU. Same one-group-per-bin / 256-thread
-    // tree-reduction layout as the flux kernels; buffer order follows the
-    // GpuSession convention: inputs (astro_pe, atmo_pe, bin_offsets), params,
-    // hist (the ssq output); no per_event output.
+    // the weights never leave the GPU. Same one-group-per-chunk / 256-thread
+    // tree-reduction layout as the flux kernels, gathered per bin afterwards;
+    // buffer order follows the GpuSession convention: inputs (astro_pe,
+    // atmo_pe, chunk_offsets), params, partial; no per_event output.
     struct SsqParams {
       int has_astro;
       int has_atmo;
@@ -71,16 +73,16 @@ namespace ana::ic {
       constant uint kThreadsPerGroup = 256;
 
       kernel void say_ssq(
-          device const float* astro_pe    [[buffer(0)]],
-          device const float* atmo_pe     [[buffer(1)]],
-          device const uint*  bin_offsets [[buffer(2)]],
-          constant SsqParams& p           [[buffer(3)]],
-          device float*       ssq         [[buffer(4)]],
-          uint bin [[threadgroup_position_in_grid]],
+          device const float* astro_pe      [[buffer(0)]],
+          device const float* atmo_pe       [[buffer(1)]],
+          device const uint*  chunk_offsets [[buffer(2)]],
+          constant SsqParams& p             [[buffer(3)]],
+          device float*       partial       [[buffer(4)]],
+          uint chunk [[threadgroup_position_in_grid]],
           uint tid [[thread_position_in_threadgroup]])
       {
-        const uint start = bin_offsets[bin];
-        const uint end   = bin_offsets[bin + 1];
+        const uint start = chunk_offsets[chunk];
+        const uint end   = chunk_offsets[chunk + 1];
         float acc = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           float w = 0.0f;
@@ -95,7 +97,7 @@ namespace ana::ic {
           if (tid < s) shared[tid] += shared[tid + s];
           threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        if (tid == 0) ssq[bin] = shared[0];
+        if (tid == 0) partial[chunk] = shared[0];
       }
     )METAL";
 
@@ -110,15 +112,15 @@ namespace ana::ic {
       extern "C" __global__ void say_ssq(
           const real*         astro_pe,
           const real*         atmo_pe,
-          const unsigned int* bin_offsets,
+          const unsigned int* chunk_offsets,
           SsqParams           p,
-          real*               ssq)
+          real*               partial)
       {
-        const unsigned int bin      = blockIdx.x;
+        const unsigned int chunk    = blockIdx.x;
         const unsigned int tid      = threadIdx.x;
         const unsigned int nthreads = blockDim.x;
-        const unsigned int start    = bin_offsets[bin];
-        const unsigned int end      = bin_offsets[bin + 1];
+        const unsigned int start    = chunk_offsets[chunk];
+        const unsigned int end      = chunk_offsets[chunk + 1];
         real acc = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           real w = 0.0;
@@ -133,7 +135,7 @@ namespace ana::ic {
           if (tid < s) sdata[tid] += sdata[tid + s];
           __syncthreads();
         }
-        if (tid == 0) ssq[bin] = sdata[0];
+        if (tid == 0) partial[chunk] = sdata[0];
       }
     )CUDA";
 
@@ -143,22 +145,56 @@ namespace ana::ic {
     // it the sum carries a bin-count-sized constant that the minimiser has to
     // work against, which is what the removed hardcoded baseline in
     // ICLikelihood was papering over.
-    static double calculate_poisson_likelihood(const std::span<const double> data,
-                                               const std::span<const double> prediction) noexcept {
-      double llh = 0.0;
-      for (std::size_t i = 0, n = data.size(); i < n; ++i) {
-        llh += poisson_bin_log_likelihood_saturated(data[i], prediction[i]);
+    // Sum `term` over [0, n) in parallel without making the result depend on how
+    // the threads were scheduled: the range is cut into fixed chunks, each summed
+    // sequentially, and the chunk totals are added back in index order. OpenMP's
+    // reduction clause would be shorter but its accumulation order varies with
+    // the thread count, which would make two scan points incomparable and the
+    // ConcurrentSessionsMatchSequential test flaky.
+    //
+    // This is the loop the third analysis axis multiplied by n_ra: the tracks
+    // sample went from 1485 bins to 267,300, each carrying an lgamma and two
+    // logs, and it ran on one thread while the GPU sat idle.
+    template <class Term>
+    double sum_over_bins(const std::size_t n, const bool multi_threaded, Term&& term) noexcept {
+      constexpr std::size_t kBinsPerChunk = 4096;
+      if (n == 0) return 0.0;
+
+      const int           n_chunks = static_cast<int>((n + kBinsPerChunk - 1) / kBinsPerChunk);
+      std::vector<double> partial(static_cast<std::size_t>(n_chunks), 0.0);
+
+#pragma omp parallel for if (multi_threaded)
+      for (int c = 0; c < n_chunks; ++c) {
+        const std::size_t lo = static_cast<std::size_t>(c) * kBinsPerChunk;
+        const std::size_t hi = std::min(n, lo + kBinsPerChunk);
+        double            acc = 0.0;
+        for (std::size_t i = lo; i < hi; ++i) acc += term(i);
+        partial[static_cast<std::size_t>(c)] = acc;
       }
+
+      double total = 0.0;
+      for (const double v : partial) total += v;
+      return total;
+    }
+
+    static double calculate_poisson_likelihood(const std::span<const double> data,
+                                               const std::span<const double> prediction,
+                                               const std::span<const double> lgamma_k1,
+                                               const bool                    multi_threaded) noexcept {
+      const double llh = sum_over_bins(data.size(), multi_threaded, [&](const std::size_t i) {
+        return poisson_bin_log_likelihood_saturated(data[i], prediction[i], lgamma_k1[i]);
+      });
       return -2.0 * llh;
     }
 
     static double calculate_say_likelihood(const std::span<const double> data,
                                            const std::span<const double> prediction,
-                                           const std::span<const double> ssq) noexcept {
-      double llh = 0.0;
-      for (std::size_t i = 0, n = data.size(); i < n; ++i) {
-        llh += say_bin_log_likelihood(data[i], prediction[i], ssq[i]);
-      }
+                                           const std::span<const double> ssq,
+                                           const std::span<const double> lgamma_k1,
+                                           const bool                    multi_threaded) noexcept {
+      const double llh = sum_over_bins(data.size(), multi_threaded, [&](const std::size_t i) {
+        return say_bin_log_likelihood(data[i], prediction[i], ssq[i], lgamma_k1[i]);
+      });
       return -2.0 * llh;
     }
 
@@ -218,6 +254,7 @@ namespace ana::ic {
 
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
+    m_LogGammaDataPlus1.assign(total_bins, 0.0);
     m_Ssq.assign(total_bins, 0.0);
     m_GalacticTotal.assign(total_bins, 0.0);
     m_McTotal.assign(mc_bins, 0.0);
@@ -235,8 +272,8 @@ namespace ana::ic {
           m_Gpu->language() == GpuLanguage::Cuda ? cuda_kernel_source(m_Gpu->is_fp64(), kSsqKernelCudaBody) : std::string{};
       const char* src = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kSsqKernelMetal;
       m_Gpu->ensure_kernel("say_ssq", src);
-      m_hSsqOffsets = m_Gpu->upload_offsets(sample.bin_offsets.data(), sample.bin_offsets.size());
-      m_hSsq        = m_Gpu->alloc_output(mc_bins);
+      m_SsqReduce.emplace(m_Gpu, sample, static_cast<std::size_t>(mc_bins));
+      m_hSsq = m_Gpu->alloc_output(mc_bins);
     }
   }
 
@@ -261,8 +298,16 @@ namespace ana::ic {
     // fluctuation column that guarantees it. A moved galactic norm therefore
     // provably cannot change sigma^2, and re-running assemble_fluctuation for it
     // would cost a full reduction (a GPU dispatch over every bin) for nothing.
-    for (TemplateFlux& galactic : m_Galactic)
-      static_cast<void>(galactic.check_and_recalculate(parameter));
+    //
+    // Their *sum* is cached for the same reason it is cheap to: the templates
+    // are already in the analysis binning, so re-summing them is a pass over
+    // n_ra times as many bins as everything else in this function, and a Migrad
+    // step that moves any other parameter leaves every one of them untouched.
+    bool galactic_changed = !m_GalacticSeeded;
+    for (TemplateFlux& galactic : m_Galactic) {
+      const bool changed = galactic.check_and_recalculate(parameter);
+      galactic_changed   = galactic_changed || changed;
+    }
 
     const std::span<const double> astro     = m_Astro ? m_Astro->histogram() : std::span<const double>{};
     const std::span<const double> atmo      = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
@@ -278,25 +323,41 @@ namespace ana::ic {
       m_McTotal[b] = total;
     }
 
-    // Spread the MC-binned total over the RA axis (NNMFit Binning_2D_to_3D:
-    // repeat(mu, n_ra) / n_ra). n_ra == 1 is an exact copy.
-    io::ic::broadcast_over_ra(m_McTotal, m_RaBins, static_cast<double>(m_RaBins), m_Predicted);
-
-    // Galactic templates are already in the analysis binning, so they are added
-    // after the broadcast and are NOT divided.
-    if (!m_Galactic.empty()) {
+    // Galactic templates are already in the analysis binning, so they are summed
+    // there and added after the broadcast below, undivided.
+    if (!m_Galactic.empty() && galactic_changed) {
       std::ranges::fill(m_GalacticTotal, 0.0);
       for (TemplateFlux& galactic : m_Galactic) {
         const std::span<const double> h = galactic.histogram();
         for (std::size_t b = 0, n = m_GalacticTotal.size(); b < n; ++b) m_GalacticTotal[b] += h[b];
       }
-      for (std::size_t b = 0, n = m_Predicted.size(); b < n; ++b) m_Predicted[b] += m_GalacticTotal[b];
+      m_GalacticSeeded = true;
     }
 
-    // Clip at zero to avoid unphysical predictions (matches NNMFit's mu clip),
-    // applied to the final bin content -- NNMFit clips mu_tot, not the
-    // pre-gradient sum.
-    for (double& value : m_Predicted) value = std::max(0.0, value);
+    // Spread the MC-binned total over the RA axis (NNMFit Binning_2D_to_3D:
+    // repeat(mu, n_ra) / n_ra), add the galactic templates, and clip at zero
+    // (matches NNMFit's mu clip, applied to the final bin content -- NNMFit
+    // clips mu_tot, not the pre-gradient sum).
+    //
+    // Fused into one parallel pass over the analysis bins rather than the three
+    // sequential ones this used to be. The operations and their order are
+    // unchanged, so the result is bit-identical; what changes is that the 3D
+    // binning's 267k-bin arrays are traversed once instead of three times.
+    const int  n_ra         = m_RaBins;
+    const auto galactic_sum = std::span<const double>(m_GalacticTotal);
+    const bool has_galactic = !m_Galactic.empty();
+    const int  n_mc         = static_cast<int>(m_McTotal.size());
+
+#pragma omp parallel for if (m_UseMultiThreading)
+    for (int b = 0; b < n_mc; ++b) {
+      const double      value = m_McTotal[b] / static_cast<double>(n_ra);
+      const std::size_t base  = static_cast<std::size_t>(b) * static_cast<std::size_t>(n_ra);
+      for (int r = 0; r < n_ra; ++r) {
+        double bin_value = value;
+        if (has_galactic) bin_value += galactic_sum[base + r];
+        m_Predicted[base + r] = std::max(0.0, bin_value);
+      }
+    }
 
     return ssq_changed;
   }
@@ -310,16 +371,20 @@ namespace ana::ic {
 
     if (m_hSsq >= 0) {
       // GPU path: reduce the flux kernels' per-event weight buffers in place.
-      // A component that is absent binds the offsets buffer as a dummy (never
-      // read, its flag is 0) -- the backend needs a valid buffer at every slot.
-      const int astro_h = m_Astro ? m_Astro->per_event_handle() : -1;
-      const int atmo_h  = m_Atmo ? m_Atmo->per_event_handle() : -1;
+      // A component that is absent binds the chunk-offsets buffer as a dummy
+      // (never read, its flag is 0) -- the backend needs a valid buffer at every
+      // slot.
+      const int astro_h  = m_Astro ? m_Astro->per_event_handle() : -1;
+      const int atmo_h   = m_Atmo ? m_Atmo->per_event_handle() : -1;
+      const int chunks_h = m_SsqReduce->chunk_offsets();
 
       const SsqParams p{.has_astro = astro_h >= 0 ? 1 : 0, .has_atmo = atmo_h >= 0 ? 1 : 0};
-      const int       inputs[] = {astro_h >= 0 ? astro_h : m_hSsqOffsets,
-                                  atmo_h >= 0 ? atmo_h : m_hSsqOffsets,
-                                  m_hSsqOffsets};
-      m_Gpu->dispatch("say_ssq", inputs, 3, &p, sizeof(p), m_hSsq, -1, static_cast<std::size_t>(n_bins));
+      const int       inputs[] = {astro_h >= 0 ? astro_h : chunks_h,
+                                  atmo_h >= 0 ? atmo_h : chunks_h,
+                                  chunks_h};
+      m_Gpu->dispatch("say_ssq", inputs, 3, &p, sizeof(p), m_SsqReduce->partial(), -1,
+                      m_SsqReduce->n_chunks());
+      m_SsqReduce->gather(m_hSsq);
 
       if (m_Gpu->is_fp64()) {
         const double* ssq = m_Gpu->contents_f64(m_hSsq);
@@ -402,15 +467,25 @@ namespace ana::ic {
                                "' has " + std::to_string(counts.size()) + " bins, the binning has " +
                                std::to_string(m_Data.size()));
     std::ranges::copy(counts, m_Data.begin());
+    refresh_data_constants();
 
     // The SAY ssq describes MC statistics, so it still comes from the model; seed
     // it exactly as generate_asimov does.
     if (m_UseSAY) assemble_fluctuation();
   }
 
+  void SampleLikelihood::refresh_data_constants() {
+    // lgamma(k + 1) depends only on the data, which is fixed for the whole fit,
+    // so it is computed here rather than once per analysis bin per likelihood
+    // evaluation. Must be called whenever m_Data changes and nowhere else.
+    for (std::size_t b = 0, n = m_Data.size(); b < n; ++b)
+      m_LogGammaDataPlus1[b] = std::lgamma(m_Data[b] + 1.0);
+  }
+
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
     assemble_prediction(nominal);
     std::ranges::copy(m_Predicted, m_Data.begin());
+    refresh_data_constants();
 
     // Seed the ssq histogram at the nominal point. partial_llh() only refreshes
     // it when a flux actually recalculated, and the minimizer's first evaluation
@@ -427,10 +502,10 @@ namespace ana::ic {
     if (m_UseSAY) {
       if (ssq_changed)
         assemble_fluctuation();
-      return calculate_say_likelihood(m_Data, m_Predicted, m_Ssq);
+      return calculate_say_likelihood(m_Data, m_Predicted, m_Ssq, m_LogGammaDataPlus1, m_UseMultiThreading);
     }
 
-    return calculate_poisson_likelihood(m_Data, m_Predicted);
+    return calculate_poisson_likelihood(m_Data, m_Predicted, m_LogGammaDataPlus1, m_UseMultiThreading);
   }
 
 }  // namespace ana::ic

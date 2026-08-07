@@ -32,7 +32,7 @@ namespace ana::ic {
   void MetalSession::ensure_kernel(const char*, const char*) {}
   int  MetalSession::upload_column(const double*, std::size_t) { return -1; }
   int  MetalSession::upload_offsets(const std::size_t*, std::size_t) { return -1; }
-  int  MetalSession::alloc_output(std::size_t) { return -1; }
+  int  MetalSession::alloc_output(std::size_t, bool) { return -1; }
   void MetalSession::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
   const float* MetalSession::contents(int) const noexcept { return nullptr; }
 

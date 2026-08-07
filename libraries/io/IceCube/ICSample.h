@@ -72,6 +72,27 @@ namespace io::ic {
     // loops run bin-major with a scalar accumulator and parallelise over bins.
     std::vector<std::size_t> bin_offsets;  // size total_bins + 1
 
+    // --- GPU work decomposition, built by sort_into_bins() ---
+    // One block per bin is the obvious way to run the flux kernels over the CSR
+    // layout above, and it is a bad one: bin populations span orders of
+    // magnitude (reco energy falls steeply), so the kernel runs as long as the
+    // fattest bin while most blocks retire immediately -- and a sample binned
+    // coarsely enough to have a single bin runs on a single SM.
+    //
+    // So the kernels are dispatched over *chunks* instead. chunk_offsets is a
+    // partition of [0, size()) into ranges that never span a bin, each at most
+    // kEventsPerChunk long, with at least one (possibly empty) chunk per bin so
+    // every bin is always written. bin_chunk_offsets is the CSR index from a bin
+    // to its range of chunks. A kernel reduces one chunk to one partial and a
+    // second pass sums each bin's partials -- deterministically, unlike
+    // atomics, which matters because scan points have to be comparable.
+    std::vector<std::size_t> chunk_offsets;      // size n_chunks + 1
+    std::vector<std::size_t> bin_chunk_offsets;  // size total_bins + 1
+
+    [[nodiscard]] std::size_t n_chunks() const noexcept {
+      return chunk_offsets.empty() ? 0 : chunk_offsets.size() - 1;
+    }
+
     [[nodiscard]] std::size_t size()  const noexcept { return e_true.size(); }
     [[nodiscard]] bool        empty() const noexcept { return e_true.empty(); }
 
@@ -121,6 +142,46 @@ namespace io::ic {
       bin_offsets.assign(total_bins + 1, 0);
       for (int b : bin_idx) ++bin_offsets[b + 1];
       for (int b = 0; b < total_bins; ++b) bin_offsets[b + 1] += bin_offsets[b];
+
+      build_chunks(total_bins);
+    }
+
+    /**
+     * Default chunk size. A compromise: small enough that thousands of blocks
+     * are in flight even for a sample whose binning has very few bins, large
+     * enough that each block's tree reduction is amortised over real work.
+     * 8192 events per chunk is 32 events per thread at 256 threads.
+     */
+    static constexpr std::size_t kDefaultEventsPerChunk = 8192;
+
+    /**
+     * Split each bin's CSR range into chunks of at most `events_per_chunk`
+     * events, filling chunk_offsets / bin_chunk_offsets. Called by
+     * sort_into_bins(); separate so the invariants are stated in one place and
+     * so tests can force many chunks per bin without a huge sample.
+     *
+     * Postconditions: chunk_offsets is ascending and partitions
+     * [0, bin_offsets.back()); no chunk spans a bin boundary; every bin owns at
+     * least one (possibly empty) chunk, so every bin is written by the gather.
+     */
+    void build_chunks(int total_bins, std::size_t events_per_chunk = kDefaultEventsPerChunk) {
+      const std::size_t kEventsPerChunk = std::max<std::size_t>(1, events_per_chunk);
+
+      bin_chunk_offsets.assign(total_bins + 1, 0);
+      chunk_offsets.clear();
+      chunk_offsets.push_back(0);
+
+      for (int b = 0; b < total_bins; ++b) {
+        const std::size_t start = bin_offsets[b];
+        const std::size_t end   = bin_offsets[b + 1];
+        const std::size_t n     = end - start;
+        // max(1, ...): an empty bin still gets one empty chunk, so bin_gather
+        // writes a 0 into it rather than leaving the previous value in place.
+        const std::size_t n_chunk = std::max<std::size_t>(1, (n + kEventsPerChunk - 1) / kEventsPerChunk);
+        for (std::size_t c = 1; c <= n_chunk; ++c)
+          chunk_offsets.push_back(start + std::min(n, c * kEventsPerChunk));
+        bin_chunk_offsets[b + 1] = bin_chunk_offsets[b] + n_chunk;
+      }
     }
   };
 

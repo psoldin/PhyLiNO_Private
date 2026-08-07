@@ -34,7 +34,7 @@ namespace ana::ic {
   void CudaSession::ensure_kernel(const char*, const char*) {}
   int  CudaSession::upload_column(const double*, std::size_t) { return -1; }
   int  CudaSession::upload_offsets(const std::size_t*, std::size_t) { return -1; }
-  int  CudaSession::alloc_output(std::size_t) { return -1; }
+  int  CudaSession::alloc_output(std::size_t, bool) { return -1; }
   void CudaSession::dispatch(const char*, const int*, int, const void*, std::size_t, int, int, std::size_t) {}
   const float*  CudaSession::contents(int) const noexcept { return nullptr; }
   const double* CudaSession::contents_f64(int) const noexcept { return nullptr; }
