@@ -217,6 +217,86 @@ namespace ana::ic {
       }
     )CUDA";
 
+    // The scalar part of one evaluation: everything that does not vary per event.
+    struct AtmoCoeffs {
+      double cr;
+      double dg;
+      double conv_norm;
+      double prompt_norm;
+      double barr[params::ic::nBarrParams];
+      double conv_e_ref;
+      double prompt_e_ref;
+      double veto_e;
+      bool   use_veto;
+    };
+
+    // NNMFit VetoThreshold: the energy offset is scalar per evaluation; only the
+    // second-order coefficients are per event.
+    inline AtmoCoeffs make_coeffs(const ParameterWrapper& parameter,
+                                  const double            conv_e_ref,
+                                  const double            prompt_e_ref,
+                                  const bool              use_veto,
+                                  const double            veto_rescale_energy,
+                                  const double            veto_anchor_energy) noexcept {
+      using namespace params::ic;
+
+      AtmoCoeffs c{};
+      c.cr           = parameter[CRGrad];
+      c.dg           = parameter[DeltaGamma];
+      c.conv_norm    = parameter[ConvNorm];
+      c.prompt_norm  = parameter[PromptNorm];
+      for (int k = 0; k < nBarrParams; ++k)
+        c.barr[k] = parameter[BarrH + k];
+      c.conv_e_ref   = conv_e_ref;
+      c.prompt_e_ref = prompt_e_ref;
+      c.use_veto     = use_veto;
+      c.veto_e =
+          use_veto ? veto_rescale_energy * std::pow(10.0, parameter[VetoThreshold]) - veto_anchor_energy : 0.0;
+      return c;
+    }
+
+    // Weight of event i, conventional and prompt kept apart. The hot loop sums
+    // the two immediately; the breakdown accumulates them separately. Both go
+    // through this one function so the split can never drift from the histogram
+    // it decomposes. Either half is 0.0 when its baseline is not populated.
+    inline std::pair<double, double> atmo_event_weights(const io::ic::ICSample& sample,
+                                                        const std::size_t       i,
+                                                        const AtmoCoeffs&       c) noexcept {
+      using namespace params::ic;
+
+      double conv_w = 0.0;
+      // --- Conventional ---
+      const double conv_base = sample.conv_baseline[i];
+      if (conv_base > 0.0) {
+        // CRGrad: base + cr * (alt - base)  (== base * crgrad_reweight)
+        conv_w = conv_base + c.cr * (sample.conv_alt[i] - conv_base);
+        // Barr: product of (1 + barr_k * slope_k / base) over conventional Barr params
+        for (int k = 0; k < nBarrParams; ++k)
+          conv_w *= 1.0 + c.barr[k] * sample.barr_conv[k][i] / conv_base;
+        conv_w *= c.conv_norm * std::pow(sample.e_true[i] / c.conv_e_ref, -c.dg);
+        if (c.use_veto) {
+          const double log_pf = sample.veto_conv[0][i] + sample.veto_conv[1][i] * c.veto_e +
+                                sample.veto_conv[2][i] * c.veto_e * c.veto_e;
+          conv_w *= std::pow(10.0, log_pf);
+        }
+      }
+
+      double prompt_w = 0.0;
+      // --- Prompt ---
+      const double prompt_base = sample.prompt_baseline[i];
+      if (prompt_base > 0.0) {
+        prompt_w = prompt_base + c.cr * (sample.prompt_alt[i] - prompt_base);
+        prompt_w *= c.prompt_norm * std::pow(sample.e_true[i] / c.prompt_e_ref, -c.dg);
+        if (c.use_veto) {
+          const double log_pf = sample.veto_prompt[0][i] + sample.veto_prompt[1][i] * c.veto_e +
+                                sample.veto_prompt[2][i] * c.veto_e * c.veto_e;
+          prompt_w *= std::pow(10.0, log_pf);
+        }
+      }
+
+      return {conv_w, prompt_w};
+    }
+
   }  // namespace
 
   AtmosphericFlux::AtmosphericFlux(const io::ic::ICSample&       sample,
@@ -331,67 +411,49 @@ namespace ana::ic {
       return;
     }
 
-    using namespace params::ic;
-
-    const double cr          = parameter[CRGrad];
-    const double dg          = parameter[DeltaGamma];
-    const double conv_norm   = parameter[ConvNorm];
-    const double prompt_norm = parameter[PromptNorm];
-
-    double barr[nBarrParams];
-    for (int k = 0; k < nBarrParams; ++k)
-      barr[k] = parameter[BarrH + k];
-
-    const auto& off    = m_Sample.bin_offsets;
-    const auto& e_true = m_Sample.e_true;
-    const int   n_bins = static_cast<int>(m_Histogram.size());
-
-    // NNMFit VetoThreshold: the energy offset is scalar per evaluation; only the
-    // second-order coefficients are per event.
-    const double veto_e =
-        m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0;
+    const AtmoCoeffs c = make_coeffs(parameter, m_ConvDeltaGammaERef, m_PromptDeltaGammaERef, m_UseVeto,
+                                     m_VetoRescaleEnergy, m_VetoAnchorEnergy);
+    const auto&      off    = m_Sample.bin_offsets;
+    const int        n_bins = static_cast<int>(m_Histogram.size());
 
     #pragma omp parallel for if(m_UseMultiThreading)
     for (int bin = 0; bin < n_bins; ++bin) {
       double acc = 0.0;
       for (std::size_t i = off[bin]; i < off[bin + 1]; ++i) {
-        double event_total = 0.0;
-
-        // --- Conventional ---
-        const double conv_base = m_Sample.conv_baseline[i];
-        if (conv_base > 0.0) {
-          // CRGrad: base + cr * (alt - base)  (== base * crgrad_reweight)
-          double conv_w = conv_base + cr * (m_Sample.conv_alt[i] - conv_base);
-          // Barr: product of (1 + barr_k * slope_k / base) over conventional Barr params
-          for (int k = 0; k < nBarrParams; ++k)
-            conv_w *= 1.0 + barr[k] * m_Sample.barr_conv[k][i] / conv_base;
-          conv_w *= conv_norm * std::pow(e_true[i] / m_ConvDeltaGammaERef, -dg);
-          if (m_UseVeto) {
-            const double log_pf = m_Sample.veto_conv[0][i] + m_Sample.veto_conv[1][i] * veto_e +
-                                  m_Sample.veto_conv[2][i] * veto_e * veto_e;
-            conv_w *= std::pow(10.0, log_pf);
-          }
-          event_total += conv_w;
-        }
-
-        // --- Prompt ---
-        const double prompt_base = m_Sample.prompt_baseline[i];
-        if (prompt_base > 0.0) {
-          double prompt_w = prompt_base + cr * (m_Sample.prompt_alt[i] - prompt_base);
-          prompt_w *= prompt_norm * std::pow(e_true[i] / m_PromptDeltaGammaERef, -dg);
-          if (m_UseVeto) {
-            const double log_pf = m_Sample.veto_prompt[0][i] + m_Sample.veto_prompt[1][i] * veto_e +
-                                  m_Sample.veto_prompt[2][i] * veto_e * veto_e;
-            prompt_w *= std::pow(10.0, log_pf);
-          }
-          event_total += prompt_w;
-        }
+        const auto [conv_w, prompt_w] = atmo_event_weights(m_Sample, i, c);
+        const double event_total      = conv_w + prompt_w;
 
         acc += event_total;
         m_PerEventWeight[i] = event_total;
       }
       m_Histogram[bin] = acc;
     }
+  }
+
+  AtmoBreakdown AtmosphericFlux::breakdown(const ParameterWrapper& parameter) const {
+    const AtmoCoeffs c = make_coeffs(parameter, m_ConvDeltaGammaERef, m_PromptDeltaGammaERef, m_UseVeto,
+                                     m_VetoRescaleEnergy, m_VetoAnchorEnergy);
+    const auto&      off    = m_Sample.bin_offsets;
+    const int        n_bins = static_cast<int>(m_Histogram.size());
+
+    AtmoBreakdown result;
+    result.conv.assign(m_Histogram.size(), 0.0);
+    result.prompt.assign(m_Histogram.size(), 0.0);
+
+    #pragma omp parallel for if(m_UseMultiThreading)
+    for (int bin = 0; bin < n_bins; ++bin) {
+      double conv_acc   = 0.0;
+      double prompt_acc = 0.0;
+      for (std::size_t i = off[bin]; i < off[bin + 1]; ++i) {
+        const auto [conv_w, prompt_w] = atmo_event_weights(m_Sample, i, c);
+        conv_acc += conv_w;
+        prompt_acc += prompt_w;
+      }
+      result.conv[bin]   = conv_acc;
+      result.prompt[bin] = prompt_acc;
+    }
+
+    return result;
   }
 
   bool AtmosphericFlux::check_and_recalculate(const ParameterWrapper& parameter) {

@@ -16,6 +16,17 @@
 namespace ana::ic {
 
   /**
+   * The conventional and prompt halves of the atmospheric histogram, in the same
+   * bin layout as AtmosphericFlux::histogram() (the sample's raw binning; the
+   * caller reshapes with SampleLikelihood::in_analysis_bins()). Both are empty
+   * only if the flux itself has no bins.
+   */
+  struct AtmoBreakdown {
+    std::vector<double> conv;
+    std::vector<double> prompt;
+  };
+
+  /**
    * Conventional + prompt atmospheric flux, assembled per event exactly as the
    * multiplicative NNMFit graph (graph = baseline, then *= each parameter's
    * reweight). Both share the CRGrad and DeltaGamma nuisances; Barr applies to
@@ -65,6 +76,19 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> histogram() const noexcept {
       return m_Histogram;
     }
+
+    /**
+     * The same histogram, but with the conventional and prompt contributions kept
+     * apart, for the results writers: conv[b] + prompt[b] == histogram()[b].
+     *
+     * Always computed on the CPU in FP64 and always from scratch, so it is exact
+     * even when the fit itself ran on an FP32 GPU backend (where histogram() is
+     * accumulated in FP32 and the two therefore agree only to FP32 precision).
+     * Not called from the minimizer loop: splitting the hot path would cost a
+     * second accumulator, a second GPU output buffer and a second readback on
+     * every iteration to serve a single write at the minimum.
+     */
+    [[nodiscard]] AtmoBreakdown breakdown(const ParameterWrapper& parameter) const;
 
     // Per-event (conv_i + prompt_i) combined weight, matching NNMFit's rule
     // that same-event components are summed before squaring for ssq

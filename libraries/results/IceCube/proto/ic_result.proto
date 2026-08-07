@@ -18,7 +18,10 @@ message Axis {
 
 // Per-flux-component breakdown, both summed and per-bin. `name` is one of
 // "astro", "atmospheric"/"atmospheric_veto" (whichever the sample declared),
-// "template", "systematicsDelta", "galactic".
+// "template", "systematicsDelta", "galactic", "atmospheric_conv",
+// "atmospheric_prompt". The last two are the conventional and prompt halves of
+// the "atmospheric"/"atmospheric_veto" entry and sum back to it (exactly on the
+// CPU path, to FP32 precision when the fit ran on an FP32 GPU backend).
 message Component {
   string name          = 1;
   double total          = 2;

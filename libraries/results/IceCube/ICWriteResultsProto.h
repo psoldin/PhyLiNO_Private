@@ -17,6 +17,6 @@ namespace result::ic {
   // to include the generated ic_result.pb.h, keeping the generated protobuf
   // headers out of every translation unit that just wants to call
   // write_ice_cube_results_protobuf().
-  void write_ice_cube_results_protobuf(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name);
+  void write_ice_cube_results_protobuf(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name);
 
 }  // namespace result::ic

@@ -1,4 +1,5 @@
 #include "DetectorSystematics.h"
+#include "ICComponentBreakdown.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICDataBase.h"
 #include "IceCube/ICParameter.h"
@@ -786,7 +787,13 @@ static Binning synthetic_binning() {
 // already compacted into the CSR bin layout. With `with_atmospheric = false`
 // the conventional/prompt/Barr columns are left empty, exactly as
 // ICDataBase::read_sample leaves them for a sample that declares only "astro".
-static io::ic::ICSample synthetic_sample(const Binning& binning, const bool with_atmospheric) {
+// `with_veto` additionally fills the six passing-fraction coefficient columns the
+// cascade samples carry, so a veto-reweighted sample can be built from the same
+// fixture (the coefficients are chosen to give a passing fraction of order 0.8 at
+// VetoThreshold = 0).
+static io::ic::ICSample synthetic_sample(const Binning& binning,
+                                         const bool     with_atmospheric,
+                                         const bool     with_veto = false) {
   // log10-energy bin centers: 10^2.5, 10^3.5, 10^4.5 GeV.
   const double energies[3] = {316.227766, 3162.27766, 31622.7766};
   // zenith (radians) chosen so cos(zenith) lands in cos-zenith bin 0 ([-1,0))
@@ -820,6 +827,15 @@ static io::ic::ICSample synthetic_sample(const Binning& binning, const bool with
           sample.prompt_alt.push_back(0.9 * prompt_base);
           for (int b = 0; b < params::ic::nBarrParams; ++b)
             sample.barr_conv[b].push_back(1.0e-4 * (b + 1) * jitter);
+          if (with_veto) {
+            // log10(PF) = a + b*e + c*e^2, e = 0 at VetoThreshold = 0.
+            sample.veto_conv[0].push_back(-0.10 * jitter);
+            sample.veto_conv[1].push_back(-1.0e-4 * jitter);
+            sample.veto_conv[2].push_back(1.0e-8 * jitter);
+            sample.veto_prompt[0].push_back(-0.05 * jitter);
+            sample.veto_prompt[1].push_back(-2.0e-4 * jitter);
+            sample.veto_prompt[2].push_back(2.0e-8 * jitter);
+          }
         }
 
         const double reco[2] = {reco_e, reco_z};
@@ -911,6 +927,192 @@ TEST(SampleLikelihoodTest, AsimovIsMinimum) {
   // nonzero value. The Poisson term does subtract it; that zero is asserted
   // by LikelihoodParityTest.PoissonAsimovIsExactlyZero.
   ASSERT_TRUE(llh_nominal < llh_perturbed);
+}
+
+// The conventional/prompt split the results writers report must decompose the
+// atmospheric histogram exactly -- conv[b] + prompt[b] == atmospheric[b] -- for a
+// plain sample and for a veto-reweighted one, where both halves additionally
+// carry a passing fraction built from different per-event coefficient columns.
+// A split that dropped the veto factor, or applied the conventional one to the
+// prompt half, would still look plausible bin by bin but would not add up.
+TEST(AtmosphericBreakdownTest, SplitSumsToHistogram) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning binning = synthetic_binning();
+
+  for (const bool use_veto : {false, true}) {
+    const io::ic::ICSample sample =
+        synthetic_sample(binning, /*with_atmospheric=*/true, /*with_veto=*/use_veto);
+
+    const std::vector<std::string> components =
+        use_veto ? std::vector<std::string>{"astro", "conventional_veto", "prompt_veto"}
+                 : std::vector<std::string>{"astro", "conventional", "prompt"};
+    const io::ic::SampleConfig cfg{.name       = "breakdown_sample",
+                                   .binning    = binning,
+                                   .mc_binning = binning,
+                                   .components = components};
+    ASSERT_TRUE(cfg.wants_veto() == use_veto);
+
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+    // Away from the nominal point in every parameter the split depends on, so a
+    // term that silently cancels at the defaults cannot hide.
+    std::vector<double> values             = nominal_parameter_values();
+    values[params::ic::ConvNorm]           = 1.3;
+    values[params::ic::PromptNorm]         = 0.7;
+    values[params::ic::CRGrad]             = 0.2;
+    values[params::ic::DeltaGamma]         = 0.05;
+    values[params::ic::BarrH]              = 0.1;
+    values[params::ic::BarrZ]              = -0.1;
+    values[params::ic::VetoThreshold]      = 0.05;
+
+    ParameterWrapper parameter(params::ic::number_of_parameters());
+    parameter.reset_parameter(values.data());
+
+    likelihood.generate_asimov(parameter);
+    const double llh = likelihood.partial_llh(parameter);
+    ASSERT_TRUE(std::isfinite(llh));
+
+    const auto atmo  = likelihood.atmospheric_histogram();
+    const auto split = likelihood.atmospheric_breakdown(parameter);
+    ASSERT_TRUE(split.conv.size() == atmo.size());
+    ASSERT_TRUE(split.prompt.size() == atmo.size());
+
+    double conv_total   = 0.0;
+    double prompt_total = 0.0;
+    for (std::size_t b = 0; b < atmo.size(); ++b) {
+      ASSERT_TRUE(split.conv[b] > 0.0);
+      ASSERT_TRUE(split.prompt[b] > 0.0);
+      const double scale = std::max(std::fabs(atmo[b]), 1.0e-300);
+      ASSERT_TRUE(std::fabs(split.conv[b] + split.prompt[b] - atmo[b]) / scale < 1.0e-12);
+      conv_total += split.conv[b];
+      prompt_total += split.prompt[b];
+    }
+    // The fixture's conventional baseline is 50x the prompt one; a split that
+    // swapped the two halves would satisfy the sum check above but not this.
+    ASSERT_TRUE(conv_total > prompt_total);
+  }
+}
+
+// A sample without an atmospheric component reports an empty split, the same way
+// atmospheric_histogram() reports an empty span -- the writers must not fabricate
+// zero-filled conv/prompt spectra for an astro-only sample.
+TEST(AtmosphericBreakdownTest, EmptyWithoutAtmosphericComponent) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/false);
+  const io::ic::SampleConfig cfg{.name       = "astro_only_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  const auto       values = nominal_parameter_values();
+  parameter.reset_parameter(values.data());
+  likelihood.generate_asimov(parameter);
+
+  const auto split = likelihood.atmospheric_breakdown(parameter);
+  ASSERT_TRUE(split.conv.empty());
+  ASSERT_TRUE(split.prompt.empty());
+}
+
+// The component list both result writers emit: the five long-standing keys plus
+// the two new atmospheric halves, all in the analysis binning. Written once in
+// ICComponentBreakdown.h precisely so the JSON and protobuf outputs cannot drift
+// apart, so this test pins the contract they share.
+TEST(ICComponentBreakdownTest, KeysAndAtmosphericSum) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "component_breakdown_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  std::vector<double> values      = nominal_parameter_values();
+  values[params::ic::ConvNorm]    = 1.3;
+  values[params::ic::PromptNorm]  = 0.7;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  likelihood.generate_asimov(parameter);
+  ASSERT_TRUE(std::isfinite(likelihood.partial_llh(parameter)));
+
+  const auto components = result::ic::component_breakdown(likelihood, parameter);
+
+  const std::vector<std::string> expected_keys = {"astro",    "atmospheric",      "template",
+                                                  "systematicsDelta", "galactic", "atmospheric_conv",
+                                                  "atmospheric_prompt"};
+  ASSERT_TRUE(components.size() == expected_keys.size());
+  for (std::size_t i = 0; i < expected_keys.size(); ++i)
+    ASSERT_TRUE(components[i].first == expected_keys[i]);
+
+  const auto bins_of = [&](const std::string& key) -> const std::vector<double>& {
+    for (const auto& [name, bins] : components)
+      if (name == key) return bins;
+    throw std::logic_error("missing component " + key);
+  };
+
+  const auto& atmo   = bins_of("atmospheric");
+  const auto& conv   = bins_of("atmospheric_conv");
+  const auto& prompt = bins_of("atmospheric_prompt");
+  ASSERT_TRUE(conv.size() == atmo.size());
+  ASSERT_TRUE(prompt.size() == atmo.size());
+  for (std::size_t b = 0; b < atmo.size(); ++b) {
+    const double scale = std::max(std::fabs(atmo[b]), 1.0e-300);
+    ASSERT_TRUE(std::fabs(conv[b] + prompt[b] - atmo[b]) / scale < 1.0e-12);
+  }
+}
+
+// On an FP32 GPU backend the histogram is accumulated in FP32 while the split is
+// always recomputed on the CPU in FP64, so the two agree only to FP32 precision --
+// but they must still agree to that, or the split is describing a different
+// prediction than the one that was fitted. Skipped when no Metal device exists.
+TEST(AtmosphericBreakdownTest, MetalSplitMatchesHistogram) {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  if (!MetalBackend::available()) {
+    GTEST_SKIP() << "Metal backend is unavailable";
+  }
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "metal_breakdown_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const auto       backend = std::make_shared<MetalBackend>();
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
+
+  std::vector<double> values     = nominal_parameter_values();
+  values[params::ic::ConvNorm]   = 1.2;
+  values[params::ic::PromptNorm] = 0.6;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  likelihood.generate_asimov(parameter);
+  ASSERT_TRUE(std::isfinite(likelihood.partial_llh(parameter)));
+
+  const auto atmo  = likelihood.atmospheric_histogram();
+  const auto split = likelihood.atmospheric_breakdown(parameter);
+  ASSERT_TRUE(split.conv.size() == atmo.size());
+
+  for (std::size_t b = 0; b < atmo.size(); ++b) {
+    const double scale = std::max(std::fabs(atmo[b]), 1.0e-30);
+    ASSERT_TRUE(std::fabs(split.conv[b] + split.prompt[b] - atmo[b]) / scale < 1.0e-4);
+  }
 }
 
 // The GPU SAY path (flux kernels leaving per-event weights on the GPU + the

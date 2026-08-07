@@ -2,7 +2,7 @@
   "Experiment": "IceCube",
   "IceCube": {
     "Backend": "cpu",
-    "Likelihood": "SAY",
+    "Likelihood": "Poisson",
     "UseData": false,
     "AstroModel": "BrokenPowerlaw",
     "ERefGeV": 100000.0,

@@ -28,6 +28,14 @@ namespace ana {
 
     [[nodiscard]] ParameterWrapper& parameter() noexcept { return m_Parameter; }
 
+    /**
+     * The parameter set of the most recent calculate_likelihood() call, with the
+     * transform already applied. Read by the results writers, which re-evaluate
+     * the likelihood at the minimum and then ask the components to break their
+     * prediction down for the same point.
+     */
+    [[nodiscard]] const ParameterWrapper& parameter() const noexcept { return m_Parameter; }
+
    protected:
     std::shared_ptr<io::Options> m_Options;  ///< The options object used for likelihood calculation.
 

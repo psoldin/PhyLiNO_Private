@@ -6,6 +6,7 @@
 #include "IceCube/ICLikelihood.h"
 #include "IceCube/ICParameter.h"
 
+#include "ICComponentBreakdown.h"
 #include "ICWriteResultsProto.h"
 
 #include <nlohmann/json.hpp>
@@ -19,9 +20,14 @@
 
 namespace result::ic {
 
-  inline nlohmann::json get_json_file(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info) {
+  inline nlohmann::json get_json_file(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info) {
     const auto  min   = fit.get_minimizer();
     const auto& names = fit.options()->inputOptions().input_parameters().names();
+
+    // Every histogram read below -- prediction and per-component breakdown alike --
+    // is whatever the last likelihood call left behind, so put the likelihood back
+    // on the minimum first.
+    evaluate_at_minimum(llh, min->X());
 
     nlohmann::json j;
 
@@ -67,44 +73,14 @@ namespace result::ic {
                         {"nBins", axis.n_bins}});
       }
 
-      // Per-component breakdown, both summed and per-bin: a mis-scaled template or
-      // gradient is visible here instead of hidden inside the sample total. Every
-      // component is reported in the sample's ANALYSIS binning -- the per-event and
-      // 2D-template components are spread over the RA axis exactly as the prediction
-      // is -- so an external per-bin diff (tools/nnmfit_oracle/compare_to_nnmfit.py)
-      // needs no reshaping. The atmospheric component is keyed by whichever variant
-      // the sample declared, so the diff can tell a veto-reweighted sample from a
-      // plain one.
-      auto sum_of = [](const std::vector<double>& values) {
-        double total = 0.0;
-        for (const double v : values)
-          total += v;
-        return total;
-      };
-      const std::string atmo_key = config.wants_veto() ? "atmospheric_veto" : "atmospheric";
-
-      const std::vector<double> astro_bins    = sample.in_analysis_bins(sample.astro_histogram());
-      const std::vector<double> atmo_bins     = sample.in_analysis_bins(sample.atmospheric_histogram());
-      const std::vector<double> template_bins = sample.in_analysis_bins(sample.template_histogram());
-      const std::vector<double> systematics_bins =
-          sample.in_analysis_bins(sample.systematics_mu_delta());
-      const std::vector<double> galactic_bins = sample.in_analysis_bins(sample.galactic_histogram());
-
-      nlohmann::json component_totals = {
-          {"astro", sum_of(astro_bins)},
-          {atmo_key, sum_of(atmo_bins)},
-          {"template", sum_of(template_bins)},
-          {"systematicsDelta", sum_of(systematics_bins)},
-          {"galactic", sum_of(galactic_bins)},
-      };
-
-      nlohmann::json component_bins = {
-          {"astro", astro_bins},
-          {atmo_key, atmo_bins},
-          {"template", template_bins},
-          {"systematicsDelta", systematics_bins},
-          {"galactic", galactic_bins},
-      };
+      // Per-component breakdown, both summed and per-bin (see component_breakdown()
+      // in ICComponentBreakdown.h for the component list and what each key means).
+      nlohmann::json component_totals = nlohmann::json::object();
+      nlohmann::json component_bins   = nlohmann::json::object();
+      for (auto& [key, bins] : component_breakdown(sample, llh.parameter())) {
+        component_totals[key] = sum_of(bins);
+        component_bins[key]   = std::move(bins);
+      }
 
       j["samples"].push_back({
           {"name", config.name},
@@ -129,7 +105,7 @@ namespace result::ic {
     return j;
   }
 
-  inline void write_ice_cube_results_json(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
+  inline void write_ice_cube_results_json(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
     auto j = get_json_file(fit, llh, info);
 
     std::stringstream ss;
@@ -144,7 +120,7 @@ namespace result::ic {
   // protobuf format is the same content, binary-encoded and gzip-compressed,
   // for the multi-thousand-file production runs where the pretty-printed JSON
   // (one 3D-binned sample alone can be tens of MB) is not practical to store.
-  inline void write_ice_cube_results(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
+  inline void write_ice_cube_results(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
     const auto& format = fit.options()->inputOptions().output_format();
 
     if (format == "json") {

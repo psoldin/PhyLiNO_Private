@@ -1,5 +1,6 @@
 #include "ICWriteResultsProto.h"
 
+#include "ICComponentBreakdown.h"
 #include "ic_result.pb.h"
 
 // STL includes
@@ -16,9 +17,14 @@ namespace result::ic {
 
   namespace {
 
-    result::ic::proto::FitResult build_proto_result(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info) {
+    result::ic::proto::FitResult build_proto_result(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info) {
       const auto  min   = fit.get_minimizer();
       const auto& names = fit.options()->inputOptions().input_parameters().names();
+
+      // Every histogram read below -- prediction and per-component breakdown alike --
+      // is whatever the last likelihood call left behind, so put the likelihood back
+      // on the minimum first.
+      evaluate_at_minimum(llh, min->X());
 
       result::ic::proto::FitResult msg;
 
@@ -73,30 +79,14 @@ namespace result::ic {
         *sample_msg->mutable_data()       = {data.begin(), data.end()};
         *sample_msg->mutable_prediction() = {predicted.begin(), predicted.end()};
 
-        auto sum_of = [](const std::vector<double>& values) {
-          double total = 0.0;
-          for (const double v : values) total += v;
-          return total;
-        };
-        const std::string atmo_key = config.wants_veto() ? "atmospheric_veto" : "atmospheric";
-
-        const std::vector<double> astro_bins       = sample.in_analysis_bins(sample.astro_histogram());
-        const std::vector<double> atmo_bins        = sample.in_analysis_bins(sample.atmospheric_histogram());
-        const std::vector<double> template_bins    = sample.in_analysis_bins(sample.template_histogram());
-        const std::vector<double> systematics_bins = sample.in_analysis_bins(sample.systematics_mu_delta());
-        const std::vector<double> galactic_bins    = sample.in_analysis_bins(sample.galactic_histogram());
-
-        const auto add_component = [&](const std::string& name, const std::vector<double>& bins) {
+        // Same component list and semantics as the JSON writer (see
+        // component_breakdown() in ICComponentBreakdown.h).
+        for (const auto& [key, bins] : component_breakdown(sample, llh.parameter())) {
           auto* component_msg = sample_msg->add_components_breakdown();
-          component_msg->set_name(name);
+          component_msg->set_name(key);
           component_msg->set_total(sum_of(bins));
           *component_msg->mutable_bins() = {bins.begin(), bins.end()};
-        };
-        add_component("astro", astro_bins);
-        add_component(atmo_key, atmo_bins);
-        add_component("template", template_bins);
-        add_component("systematicsDelta", systematics_bins);
-        add_component("galactic", galactic_bins);
+        }
       }
 
       msg.set_data_total(data_total);
@@ -108,7 +98,7 @@ namespace result::ic {
 
   }  // namespace
 
-  void write_ice_cube_results_protobuf(ana::Fit& fit, const ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
+  void write_ice_cube_results_protobuf(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info, std::string_view name) {
     const auto msg = build_proto_result(fit, llh, info);
 
     std::stringstream ss;

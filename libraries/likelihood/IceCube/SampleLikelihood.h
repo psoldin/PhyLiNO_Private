@@ -75,6 +75,16 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> atmospheric_histogram() const noexcept {
       return m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
     }
+    /**
+     * atmospheric_histogram() split into its conventional and prompt halves, for
+     * the results writers. Both vectors are empty when this sample declares no
+     * atmospheric component, matching the empty span the accessors above return.
+     * Recomputed on the CPU from the given parameters -- pass the parameters the
+     * prediction was last built with, or the split will not add up to it.
+     */
+    [[nodiscard]] AtmoBreakdown atmospheric_breakdown(const ParameterWrapper& parameter) const {
+      return m_Atmo ? m_Atmo->breakdown(parameter) : AtmoBreakdown{};
+    }
     [[nodiscard]] std::span<const double> template_histogram() const noexcept {
       return m_Template ? m_Template->histogram() : std::span<const double>{};
     }

@@ -7,6 +7,9 @@ target_link_libraries(ICTests PRIVATE io icecube GTest::gtest_main
 # needs it directly to include boost/property_tree headers for the
 # parse_samples() test. Boost itself is already a link dependency of io.
 target_include_directories(ICTests PRIVATE ${Boost_INCLUDE_DIR})
+# The shared per-component breakdown both result writers use is header-only and
+# lives with the writers; ICTests pins its component list directly.
+target_include_directories(ICTests PRIVATE ${CMAKE_SOURCE_DIR}/libraries/results/IceCube)
 
 # The scan refinement is header-only and pulls in nothing from the fit, so its
 # tests are a separate, fast target.
