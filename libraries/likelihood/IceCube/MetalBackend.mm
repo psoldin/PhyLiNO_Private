@@ -73,6 +73,15 @@ namespace ana::ic {
       // concurrently, so their command buffers must be able to overlap rather
       // than queue up behind one another.
       id<MTLCommandQueue> queue;
+
+      // The last command buffer committed on that queue, not yet waited on.
+      // dispatch() no longer blocks: one likelihood evaluation is a chain of
+      // kernels (flux, gather, ssq, gather) where only the last result is read
+      // on the host, and a queue executes its command buffers in the order they
+      // were committed. So the waits in between bought nothing but their own
+      // latency, several per evaluation per sample. contents() is where the
+      // host actually needs the data, and that is where the wait happens now.
+      id<MTLCommandBuffer> pending = nil;
     };
 
     // Register a shared backend buffer in this session's table as a non-owning
@@ -149,6 +158,12 @@ namespace ana::ic {
     auto* s = static_cast<MetalSessionState*>(m_State);
     if (!s) return;
     auto* b = static_cast<MetalState*>(m_Backend->m_State);
+    // A committed command buffer may still be writing into this session's
+    // buffers, which ARC is about to release.
+    if (s->pending != nil) {
+      [s->pending waitUntilCompleted];
+      s->pending = nil;
+    }
     for (const auto& row : s->rows)
       if (row.owning) b->liveOutputs.fetch_sub(1, std::memory_order_relaxed);
     // ARC releases every row; the backend's columns survive because it holds its
@@ -274,12 +289,18 @@ namespace ana::ic {
             threadsPerThreadgroup:MTLSizeMake(kThreadsPerGroup, 1, 1)];
       [enc endEncoding];
       [cb commit];
-      [cb waitUntilCompleted];
+      s->pending = cb;
     }
   }
 
   const float* MetalSession::contents(int handle) const noexcept {
     auto* s = static_cast<MetalSessionState*>(m_State);
+    // Everything committed on this queue runs in order, so waiting on the last
+    // command buffer waits for all of them.
+    if (s->pending != nil) {
+      [s->pending waitUntilCompleted];
+      s->pending = nil;
+    }
     return static_cast<const float*>(s->rows[handle].buf.contents);
   }
 

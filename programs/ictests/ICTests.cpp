@@ -1209,8 +1209,9 @@ TEST(GpuBackendTest, SharedBackendUploadsAndCompilesOnce) {
   const std::size_t kernels_after_first = backend->kernel_compile_count();
 
   ASSERT_GT(columns_after_first, 0u);
-  // powerlaw_hist, atmo_hist, say_ssq.
-  ASSERT_EQ(kernels_after_first, 3u);
+  // powerlaw_hist, atmo_hist, say_ssq, and bin_gather (the second half of every
+  // one of those reductions, see GpuBinReduce).
+  ASSERT_EQ(kernels_after_first, 4u);
 
   SampleLikelihood second(sample, cfg, synthetic_settings(), backend->create_session(),
                           /*use_say=*/true);
@@ -1310,7 +1311,7 @@ TEST(GpuBackendTest, ConcurrentSessionsMatchSequential) {
     EXPECT_DOUBLE_EQ(result.get(), expected);
 
   // ... and the sharing really happened: one set of kernels, one set of columns.
-  EXPECT_EQ(shared->kernel_compile_count(), 3u);
+  EXPECT_EQ(shared->kernel_compile_count(), 4u);
   EXPECT_EQ(shared->column_count(), sequential_backend->column_count());
 }
 
