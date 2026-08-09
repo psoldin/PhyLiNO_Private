@@ -108,6 +108,10 @@ namespace ana::ic {
     std::optional<GpuBinReduce>   m_Reduce;
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
+
+    void recalculate_gpu(const ParameterWrapper& parameter) noexcept;
+
+    void recalculate_cpu(const ParameterWrapper& parameter) noexcept;
   };
 
 }  // namespace ana::ic

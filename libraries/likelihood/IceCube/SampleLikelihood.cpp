@@ -163,7 +163,7 @@ namespace ana::ic {
       const int           n_chunks = static_cast<int>((n + kBinsPerChunk - 1) / kBinsPerChunk);
       std::vector<double> partial(static_cast<std::size_t>(n_chunks), 0.0);
 
-#pragma omp parallel for if (multi_threaded)
+      #pragma omp parallel for if (multi_threaded)
       for (int c = 0; c < n_chunks; ++c) {
         const std::size_t lo = static_cast<std::size_t>(c) * kBinsPerChunk;
         const std::size_t hi = std::min(n, lo + kBinsPerChunk);

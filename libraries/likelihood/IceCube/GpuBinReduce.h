@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <span>
+#include <type_traits>
 
 namespace ana::ic {
 
@@ -63,5 +65,34 @@ namespace ana::ic {
     int                         m_hBinChunkOffsets = -1;
     int                         m_hPartial         = -1;
   };
+
+  /**
+   * Shared tail of every flux kernel's recalculate_gpu(): fill a params struct
+   * templated on the FP32/FP64 scalar (ParamsT must expose `using Scalar =
+   * R;`), dispatch it over the chunk decomposition, gather the partials into
+   * `hist_handle`, then copy the result into `histogram` -- narrowing from
+   * float on an FP32 backend. Callers pick ParamsT<double> or ParamsT<float>
+   * to match `gpu.is_fp64()`; `fill` fills the params struct passed to it.
+   */
+  template <class ParamsT, class Fill>
+  void dispatch_and_gather_hist(GpuSession& gpu, const char* kernel_name, const int* inputs, int n_inputs,
+                                 Fill&& fill, const GpuBinReduce& reduce, int per_event_handle,
+                                 int hist_handle, std::span<double> histogram) {
+    using R = typename ParamsT::Scalar;
+
+    ParamsT p{};
+    fill(p);
+    gpu.dispatch(kernel_name, inputs, n_inputs, &p, sizeof(p), reduce.partial(), per_event_handle,
+                 reduce.n_chunks());
+    reduce.gather(hist_handle);
+
+    if constexpr (std::is_same_v<R, double>) {
+      const double* hist = gpu.contents_f64(hist_handle);
+      for (std::size_t bin = 0, n = histogram.size(); bin < n; ++bin) histogram[bin] = hist[bin];
+    } else {
+      const float* hist = gpu.contents(hist_handle);
+      for (std::size_t bin = 0, n = histogram.size(); bin < n; ++bin) histogram[bin] = static_cast<double>(hist[bin]);
+    }
+  }
 
 }  // namespace ana::ic

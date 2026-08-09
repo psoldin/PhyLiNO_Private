@@ -19,6 +19,7 @@ namespace ana::ic {
     // matching the `real` fields of the compiled kernel struct.
     template <class R>
     struct AtmoParamsT {
+      using Scalar = R;
       R   cr;
       R   dg;
       R   conv_norm;
@@ -385,23 +386,12 @@ namespace ana::ic {
                           m_hVetoPrompt[0], m_hVetoPrompt[1], m_hVetoPrompt[2],
                           m_Reduce->chunk_offsets()};
 
-    if (m_Gpu->is_fp64()) {
-      AtmoParamsT<double> p;
-      fill(p);
-      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
-                      m_Reduce->n_chunks());
-      m_Reduce->gather(m_hHist);
-      const double* hist = m_Gpu->contents_f64(m_hHist);
-      for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = hist[bin];
-    } else {
-      AtmoParamsT<float> p;
-      fill(p);
-      m_Gpu->dispatch("atmo_hist", inputs, 16, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
-                      m_Reduce->n_chunks());
-      m_Reduce->gather(m_hHist);
-      const float* hist = m_Gpu->contents(m_hHist);
-      for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin) m_Histogram[bin] = static_cast<double>(hist[bin]);
-    }
+    if (m_Gpu->is_fp64())
+      dispatch_and_gather_hist<AtmoParamsT<double>>(*m_Gpu, "atmo_hist", inputs, 16, fill, *m_Reduce, m_hPerEvent,
+                                                    m_hHist, m_Histogram);
+    else
+      dispatch_and_gather_hist<AtmoParamsT<float>>(*m_Gpu, "atmo_hist", inputs, 16, fill, *m_Reduce, m_hPerEvent,
+                                                   m_hHist, m_Histogram);
     // Per-event weights stay GPU-resident (read by the say_ssq kernel).
   }
 
@@ -456,16 +446,19 @@ namespace ana::ic {
     return result;
   }
 
-  bool AtmosphericFlux::check_and_recalculate(const ParameterWrapper& parameter) {
+  inline bool check_parameters(const ParameterWrapper& parameter, const bool use_veto) noexcept {
     using namespace params::ic;
-    const bool changed =
-        parameter.check_parameter_changed(ConvNorm)
-        | parameter.check_parameter_changed(PromptNorm)
-        | parameter.check_parameter_changed(CRGrad)
-        | parameter.check_parameter_changed(DeltaGamma)
-        | parameter.check_parameter_changed(BarrH, BarrZ)
-        | (m_UseVeto && parameter.check_parameter_changed(VetoThreshold));
+    return  parameter.check_parameter_changed(ConvNorm)
+    | parameter.check_parameter_changed(PromptNorm)
+    | parameter.check_parameter_changed(CRGrad)
+    | parameter.check_parameter_changed(DeltaGamma)
+    | parameter.check_parameter_changed(BarrH, BarrZ)
+    | (use_veto && parameter.check_parameter_changed(VetoThreshold));
+  }
 
+  bool AtmosphericFlux::check_and_recalculate(const ParameterWrapper& parameter) {
+    const bool changed = check_parameters(parameter, m_UseVeto);
+    
     if (changed)
       recalculate(parameter);
     return changed;

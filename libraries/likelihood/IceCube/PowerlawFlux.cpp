@@ -17,6 +17,7 @@ namespace ana::ic {
     // doubles, each matching the `real` fields of the compiled kernel struct.
     template <class R>
     struct PowerlawParamsT {
+      using Scalar = R;
       R   eff_norm;
       R   inv_eref;
       R   exponent;  // single PL: ref_index - gamma. Broken PL: gamma_1.
@@ -175,7 +176,112 @@ namespace ana::ic {
     }
   }
 
-  void PowerlawFlux::recalculate(const ParameterWrapper& parameter) noexcept {
+  inline void recalculate_cpu_SPL(const io::ic::ICSample& sample,
+                                  const double eff_norm,
+                                  const double exponent,
+                                  const double Eref,
+                                  std::span<double> histogram,
+                                  std::span<double> PerEventWeight,
+                                  const bool use_multithreading) noexcept {
+
+    const auto& off      = sample.bin_offsets;
+    const auto& baseline = sample.astro_baseline;
+    const auto& e_true   = sample.e_true;
+    const int n_bins     = static_cast<int>(histogram.size());
+
+    #pragma omp parallel for if (use_multithreading)
+    for (int bin = 0; bin < n_bins; ++bin) {
+      double acc = 0.0;
+      for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
+        const double w = baseline[i] * eff_norm * std::pow(e_true[i] / Eref, exponent);
+        acc += w;
+        PerEventWeight[i] = w;
+      }
+      histogram[bin] = acc;
+    }
+  }
+
+  inline void recalculate_cpu_BPL(const io::ic::ICSample& sample,
+                                  const double eff_norm,
+                                  const double g1,
+                                  const double g2,
+                                  const double e_break,
+                                  const double pivot,
+                                  std::span<double> histogram,
+                                  std::span<double> PerEventWeight,
+                                  const bool use_multithreading) noexcept {
+    
+    const auto& off      = sample.bin_offsets;
+    const auto& baseline = sample.astro_baseline;
+    const auto& e_true   = sample.e_true;
+    const int n_bins     = static_cast<int>(histogram.size());
+    
+    // Broken-power-law scalars, evaluated in double precision on the host and
+    // narrowed only when the kernel params struct is filled. Left at their
+    // single-power-law-safe defaults otherwise.
+    #pragma omp parallel for if (use_multithreading)
+    for (int bin = 0; bin < n_bins; ++bin) {
+      double acc = 0.0;
+      for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
+        const double e     = e_true[i];
+        const double x     = e / e_break;
+        const double shape = x < 1.0 ? std::pow(x, -g1) : std::pow(x, -g2);
+        // Undo the baseline column's built-in E^-2: `powerlaw` is
+        // fluxless_weight * 1e-18 * (E/1e5)^-2, so the 1e-18 cancels against
+        // AstroBPL's own factor and (E/1e5)^2 remains. The 1e5 is a property of
+        // that column, not the configurable ERefGeV.
+        const double undo = (e / 1.0e5) * (e / 1.0e5);
+        const double w    = baseline[i] * eff_norm * pivot * shape * undo;
+        acc += w;
+        PerEventWeight[i] = w;
+      }
+      histogram[bin] = acc;
+    }
+    return;
+  }
+
+  void PowerlawFlux::recalculate_cpu(const ParameterWrapper& parameter) noexcept {
+    using namespace params::ic;
+
+    switch (m_Model) {
+      case io::ic::AstroModel::Powerlaw: {
+        const double norm     = parameter[AstroNorm];
+        const double gamma    = parameter[SpectralIndex];
+        const double eff_norm = m_PerTypeNorm ? norm : 0.5 * norm;
+
+        return recalculate_cpu_SPL(m_Sample,
+                                   eff_norm,
+                                   m_ReferenceIndex - gamma,
+                                   m_ERef,
+                                   m_Histogram,
+                                   m_PerEventWeight,
+                                   m_UseMultiThreading);
+      }
+      case io::ic::AstroModel::BrokenPowerlaw: {
+        const double norm     = parameter[AstroNorm];
+        const double eff_norm = m_PerTypeNorm ? norm : 0.5 * norm;
+        const double g1       = parameter[AstroGamma1];
+        const double g2       = parameter[AstroGamma2];
+        const double e_break  = std::pow(10, parameter[AstroEBreak]);
+        const double pivot    = (1.0e5 < e_break) ? std::pow(1.0e5 / e_break, g1)
+                                                  : std::pow(1.0e5 / e_break, g2);
+
+        return recalculate_cpu_BPL(m_Sample,
+                                   eff_norm,
+                                   g1,
+                                   g2,
+                                   e_break,
+                                   pivot,
+                                   m_Histogram,
+                                   m_PerEventWeight,
+                                   m_UseMultiThreading);
+      }
+      default:
+        return;
+    }
+  }
+
+  void PowerlawFlux::recalculate_gpu(const ParameterWrapper& parameter) noexcept {
     using namespace params::ic;
 
     const double norm  = parameter[AstroNorm];
@@ -200,90 +306,39 @@ namespace ana::ic {
                               : std::pow(1.0e5 / e_break, g2);
     }
 
+    // Fill either a float or a double params struct from the double host
+    // scalars, matching the kernel's `real` precision. The kernel reuses
+    // `exponent` as gamma_1 in broken-power-law mode.
+    const auto fill = [&](auto& p) {
+      using R      = std::decay_t<decltype(p.eff_norm)>;
+      p.eff_norm   = static_cast<R>(m_PerTypeNorm ? norm : 0.5 * norm);
+      p.inv_eref   = static_cast<R>(1.0 / m_ERef);
+      p.exponent   = static_cast<R>(broken ? g1 : m_ReferenceIndex - gamma);
+      p.write_pe   = m_NeedPerEvent ? 1 : 0;
+      p.gamma_2    = static_cast<R>(g2);
+      p.inv_ebreak = static_cast<R>(1.0 / e_break);
+      p.pivot      = static_cast<R>(pivot);
+      p.broken     = broken ? 1 : 0;
+    };
+
+    // Chunk-parallel: the kernel reduces each chunk to a partial, then
+    // gather() sums each bin's partials into m_hHist (see GpuBinReduce).
+    const int inputs[] = {m_hETrue, m_hBaseline, m_Reduce->chunk_offsets()};
+    if (m_Gpu->is_fp64())
+      dispatch_and_gather_hist<PowerlawParamsT<double>>(*m_Gpu, "powerlaw_hist", inputs, 3, fill, *m_Reduce,
+                                                         m_hPerEvent, m_hHist, m_Histogram);
+    else
+      dispatch_and_gather_hist<PowerlawParamsT<float>>(*m_Gpu, "powerlaw_hist", inputs, 3, fill, *m_Reduce,
+                                                        m_hPerEvent, m_hHist, m_Histogram);
+    // Per-event weights stay GPU-resident (read by the say_ssq kernel).
+  }
+
+  void PowerlawFlux::recalculate(const ParameterWrapper& parameter) noexcept {
     if (m_Gpu) {
-      // Fill either a float or a double params struct from the double host
-      // scalars, matching the kernel's `real` precision. The kernel reuses
-      // `exponent` as gamma_1 in broken-power-law mode.
-      const auto fill = [&](auto& p) {
-        using R      = std::decay_t<decltype(p.eff_norm)>;
-        p.eff_norm   = static_cast<R>(m_PerTypeNorm ? norm : 0.5 * norm);
-        p.inv_eref   = static_cast<R>(1.0 / m_ERef);
-        p.exponent   = static_cast<R>(broken ? g1 : m_ReferenceIndex - gamma);
-        p.write_pe   = m_NeedPerEvent ? 1 : 0;
-        p.gamma_2    = static_cast<R>(g2);
-        p.inv_ebreak = static_cast<R>(1.0 / e_break);
-        p.pivot      = static_cast<R>(pivot);
-        p.broken     = broken ? 1 : 0;
-      };
-
-      // Chunk-parallel: the kernel reduces each chunk to a partial, then
-      // gather() sums each bin's partials into m_hHist (see GpuBinReduce).
-      const int inputs[] = {m_hETrue, m_hBaseline, m_Reduce->chunk_offsets()};
-      if (m_Gpu->is_fp64()) {
-        PowerlawParamsT<double> p;
-        fill(p);
-        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
-                        m_Reduce->n_chunks());
-        m_Reduce->gather(m_hHist);
-        const double* hist = m_Gpu->contents_f64(m_hHist);
-        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
-          m_Histogram[bin] = hist[bin];
-      } else {
-        PowerlawParamsT<float> p;
-        fill(p);
-        m_Gpu->dispatch("powerlaw_hist", inputs, 3, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
-                        m_Reduce->n_chunks());
-        m_Reduce->gather(m_hHist);
-        const float* hist = m_Gpu->contents(m_hHist);
-        for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
-          m_Histogram[bin] = static_cast<double>(hist[bin]);
-      }
-      // Per-event weights stay GPU-resident (read by the say_ssq kernel).
+      recalculate_gpu(parameter);
       return;
     }
-
-    // NNMFit Norm with per_type_norm=false halves the per-type normalization.
-    const double eff_norm = m_PerTypeNorm ? norm : 0.5 * norm;
-    // (E/E_ref)^(ref_index - gamma), baseline is already ~E^(-ref_index).
-    const double exponent = m_ReferenceIndex - gamma;
-
-    const auto& off      = m_Sample.bin_offsets;
-    const auto& baseline = m_Sample.astro_baseline;
-    const auto& e_true   = m_Sample.e_true;
-    const int   n_bins   = static_cast<int>(m_Histogram.size());
-
-    if (broken) {
-#pragma omp parallel for if (m_UseMultiThreading)
-      for (int bin = 0; bin < n_bins; ++bin) {
-        double acc = 0.0;
-        for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
-          const double e     = e_true[i];
-          const double x     = e / e_break;
-          const double shape = x < 1.0 ? std::pow(x, -g1) : std::pow(x, -g2);
-          // Undo the baseline column's built-in E^-2: `powerlaw` is
-          // fluxless_weight * 1e-18 * (E/1e5)^-2, so the 1e-18 cancels against
-          // AstroBPL's own factor and (E/1e5)^2 remains. The 1e5 is a property of
-          // that column, not the configurable ERefGeV.
-          const double undo = (e / 1.0e5) * (e / 1.0e5);
-          const double w    = baseline[i] * eff_norm * pivot * shape * undo;
-          acc += w;
-          m_PerEventWeight[i] = w;
-        }
-        m_Histogram[bin] = acc;
-      }
-      return;
-    }
-
-#pragma omp parallel for if (m_UseMultiThreading)
-    for (int bin = 0; bin < n_bins; ++bin) {
-      double acc = 0.0;
-      for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
-        const double w = baseline[i] * eff_norm * std::pow(e_true[i] / m_ERef, exponent);
-        acc += w;
-        m_PerEventWeight[i] = w;
-      }
-      m_Histogram[bin] = acc;
-    }
+    recalculate_cpu(parameter);
   }
 
   inline bool check_SPL_parameter(const ParameterWrapper& parameter) noexcept {
