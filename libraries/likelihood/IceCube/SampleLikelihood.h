@@ -59,11 +59,21 @@ namespace ana::ic {
     /** Fill this sample's Asimov data from the nominal parameters. */
     void generate_asimov(const ParameterWrapper& nominal);
 
-    [[nodiscard]] std::span<const double> predicted() const noexcept { return m_Predicted; }
+    /**
+     * The prediction in the analysis binning.
+     *
+     * Materialised on demand rather than by every evaluation: the likelihood
+     * loop reads the MC-binned total and the galactic templates directly and
+     * spreads them over the RA axis as it goes, so writing the 3D array out
+     * would be 2 MB of stores and loads per evaluation that only the results
+     * writers and the tests ever look at.
+     */
+    [[nodiscard]] std::span<const double> predicted() const noexcept;
     [[nodiscard]] std::span<const double> data() const noexcept { return m_Data; }
 
-    /** Per-bin sigma^2 in the analysis binning (SAY only; zero under Poisson). */
-    [[nodiscard]] std::span<const double> ssq() const noexcept { return m_Ssq; }
+    /** Per-bin sigma^2 in the analysis binning (SAY only; zero under Poisson).
+        Materialised on demand, like predicted(). */
+    [[nodiscard]] std::span<const double> ssq() const noexcept;
 
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
@@ -129,20 +139,57 @@ namespace ana::ic {
     bool                      m_GalacticSeeded = false;
 
     // Analysis-binning buffers (RA axis included when the sample has one).
-    std::vector<double> m_Predicted;
-    std::vector<double> m_Data;
-    std::vector<double> m_Ssq;
+    // m_Predicted and m_Ssq are outputs of the accessors above, not of the hot
+    // path: mutable because they are filled lazily from const accessors, and
+    // stale until the flags below say otherwise.
+    mutable std::vector<double> m_Predicted;
+    std::vector<double>         m_Data;
+    mutable std::vector<double> m_Ssq;
+    mutable bool                m_PredictedStale = true;
+    mutable bool                m_SsqStale       = true;
+
     // lgamma(m_Data[b] + 1), refreshed by refresh_data_constants() whenever
     // m_Data changes. A per-bin constant of the fit that the likelihood term
     // would otherwise recompute on every evaluation.
     std::vector<double> m_LogGammaDataPlus1;
+    // The saturated Poisson term log P(k|k), which the Poisson likelihood
+    // subtracts per bin. It depends only on the data, so it is a constant of
+    // the fit -- and one that costs a log per analysis bin per evaluation when
+    // it is not treated as one.
+    std::vector<double> m_PoissonSaturated;
+
+    // Per-RA-group constants, one entry per MC bin. Everything the prediction
+    // contributes to a likelihood bin is identical across that bin's RA slice
+    // (mu is the MC total divided by n_ra, sigma^2 the MC value divided by
+    // n_ra^2), so with no galactic template in the sample the only thing that
+    // varies along RA is the data. Summing the data-side constants per group
+    // once turns the whole slice into a handful of scalar operations plus one
+    // logarithm -- see poisson_llh()/say_llh().
+    std::vector<double> m_GroupDataSum;       ///< sum of k over the group
+    std::vector<double> m_GroupLogGammaSum;   ///< sum of lgamma(k + 1) over the group
+    std::vector<double> m_GroupSaturatedSum;  ///< sum of the saturated Poisson term
+    std::vector<int>    m_GroupZeroCount;     ///< bins with k == 0, which need no lgamma(k + alpha)
+    // Analysis-bin indices with k > 0, grouped by MC bin (CSR, offsets sized
+    // n_mc + 1). Only the SAY term walks them.
+    std::vector<int>          m_NonZeroData;
+    std::vector<std::size_t>  m_NonZeroOffsets;
 
     // MC-binning scratch: the per-event components and the 2D templates/gradients
     // are summed here, then spread over the RA axis (mu / n_ra, sigma^2 / n_ra^2 --
     // NNMFit Binning_2D_to_3D). n_ra == 1 makes both broadcasts exact copies.
     std::vector<double> m_McTotal;
     std::vector<double> m_McSsq;
+    // The per-event half of m_McSsq, kept apart from the histogram-level terms
+    // (template fluctuations, detector gradients) that are added on top of it.
+    // Only a flux recalculation can change it, so a step in a parameter that
+    // only moves those histogram-level terms re-adds them to this cache instead
+    // of re-reducing every event in the sample.
+    std::vector<double> m_McSsqEvent;
     int                 m_RaBins = 1;
+
+    // Scratch for the deterministic chunked sum in the likelihood loops, a
+    // member so the loop allocates nothing per evaluation.
+    mutable std::vector<double> m_Partial;
 
     // SAY-on-GPU: the per-event ssq reduction runs as the say_ssq kernel over
     // the flux components' GPU-resident per-event weight buffers. Set up in the
@@ -161,8 +208,25 @@ namespace ana::ic {
     // assemble_fluctuation() needs no parameter:
     // it only re-sums the per-event weights the flux components already
     // recalculated.
-    bool assemble_prediction(const ParameterWrapper& parameter);
-    void assemble_fluctuation();
+    /**
+     * @return {anything that feeds sigma^2 changed, the per-event weights changed}.
+     * The second flag is what lets assemble_fluctuation() skip the event-level
+     * reduction and only re-add the histogram-level terms.
+     */
+    struct PredictionChange {
+      bool ssq       = false;
+      bool per_event = false;
+    };
+    PredictionChange assemble_prediction(const ParameterWrapper& parameter);
+    void assemble_fluctuation(bool per_event_changed = true);
+
+    /** Fill m_Predicted / m_Ssq from the MC-binned state (see predicted()). */
+    void materialize_prediction() const;
+    void materialize_ssq() const;
+
+    /** -2 lnL over the analysis bins, reading the prediction group by group. */
+    [[nodiscard]] double poisson_llh() const;
+    [[nodiscard]] double say_llh() const;
 
     /** Recompute the per-bin constants derived from m_Data. Call after every
         write to m_Data and nowhere else. */

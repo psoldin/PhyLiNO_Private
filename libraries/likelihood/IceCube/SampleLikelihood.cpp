@@ -145,6 +145,7 @@ namespace ana::ic {
     // it the sum carries a bin-count-sized constant that the minimiser has to
     // work against, which is what the removed hardcoded baseline in
     // ICLikelihood was papering over.
+    //
     // Sum `term` over [0, n) in parallel without making the result depend on how
     // the threads were scheduled: the range is cut into fixed chunks, each summed
     // sequentially, and the chunk totals are added back in index order. OpenMP's
@@ -152,50 +153,35 @@ namespace ana::ic {
     // the thread count, which would make two scan points incomparable and the
     // ConcurrentSessionsMatchSequential test flaky.
     //
-    // This is the loop the third analysis axis multiplied by n_ra: the tracks
-    // sample went from 1485 bins to 267,300, each carrying an lgamma and two
-    // logs, and it ran on one thread while the GPU sat idle.
+    // The unit summed here is an RA *group* -- one MC bin's whole slice of
+    // analysis bins -- not a single analysis bin, because that is the unit the
+    // prediction is constant over. `partial` is the caller's scratch buffer so
+    // that the loop allocates nothing per evaluation.
     template <class Term>
-    double sum_over_bins(const std::size_t n, const bool multi_threaded, Term&& term) noexcept {
+    double sum_over_groups(const std::size_t n_groups, const std::size_t bins_per_group,
+                           const bool multi_threaded, std::vector<double>& partial,
+                           Term&& term) noexcept {
       constexpr std::size_t kBinsPerChunk = 4096;
-      if (n == 0) return 0.0;
+      if (n_groups == 0) return 0.0;
 
-      const int           n_chunks = static_cast<int>((n + kBinsPerChunk - 1) / kBinsPerChunk);
-      std::vector<double> partial(static_cast<std::size_t>(n_chunks), 0.0);
+      // Chunks of roughly kBinsPerChunk analysis bins, whatever the group size.
+      const std::size_t groups_per_chunk =
+          std::max<std::size_t>(1, kBinsPerChunk / std::max<std::size_t>(1, bins_per_group));
+      const int n_chunks = static_cast<int>((n_groups + groups_per_chunk - 1) / groups_per_chunk);
+      partial.assign(static_cast<std::size_t>(n_chunks), 0.0);
 
-      #pragma omp parallel for if (multi_threaded)
+      #pragma omp parallel for schedule(guided) if (multi_threaded)
       for (int c = 0; c < n_chunks; ++c) {
-        const std::size_t lo = static_cast<std::size_t>(c) * kBinsPerChunk;
-        const std::size_t hi = std::min(n, lo + kBinsPerChunk);
+        const std::size_t lo = static_cast<std::size_t>(c) * groups_per_chunk;
+        const std::size_t hi = std::min(n_groups, lo + groups_per_chunk);
         double            acc = 0.0;
-        for (std::size_t i = lo; i < hi; ++i) acc += term(i);
+        for (std::size_t b = lo; b < hi; ++b) acc += term(b);
         partial[static_cast<std::size_t>(c)] = acc;
       }
 
       double total = 0.0;
       for (const double v : partial) total += v;
       return total;
-    }
-
-    static double calculate_poisson_likelihood(const std::span<const double> data,
-                                               const std::span<const double> prediction,
-                                               const std::span<const double> lgamma_k1,
-                                               const bool                    multi_threaded) noexcept {
-      const double llh = sum_over_bins(data.size(), multi_threaded, [&](const std::size_t i) {
-        return poisson_bin_log_likelihood_saturated(data[i], prediction[i], lgamma_k1[i]);
-      });
-      return -2.0 * llh;
-    }
-
-    static double calculate_say_likelihood(const std::span<const double> data,
-                                           const std::span<const double> prediction,
-                                           const std::span<const double> ssq,
-                                           const std::span<const double> lgamma_k1,
-                                           const bool                    multi_threaded) noexcept {
-      const double llh = sum_over_bins(data.size(), multi_threaded, [&](const std::size_t i) {
-        return say_bin_log_likelihood(data[i], prediction[i], ssq[i], lgamma_k1[i]);
-      });
-      return -2.0 * llh;
     }
 
   }  // namespace
@@ -255,10 +241,19 @@ namespace ana::ic {
     m_Predicted.assign(total_bins, 0.0);
     m_Data.assign(total_bins, 0.0);
     m_LogGammaDataPlus1.assign(total_bins, 0.0);
+    m_PoissonSaturated.assign(total_bins, 0.0);
     m_Ssq.assign(total_bins, 0.0);
     m_GalacticTotal.assign(total_bins, 0.0);
     m_McTotal.assign(mc_bins, 0.0);
     m_McSsq.assign(mc_bins, 0.0);
+    m_McSsqEvent.assign(mc_bins, 0.0);
+    m_GroupDataSum.assign(mc_bins, 0.0);
+    m_GroupLogGammaSum.assign(mc_bins, 0.0);
+    m_GroupSaturatedSum.assign(mc_bins, 0.0);
+    m_GroupZeroCount.assign(mc_bins, 0);
+    m_NonZeroOffsets.assign(static_cast<std::size_t>(mc_bins) + 1, 0);
+
+    refresh_data_constants();
 
     // SAY-on-GPU setup. Both flux kernels leave their per-event weights in GPU
     // buffers; the say_ssq kernel reduces them to the per-bin ssq without a
@@ -277,7 +272,7 @@ namespace ana::ic {
     }
   }
 
-  bool SampleLikelihood::assemble_prediction(const ParameterWrapper& parameter) {
+  SampleLikelihood::PredictionChange SampleLikelihood::assemble_prediction(const ParameterWrapper& parameter) {
     // Components stay sequential within a sample: a Migrad step varies one
     // parameter, so at most one component is stale per call and running the
     // checks concurrently was measured to gain nothing (Metal) / <5% (CPU).
@@ -285,11 +280,15 @@ namespace ana::ic {
     //
     // The returned flag says whether anything that feeds sigma^2 changed; it is
     // what partial_llh() uses to decide whether to re-run assemble_fluctuation().
-    bool ssq_changed = false;
-    if (m_Astro) ssq_changed |= m_Astro->check_and_recalculate(parameter);
-    if (m_Atmo) ssq_changed |= m_Atmo->check_and_recalculate(parameter);
-    if (m_Template) ssq_changed |= m_Template->check_and_recalculate(parameter);
-    if (m_Systematics) ssq_changed |= m_Systematics->check_and_recalculate(parameter);
+    PredictionChange change;
+    if (m_Astro) change.per_event |= m_Astro->check_and_recalculate(parameter);
+    if (m_Atmo) change.per_event |= m_Atmo->check_and_recalculate(parameter);
+    change.ssq = change.per_event;
+    // The template fluctuations and the detector gradients enter sigma^2 at the
+    // histogram level, so they mark it stale without touching a single event
+    // weight -- which is what lets assemble_fluctuation() skip its reduction.
+    if (m_Template) change.ssq |= m_Template->check_and_recalculate(parameter);
+    if (m_Systematics) change.ssq |= m_Systematics->check_and_recalculate(parameter);
 
     // The galactic templates recalculate here too -- the prediction below reads
     // their histograms -- but deliberately do NOT set ssq_changed: NNMFit's
@@ -334,21 +333,24 @@ namespace ana::ic {
       m_GalacticSeeded = true;
     }
 
-    // Spread the MC-binned total over the RA axis (NNMFit Binning_2D_to_3D:
-    // repeat(mu, n_ra) / n_ra), add the galactic templates, and clip at zero
-    // (matches NNMFit's mu clip, applied to the final bin content -- NNMFit
-    // clips mu_tot, not the pre-gradient sum).
-    //
-    // Fused into one parallel pass over the analysis bins rather than the three
-    // sequential ones this used to be. The operations and their order are
-    // unchanged, so the result is bit-identical; what changes is that the 3D
-    // binning's 267k-bin arrays are traversed once instead of three times.
+    // The spread over the RA axis (NNMFit Binning_2D_to_3D: repeat(mu, n_ra) /
+    // n_ra, plus the galactic templates, clipped at zero) is deliberately NOT
+    // done here. m_McTotal and m_GalacticTotal are everything the likelihood
+    // needs, and it reads them group by group; writing the 3D array out would
+    // be 267,300 stores per evaluation on the tracks sample for the benefit of
+    // the results writers alone. materialize_prediction() does it for them.
+    m_PredictedStale = true;
+
+    return change;
+  }
+
+  void SampleLikelihood::materialize_prediction() const {
     const int  n_ra         = m_RaBins;
     const auto galactic_sum = std::span<const double>(m_GalacticTotal);
     const bool has_galactic = !m_Galactic.empty();
     const int  n_mc         = static_cast<int>(m_McTotal.size());
 
-#pragma omp parallel for if (m_UseMultiThreading)
+    #pragma omp parallel for schedule(guided) if (m_UseMultiThreading)
     for (int b = 0; b < n_mc; ++b) {
       const double      value = m_McTotal[b] / static_cast<double>(n_ra);
       const std::size_t base  = static_cast<std::size_t>(b) * static_cast<std::size_t>(n_ra);
@@ -358,18 +360,41 @@ namespace ana::ic {
         m_Predicted[base + r] = std::max(0.0, bin_value);
       }
     }
-
-    return ssq_changed;
+    m_PredictedStale = false;
   }
 
-  void SampleLikelihood::assemble_fluctuation() {
+  void SampleLikelihood::materialize_ssq() const {
+    // sigma^2 is a squared quantity, so the RA divisor is squared too (NNMFit
+    // Binning_2D_to_3D.make_binned_flux with is_ssq_calc=True).
+    io::ic::broadcast_over_ra(m_McSsq, m_RaBins,
+                              static_cast<double>(m_RaBins) * static_cast<double>(m_RaBins), m_Ssq);
+    m_SsqStale = false;
+  }
+
+  std::span<const double> SampleLikelihood::predicted() const noexcept {
+    if (m_PredictedStale) materialize_prediction();
+    return m_Predicted;
+  }
+
+  std::span<const double> SampleLikelihood::ssq() const noexcept {
+    if (m_SsqStale) materialize_ssq();
+    return m_Ssq;
+  }
+
+  void SampleLikelihood::assemble_fluctuation(const bool per_event_changed) {
     // Combined per-event weight across astro+conv+prompt, squared, then binned
     // -- matches NNMFit's rule that same-event components must be summed
     // *before* squaring (NNMFit/core/histogram_builder.py:229-329), since
     // (w1+w2)^2 != w1^2 + w2^2.
     const int n_bins = static_cast<int>(m_McSsq.size());
 
-    if (m_hSsq >= 0) {
+    // The event-level half is cached in m_McSsqEvent. A step in a detector
+    // systematic or a template norm leaves every event weight where it was, and
+    // re-reducing 10^7 of them to find that out is the most expensive way
+    // possible to add a per-bin vector.
+    if (!per_event_changed) {
+      std::ranges::copy(m_McSsqEvent, m_McSsq.begin());
+    } else if (m_hSsq >= 0) {
       // GPU path: reduce the flux kernels' per-event weight buffers in place.
       // A component that is absent binds the chunk-offsets buffer as a dummy
       // (never read, its flag is 0) -- the backend needs a valid buffer at every
@@ -393,6 +418,7 @@ namespace ana::ic {
         const float* ssq = m_Gpu->contents(m_hSsq);
         for (int b = 0; b < n_bins; ++b) m_McSsq[b] = static_cast<double>(ssq[b]);
       }
+      std::ranges::copy(m_McSsq, m_McSsqEvent.begin());
     } else {
       const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
       const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
@@ -401,10 +427,10 @@ namespace ana::ic {
       // The component test is hoisted out of the per-event loop: which components
       // exist is fixed at construction, so each case gets its own tight loop.
       auto accumulate = [&](auto event_weight) {
-#pragma omp parallel for if(m_UseMultiThreading)
+        #pragma omp parallel for schedule(guided) if(m_UseMultiThreading)
         for (int b = 0; b < n_bins; ++b) {
           double acc = 0.0;
-#pragma omp simd reduction(+ : acc)
+          #pragma omp simd reduction(+ : acc)
           for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
             acc += square(event_weight(i));
           }
@@ -420,6 +446,8 @@ namespace ana::ic {
         accumulate([&](const std::size_t i) { return atmo[i]; });
       else
         std::ranges::fill(m_McSsq, 0.0);
+
+      std::ranges::copy(m_McSsq, m_McSsqEvent.begin());
     }
 
     // Histogram-level fluctuation from the template component, added after the
@@ -435,12 +463,12 @@ namespace ana::ic {
       for (int b = 0; b < n_bins; ++b) m_McSsq[b] += sys_ssq[b];
     }
 
-    // sigma^2 is a squared quantity, so the RA divisor is squared too (NNMFit
-    // Binning_2D_to_3D.make_binned_flux with is_ssq_calc=True). The galactic
-    // templates contribute nothing here: NNMFit's GalacticTemplate defines no
-    // fluctuation graph and is excluded from the ssq sum.
-    io::ic::broadcast_over_ra(m_McSsq, m_RaBins,
-                              static_cast<double>(m_RaBins) * static_cast<double>(m_RaBins), m_Ssq);
+    // The RA broadcast that used to happen here is left to materialize_ssq():
+    // sigma^2 is constant along RA, so the likelihood reads it per MC bin and
+    // divides by n_ra^2 itself. The galactic templates contribute nothing
+    // either way: NNMFit's GalacticTemplate defines no fluctuation graph and is
+    // excluded from the ssq sum.
+    m_SsqStale = true;
   }
 
   std::vector<double> SampleLikelihood::in_analysis_bins(const std::span<const double> values) const {
@@ -475,16 +503,154 @@ namespace ana::ic {
   }
 
   void SampleLikelihood::refresh_data_constants() {
-    // lgamma(k + 1) depends only on the data, which is fixed for the whole fit,
-    // so it is computed here rather than once per analysis bin per likelihood
-    // evaluation. Must be called whenever m_Data changes and nowhere else.
-    for (std::size_t b = 0, n = m_Data.size(); b < n; ++b)
-      m_LogGammaDataPlus1[b] = std::lgamma(m_Data[b] + 1.0);
+    // Everything the likelihood term needs that depends only on the data, which
+    // is fixed for the whole fit. Must be called whenever m_Data changes and
+    // nowhere else.
+    //
+    // lgamma(k + 1) was already cached here. The saturated Poisson term joins
+    // it: the Poisson likelihood subtracts log P(k|k) per bin, which is another
+    // logarithm per analysis bin per evaluation -- 267,300 of them on the
+    // tracks sample -- for a quantity that never moves.
+    for (std::size_t b = 0, n = m_Data.size(); b < n; ++b) {
+      const double k = m_Data[b];
+      m_LogGammaDataPlus1[b] = std::lgamma(k + 1.0);
+      m_PoissonSaturated[b]  = poisson_bin_log_likelihood(k, k, m_LogGammaDataPlus1[b]);
+    }
+
+    // Per-RA-group sums of the above, plus the index of every bin with k > 0.
+    // These are what make the no-galactic likelihood loop cost one logarithm
+    // per MC bin instead of one per analysis bin.
+    const int n_ra = m_RaBins;
+    m_NonZeroData.clear();
+    for (std::size_t b = 0, n = m_McTotal.size(); b < n; ++b) {
+      const std::size_t base = b * static_cast<std::size_t>(n_ra);
+      double            data_sum = 0.0;
+      double            lgamma_sum = 0.0;
+      double            saturated_sum = 0.0;
+      int               zeros = 0;
+
+      m_NonZeroOffsets[b] = m_NonZeroData.size();
+      for (int r = 0; r < n_ra; ++r) {
+        const std::size_t bin = base + static_cast<std::size_t>(r);
+        const double      k   = m_Data[bin];
+        data_sum += k;
+        lgamma_sum += m_LogGammaDataPlus1[bin];
+        saturated_sum += m_PoissonSaturated[bin];
+        if (k > 0.0)
+          m_NonZeroData.push_back(static_cast<int>(bin));
+        else
+          ++zeros;
+      }
+
+      m_GroupDataSum[b]      = data_sum;
+      m_GroupLogGammaSum[b]  = lgamma_sum;
+      m_GroupSaturatedSum[b] = saturated_sum;
+      m_GroupZeroCount[b]    = zeros;
+    }
+    m_NonZeroOffsets.back() = m_NonZeroData.size();
+  }
+
+  double SampleLikelihood::poisson_llh() const {
+    const int    n_ra      = m_RaBins;
+    const double ra_scale  = static_cast<double>(n_ra);
+    const bool   galactic  = !m_Galactic.empty();
+    const auto   galactic_sum = std::span<const double>(m_GalacticTotal);
+
+    const double llh = sum_over_groups(
+        m_McTotal.size(), static_cast<std::size_t>(n_ra), m_UseMultiThreading, m_Partial,
+        [&](const std::size_t b) {
+          const double      value = m_McTotal[b] / ra_scale;
+          const std::size_t base  = b * static_cast<std::size_t>(n_ra);
+
+          if (galactic) {
+            // mu varies along RA, so every bin needs its own logarithm.
+            double acc = 0.0;
+            for (int r = 0; r < n_ra; ++r) {
+              const std::size_t bin = base + static_cast<std::size_t>(r);
+              const double      mu  = std::max(0.0, value + galactic_sum[bin]);
+              acc += poisson_bin_log_likelihood(m_Data[bin], mu, m_LogGammaDataPlus1[bin]) -
+                     m_PoissonSaturated[bin];
+            }
+            return acc;
+          }
+
+          // Without a galactic template mu is the same in every bin of the
+          // group, so the whole slice collapses:
+          //   sum_r [k_r log mu - mu - lgamma(k_r + 1) - saturated_r]
+          //     = (sum_r k_r) log mu - n_ra mu - sum_r lgamma(k_r + 1)
+          //       - sum_r saturated_r
+          // -- one logarithm for the group instead of one per bin.
+          const double mu = std::max(0.0, value);
+          if (mu > 0.0)
+            return m_GroupDataSum[b] * std::log(mu) - ra_scale * mu - m_GroupLogGammaSum[b] -
+                   m_GroupSaturatedSum[b];
+
+          // mu <= 0: NNMFit's finite stand-in for -inf, -690 per event, and 0
+          // where there is no data (which the group sum already accounts for).
+          return -690.0 * m_GroupDataSum[b] - m_GroupSaturatedSum[b];
+        });
+
+    return -2.0 * llh;
+  }
+
+  double SampleLikelihood::say_llh() const {
+    const int    n_ra         = m_RaBins;
+    const double ra_scale     = static_cast<double>(n_ra);
+    const double ssq_divisor  = ra_scale * ra_scale;
+    const bool   galactic     = !m_Galactic.empty();
+    const auto   galactic_sum = std::span<const double>(m_GalacticTotal);
+
+    const double llh = sum_over_groups(
+        m_McTotal.size(), static_cast<std::size_t>(n_ra), m_UseMultiThreading, m_Partial,
+        [&](const std::size_t b) {
+          const double      value = m_McTotal[b] / ra_scale;
+          const double      ssq   = m_McSsq[b] / ssq_divisor;
+          const std::size_t base  = b * static_cast<std::size_t>(n_ra);
+
+          if (galactic) {
+            double acc = 0.0;
+            for (int r = 0; r < n_ra; ++r) {
+              const std::size_t bin = base + static_cast<std::size_t>(r);
+              const double      mu  = std::max(0.0, value + galactic_sum[bin]);
+              acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin]);
+            }
+            return acc;
+          }
+
+          // mu and sigma^2 are both constant across the group, so alpha, beta
+          // and their transcendentals are computed once for the whole slice.
+          // What is left per bin is lgamma(k + alpha) -- and for an empty bin
+          // that is lgamma(alpha), which is already in hand.
+          const double mu = std::max(0.0, value);
+          if (mu <= 0.0)
+            return -690.0 * m_GroupDataSum[b];
+
+          const double ssq_clipped = std::clamp(ssq, 0.0, mu * mu);
+          if (ssq_clipped <= 0.0)
+            return m_GroupDataSum[b] * std::log(mu) - ra_scale * mu - m_GroupLogGammaSum[b];
+
+          const double alpha        = mu * mu / ssq_clipped + 1.0;
+          const double beta         = mu / ssq_clipped;
+          const double log_beta     = std::log(beta);
+          const double log1p_beta   = std::log1p(beta);
+          const double lgamma_alpha = std::lgamma(alpha);
+
+          double acc = ra_scale * (alpha * log_beta - lgamma_alpha) -
+                       (m_GroupDataSum[b] + ra_scale * alpha) * log1p_beta - m_GroupLogGammaSum[b] +
+                       static_cast<double>(m_GroupZeroCount[b]) * lgamma_alpha;
+
+          for (std::size_t j = m_NonZeroOffsets[b], end = m_NonZeroOffsets[b + 1]; j < end; ++j)
+            acc += std::lgamma(m_Data[static_cast<std::size_t>(m_NonZeroData[j])] + alpha);
+
+          return acc;
+        });
+
+    return -2.0 * llh;
   }
 
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
     assemble_prediction(nominal);
-    std::ranges::copy(m_Predicted, m_Data.begin());
+    std::ranges::copy(predicted(), m_Data.begin());
     refresh_data_constants();
 
     // Seed the ssq histogram at the nominal point. partial_llh() only refreshes
@@ -497,15 +663,15 @@ namespace ana::ic {
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {
-    const bool ssq_changed = assemble_prediction(parameter);
+    const PredictionChange change = assemble_prediction(parameter);
 
     if (m_UseSAY) {
-      if (ssq_changed)
-        assemble_fluctuation();
-      return calculate_say_likelihood(m_Data, m_Predicted, m_Ssq, m_LogGammaDataPlus1, m_UseMultiThreading);
+      if (change.ssq)
+        assemble_fluctuation(change.per_event);
+      return say_llh();
     }
 
-    return calculate_poisson_likelihood(m_Data, m_Predicted, m_LogGammaDataPlus1, m_UseMultiThreading);
+    return poisson_llh();
   }
 
 }  // namespace ana::ic
