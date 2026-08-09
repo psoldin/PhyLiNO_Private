@@ -867,7 +867,7 @@ namespace params {
     std::vector<std::string> parameter_names;
 
     for (std::size_t i = 0; i < number_of_general_parameters(); ++i) {
-      parameter_names.push_back(get_general_parameter_name(i));
+      parameter_names.push_back(get_general_parameter_name(static_cast<unsigned int>(i)));
     }
 
     using namespace dc;
@@ -878,7 +878,7 @@ namespace params {
       const auto detector_name = get_detector_name(detector);
 
       for (std::size_t i = 0; i < number_of_DoubleChooz_detector_parameters(); ++i) {
-        parameter_names.push_back(detector_name + "_" + get_detector_parameter_name(i));
+        parameter_names.push_back(detector_name + "_" + get_detector_parameter_name(static_cast<unsigned int>(i)));
       }
     }
 

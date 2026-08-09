@@ -74,10 +74,10 @@ namespace result::dc {
                                 {"name", parameter_names[i]},
                                 {"index", i},
                                 {"value", X[i]},
-                                {"fixed", min->IsFixedVariable(i)},
+                                {"fixed", min->IsFixedVariable(static_cast<unsigned int>(i))},
                                 {"constrained", constrained[i]},
                                 {"error", error[i]},
-                                {"true", parameter[i]}});
+                                {"true", parameter[static_cast<unsigned int>(i)]}});
     }
 
     j["parameter"] = std::move(parametersJson);

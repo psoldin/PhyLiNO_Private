@@ -266,9 +266,9 @@ namespace io {
         throw std::invalid_argument("Argument could not be handled");
     }
 
-    const unsigned int n_entries = entries.size();
+    const std::size_t n_entries = entries.size();
 
-    for (unsigned int i = 0; i < n_entries; ++i) {
+    for (std::size_t i = 0; i < n_entries; ++i) {
       m_Evis[i]     = entries[i].Evis;
       m_Etrue[i]    = entries[i].Etrue;
       m_Scaling[i]  = convert_function(entries[i].GDML);

@@ -622,7 +622,7 @@ namespace io::dc {
 
     construct_correlation_matrices();
 
-    std::default_random_engine gen(std::chrono::system_clock::now().time_since_epoch().count());
+    std::default_random_engine gen(static_cast<unsigned int>(std::chrono::system_clock::now().time_since_epoch().count()));
 
     try {
       for (auto detector : {ND, FDI, FDII}) {

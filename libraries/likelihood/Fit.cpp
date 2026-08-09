@@ -162,13 +162,13 @@ namespace ana {
       // apply that transformation for nothing.
       const double step = parameters[i].uncertainty();
       if (lower && upper)
-        m_Minimizer->SetLimitedVariable(i, names[i], start, step, *lower, *upper);
+        m_Minimizer->SetLimitedVariable(static_cast<unsigned int>(i), names[i], start, step, *lower, *upper);
       else if (lower)
-        m_Minimizer->SetLowerLimitedVariable(i, names[i], start, step, *lower);
+        m_Minimizer->SetLowerLimitedVariable(static_cast<unsigned int>(i), names[i], start, step, *lower);
       else if (upper)
-        m_Minimizer->SetUpperLimitedVariable(i, names[i], start, step, *upper);
+        m_Minimizer->SetUpperLimitedVariable(static_cast<unsigned int>(i), names[i], start, step, *upper);
       else
-        m_Minimizer->SetVariable(i, names[i], start, step);
+        m_Minimizer->SetVariable(static_cast<unsigned int>(i), names[i], start, step);
     }
 
     if (print_parameters) {
@@ -180,7 +180,7 @@ namespace ana {
       // opinion: a scan point fixes its scanned parameters exactly this way,
       // and freeing one here would turn that point into a free fit.
       if (fixed_override != nullptr && (*fixed_override)[i]) {
-        m_Minimizer->FixVariable(i);
+        m_Minimizer->FixVariable(static_cast<unsigned int>(i));
         continue;
       }
 
@@ -191,7 +191,7 @@ namespace ana {
         if (print_parameters) {
           std::cout << "Fixing parameter " << std::setw(5) << i << " " << names[i] << '\n';
         }
-        m_Minimizer->FixVariable(i);
+        m_Minimizer->FixVariable(static_cast<unsigned int>(i));
       }
     }
   }

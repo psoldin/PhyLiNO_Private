@@ -44,7 +44,7 @@ namespace ana::dc {
     // Get the target bin indices
     const std::vector<int> indices = get_indices(evis);
 
-    for (unsigned int i = 1, N = indices.size(); i < N; ++i) {
+    for (std::size_t i = 1, N = indices.size(); i < N; ++i) {
       m_CalculationData.emplace_back(std::span(&LoverE[indices[i - 1]], indices[i] - indices[i - 1]),
                                      std::span(&scaling[indices[i - 1]], indices[i] - indices[i - 1]),
                                      i,
