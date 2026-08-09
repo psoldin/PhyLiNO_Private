@@ -29,11 +29,10 @@
 
 #include "AdaptiveGrid.h"
 #include "AdaptiveScan1D.h"
+#include "IceCube/ICWriteResultsProto.h"
 #include "ScanSeeds.h"
 
 #include <TROOT.h>
-
-
 
 namespace {
 
@@ -46,15 +45,43 @@ namespace {
   /**
    * @brief Reads back a point an earlier run already fitted.
    *
-   * Only the JSON output is read back, so a scan written with
-   * --output-format protobuf refits its points on resume, as it always did.
+   * Reads the format the run is configured to write, so a resume never looks
+   * for a file the current run would not itself produce.
    *
-   * @param name  Base name of the point's output file.
-   * @param names Parameter names in minimizer order, used to turn the file's
-   *              name-keyed parameter block back into a start vector.
+   * @param name   Base name of the point's output file.
+   * @param names  Parameter names in minimizer order, used to turn the file's
+   *               name-keyed parameter block back into a start vector.
+   * @param format --output-format, either "json" or "protobuf".
    * @return The result, or nullopt if the file is absent or holds no usable likelihood.
    */
-  std::optional<StoredFit> stored_fit(const std::string& name, const std::vector<std::string>& names) {
+  std::optional<StoredFit> stored_fit(const std::string& name, const std::vector<std::string>& names, const std::string& format) {
+    if (format == "protobuf") {
+      const auto stored = result::ic::read_ice_cube_results_protobuf(name);
+      if (!stored)
+        return std::nullopt;
+
+      StoredFit result;
+      result.llh = stored->llh;
+
+      // Same rule as the JSON branch below: only a converged fit's parameters
+      // are trusted as a neighbour's start point.
+      if (stored->converged) {
+        std::vector<double> values;
+        values.reserve(names.size());
+        for (const std::string& parameter : names) {
+          const auto it = stored->parameter_values.find(parameter);
+          if (it == stored->parameter_values.end())
+            break;
+          values.push_back(it->second);
+        }
+
+        if (values.size() == names.size())
+          result.parameters = std::move(values);
+      }
+
+      return result;
+    }
+
     const std::filesystem::path path = name + ".json";
     if (!std::filesystem::exists(path))
       return std::nullopt;
@@ -111,7 +138,7 @@ namespace {
       return;
 
     for (std::size_t i = 0; i < parameters.size(); ++i) {
-      if (minimizer.IsFixedVariable(i))
+      if (minimizer.IsFixedVariable(static_cast<unsigned int>(i)))
         continue;
 
       double start = values[i];
@@ -123,11 +150,13 @@ namespace {
       const std::optional<double>& upper = parameters[i].upper_bound();
       if (lower || upper) {
         const double margin = 1.0e-3 * parameters[i].uncertainty();
-        if (lower) start = std::max(start, *lower + margin);
-        if (upper) start = std::min(start, *upper - margin);
+        if (lower)
+          start = std::max(start, *lower + margin);
+        if (upper)
+          start = std::min(start, *upper - margin);
       }
 
-      minimizer.SetVariableValue(i, start);
+      minimizer.SetVariableValue(static_cast<unsigned int>(i), start);
     }
   }
 
@@ -179,6 +208,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
 
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
+  const auto& format           = options->inputOptions().output_format();
 
   // Randomized start values exist to spread the start points on purpose, which
   // seeding every fit from its neighbour would undo. The two do not combine.
@@ -263,7 +293,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
         const scan::Node  node = ordered[pos];
         const std::string name = node_name(node);
 
-        if (const auto known = stored_fit(name, names)) {
+        if (const auto known = stored_fit(name, names, format)) {
           // A resumed run puts the points it reads back into the store, so the
           // fits it still has to do start from a neighbour just as they would
           // have in the run that was interrupted.
@@ -355,8 +385,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
  * @param points_x Number of grid points along SpectralIndex.
  * @param points_y Number of grid points along AstroNorm.
  */
-void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, int points_x = 30,
-                              int points_y = 30) {
+void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, int points_x = 30, int points_y = 30) {
   constexpr double low_x  = 1.7;
   constexpr double high_x = 2.8;
   constexpr double low_y  = 0.0;
@@ -372,6 +401,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
 
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
+  const auto& format           = options->inputOptions().output_format();
 
   // Randomized start values exist to spread the start points on purpose, which
   // seeding every fit from its neighbour would undo. The two do not combine.
@@ -416,8 +446,8 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
       seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
 
     std::cout << "Seed fit: SpectralIndex = " << seed_min->X()[static_cast<int>(SpectralIndex)]
-               << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)] << (seed_fit.converged() ? "" : " (did not converge)")
-               << '\n';
+              << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)] << (seed_fit.converged() ? "" : " (did not converge)")
+              << '\n';
   }
 
   std::vector<scan::Node> nodes;
@@ -442,7 +472,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
       const scan::Node  node = nodes[pos];
       const std::string name = node_name_regular(node);
 
-      if (const auto known = stored_fit(name, names)) {
+      if (const auto known = stored_fit(name, names, format)) {
         // A resumed run puts the points it reads back into the store, so the
         // fits it still has to do start from a neighbour just as they would
         // have in the run that was interrupted.
@@ -528,6 +558,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
 void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
+  const auto& format           = options->inputOptions().output_format();
 
   const auto found = std::ranges::find(names, parameter_name);
   if (found == names.end())
@@ -542,8 +573,7 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   const auto& lower = parameter.lower_bound();
   const auto& upper = parameter.upper_bound();
   if (!lower || !upper)
-    throw std::runtime_error("Parameter '" + parameter_name +
-                             "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
+    throw std::runtime_error("Parameter '" + parameter_name + "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
 
   const double low  = *lower;
   const double high = *upper;
@@ -576,8 +606,7 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       std::ifstream  existing_file(grid_path);
       nlohmann::json existing = nlohmann::json::parse(existing_file);
       if (existing != grid)
-        throw std::runtime_error(grid_path + " in this directory describes a different lattice; the Output_" + parameter_name +
-                                 "_i files here belong to that one. Scan into an empty directory instead.");
+        throw std::runtime_error(grid_path + " in this directory describes a different lattice; the Output_" + parameter_name + "_i files here belong to that one. Scan into an empty directory instead.");
     } else {
       std::ofstream(grid_path) << grid.dump(2) << '\n';
     }
@@ -632,7 +661,7 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
         const int         node = ordered[pos];
         const std::string name = node_name(parameter_name, node);
 
-        if (const auto known = stored_fit(name, names)) {
+        if (const auto known = stored_fit(name, names, format)) {
           // A resumed run puts the points it reads back into the store, so the
           // fits it still has to do start from a neighbour just as they would
           // have in the run that was interrupted.

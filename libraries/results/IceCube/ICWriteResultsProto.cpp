@@ -4,6 +4,8 @@
 #include "ic_result.pb.h"
 
 // STL includes
+#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -114,6 +116,31 @@ namespace result::ic {
     if (!msg.SerializeToOstream(&gzip_stream)) {
       throw std::runtime_error("Failed to serialize protobuf result to \"" + ss.str() + "\"");
     }
+  }
+
+  std::optional<ProtoStoredFit> read_ice_cube_results_protobuf(std::string_view name) {
+    const std::filesystem::path path = std::string(name) + ".pb.gz";
+    if (!std::filesystem::exists(path))
+      return std::nullopt;
+
+    std::ifstream file(path, std::ios::binary);
+
+    namespace bio = boost::iostreams;
+    bio::filtering_istream gzip_stream;
+    gzip_stream.push(bio::gzip_decompressor());
+    gzip_stream.push(file);
+
+    result::ic::proto::FitResult msg;
+    if (!msg.ParseFromIstream(&gzip_stream) || !std::isfinite(msg.chi2()))
+      return std::nullopt;
+
+    ProtoStoredFit result;
+    result.converged = msg.converged();
+    result.llh       = msg.chi2();
+    for (const auto& [key, parameter] : msg.parameters())
+      result.parameter_values[key] = parameter.value();
+
+    return result;
   }
 
 }  // namespace result::ic
