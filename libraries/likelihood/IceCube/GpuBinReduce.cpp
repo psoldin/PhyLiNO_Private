@@ -1,5 +1,6 @@
 #include "GpuBinReduce.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -9,11 +10,13 @@ namespace ana::ic {
   namespace {
 
     // Occupies the params slot the GpuSession buffer convention reserves at
-    // index n_inputs. bin_gather needs no scalars of its own, so the one field
-    // is the grid bound -- redundant with the dispatch size, but it keeps the
-    // kernel safe if a caller ever over-dispatches.
+    // index n_inputs. n_bins is the grid bound -- redundant with the dispatch
+    // size, but it keeps the kernel safe if a caller ever over-dispatches.
+    // `offset` selects which of a multi-quantity partial buffer's blocks to sum
+    // (see GpuBinReduce's n_quantities), and is 0 for the single-quantity case.
     struct GatherParams {
       int n_bins;
+      int offset;
     };
 
     // One group per bin over the chunk partials. The chunk count per bin is
@@ -24,7 +27,7 @@ namespace ana::ic {
       #include <metal_stdlib>
       using namespace metal;
 
-      struct GatherParams { int n_bins; };
+      struct GatherParams { int n_bins; int offset; };
       constant uint kThreadsPerGroup = 256;
 
       kernel void bin_gather(
@@ -39,7 +42,7 @@ namespace ana::ic {
         const uint start = bin_chunk_offsets[bin];
         const uint end   = bin_chunk_offsets[bin + 1];
         float acc = 0.0f;
-        for (uint j = start + tid; j < end; j += kThreadsPerGroup) acc += partial[j];
+        for (uint j = start + tid; j < end; j += kThreadsPerGroup) acc += partial[(uint)p.offset + j];
         threadgroup float shared[kThreadsPerGroup];
         shared[tid] = acc;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -55,7 +58,7 @@ namespace ana::ic {
     // prepends the typedef selecting float or double, so one body serves both
     // precisions. GatherParams is int-only and needs no precision variant.
     constexpr const char* kGatherCudaBody = R"CUDA(
-      struct GatherParams { int n_bins; };
+      struct GatherParams { int n_bins; int offset; };
 
       extern "C" __global__ void bin_gather(
           const real*         partial,
@@ -70,7 +73,7 @@ namespace ana::ic {
         const unsigned int start    = bin_chunk_offsets[bin];
         const unsigned int end      = bin_chunk_offsets[bin + 1];
         real acc = 0.0;
-        for (unsigned int j = start + tid; j < end; j += nthreads) acc += partial[j];
+        for (unsigned int j = start + tid; j < end; j += nthreads) acc += partial[(unsigned int)p.offset + j];
         __shared__ real sdata[256];
         sdata[tid] = acc;
         __syncthreads();
@@ -86,10 +89,12 @@ namespace ana::ic {
 
   GpuBinReduce::GpuBinReduce(std::shared_ptr<GpuSession> gpu,
                              const io::ic::ICSample&     sample,
-                             const std::size_t           n_bins)
+                             const std::size_t           n_bins,
+                             const std::size_t           n_quantities)
     : m_Gpu(std::move(gpu))
     , m_NChunks(sample.n_chunks())
-    , m_NBins(n_bins) {
+    , m_NBins(n_bins)
+    , m_NQuantities(std::max<std::size_t>(1, n_quantities)) {
     if (!m_Gpu)
       throw std::runtime_error("GpuBinReduce: null session");
     // A mismatch here would silently reduce over the wrong ranges, so it is
@@ -113,11 +118,18 @@ namespace ana::ic {
     m_hChunkOffsets    = m_Gpu->upload_offsets(sample.chunk_offsets.data(), sample.chunk_offsets.size());
     m_hBinChunkOffsets = m_Gpu->upload_offsets(sample.bin_chunk_offsets.data(), sample.bin_chunk_offsets.size());
     // Never read on the host: gather() feeds it straight back into a kernel.
-    m_hPartial = m_Gpu->alloc_output(m_NChunks, /*readback=*/false);
+    // One block of n_chunks per reduced quantity, laid end to end.
+    m_hPartial = m_Gpu->alloc_output(m_NChunks * m_NQuantities, /*readback=*/false);
   }
 
-  void GpuBinReduce::gather(const int hist) const {
-    const GatherParams p{.n_bins = static_cast<int>(m_NBins)};
+  void GpuBinReduce::gather(const int hist, const std::size_t q) const {
+    if (q >= m_NQuantities)
+      throw std::runtime_error("GpuBinReduce::gather: quantity " + std::to_string(q) +
+                               " is out of range, the partial buffer holds " +
+                               std::to_string(m_NQuantities));
+
+    const GatherParams p{.n_bins = static_cast<int>(m_NBins),
+                         .offset = static_cast<int>(q * m_NChunks)};
     const int          inputs[] = {m_hPartial, m_hBinChunkOffsets};
     m_Gpu->dispatch("bin_gather", inputs, 2, &p, sizeof(p), hist, /*per_event=*/-1, m_NBins);
   }

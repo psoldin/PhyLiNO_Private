@@ -113,13 +113,24 @@ namespace ana::ic {
     double                  m_VetoRescaleEnergy;
     bool                    m_UseMultiThreading;
     std::vector<double>     m_Histogram;
+    // The conventional and prompt histograms with their normalisations factored
+    // out, i.e. what the event loop actually reduces:
+    //   m_Histogram[b] == ConvNorm * m_ConvShape[b] + PromptNorm * m_PromptShape[b].
+    // Each norm scales its whole half, so a step in one of them recombines these
+    // two vectors instead of sweeping the sample again.
+    std::vector<double>     m_ConvShape;
+    std::vector<double>     m_PromptShape;
     std::vector<double>     m_PerEventWeight;
+    // False until the first full recalculate(); see PowerlawFlux::m_Seeded for
+    // why the change flags alone cannot be trusted on the first evaluation.
+    bool                    m_Seeded = false;
 
     // Non-null when a GPU backend is selected; shared with this sample's other
     // flux components, and behind it with every other sample and fit (so
     // e_true / bin_offsets are uploaded once per process).
     std::shared_ptr<GpuSession>                      m_Gpu;
     int                                              m_hETrue      = -1;
+    int                                              m_hLogETrue   = -1;
     int                                              m_hConvBase   = -1;
     int                                              m_hConvAlt    = -1;
     int                                              m_hPromptBase = -1;
@@ -127,7 +138,10 @@ namespace ana::ic {
     std::array<int, params::ic::nBarrParams>         m_hBarr{};
     std::array<int, 3>                               m_hVetoConv{};
     std::array<int, 3>                               m_hVetoPrompt{};
-    int                                              m_hHist       = -1;
+    // One histogram output per reduced quantity: the conventional and prompt
+    // halves come back separately from a single sweep over the events.
+    int                                              m_hConvHist   = -1;
+    int                                              m_hPromptHist = -1;
     int                                              m_hPerEvent   = -1;
     // Owns the chunk-offset binding, the per-chunk partial buffer and the
     // gather dispatch that turns those partials into m_hHist.
@@ -135,6 +149,9 @@ namespace ana::ic {
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
     void recalculate_gpu(const ParameterWrapper& parameter) noexcept;
+
+    /** ConvNorm * m_ConvShape + PromptNorm * m_PromptShape -> m_Histogram. */
+    void apply_norms(const ParameterWrapper& parameter) noexcept;
   };
 
 }  // namespace ana::ic

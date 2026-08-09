@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <type_traits>
 #include <vector>
@@ -37,6 +38,17 @@ namespace io::ic {
   struct ICSample {
     // --- Per-event columns (fit-time) ---
     std::vector<double> e_true;
+
+    // log(e_true), derived by sort_into_bins() and never read from a file.
+    //
+    // Every flux component raises the true energy to a parameter-dependent
+    // power once per event per likelihood evaluation, and pow() is a log
+    // followed by an exp. The log half depends only on the event, so it is
+    // taken once here and the components evaluate exp(exponent * (log_e_true -
+    // log(E_ref))) instead. One column serves the astrophysical, conventional
+    // and prompt terms, and -- because the GPU column cache is keyed on the
+    // source pointer -- one device buffer serves every component of the sample.
+    std::vector<double> log_e_true;
     std::vector<double> astro_baseline;
     std::vector<double> conv_baseline;
     std::vector<double> conv_alt;
@@ -142,6 +154,12 @@ namespace io::ic {
       bin_offsets.assign(total_bins + 1, 0);
       for (int b : bin_idx) ++bin_offsets[b + 1];
       for (int b = 0; b < total_bins; ++b) bin_offsets[b + 1] += bin_offsets[b];
+
+      // Derived per-event column, built from the sorted e_true so its order
+      // matches every other column's.
+      log_e_true.resize(e_true.size());
+      for (std::size_t i = 0, n = e_true.size(); i < n; ++i)
+        log_e_true[i] = e_true[i] > 0.0 ? std::log(e_true[i]) : 0.0;
 
       build_chunks(total_bins);
     }

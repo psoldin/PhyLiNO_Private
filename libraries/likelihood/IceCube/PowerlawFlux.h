@@ -93,13 +93,26 @@ namespace ana::ic {
     bool                    m_UseMultiThreading;
     io::ic::AstroModel      m_Model;
     std::vector<double>     m_Histogram;
+    // The same histogram with the normalisation factored out, i.e. what the
+    // event loop actually reduces. AstroNorm scales every event's weight by the
+    // same factor, so a step in it is a multiplication of this vector rather
+    // than another sweep over the sample -- which is what recalculate() does
+    // when nothing but the norm moved.
+    std::vector<double>     m_ShapeHistogram;
     std::vector<double>     m_PerEventWeight;
+    // False until the first full recalculate(). The change flags of a
+    // ParameterWrapper's first reset_parameter() compare against a zero-filled
+    // previous vector, so a parameter whose start value happens to be 0 reports
+    // unchanged on the very first evaluation; without this the norm-only fast
+    // path could scale a shape histogram that was never filled.
+    bool                    m_Seeded = false;
 
     // Non-null when a GPU backend is selected; shared with this sample's other
     // flux components, and behind it with every other sample and fit (so
     // e_true / bin_offsets are uploaded once per process).
     std::shared_ptr<GpuSession>   m_Gpu;
     int                           m_hETrue    = -1;
+    int                           m_hLogETrue = -1;
     int                           m_hBaseline = -1;
     int                           m_hHist     = -1;
     int                           m_hPerEvent = -1;
@@ -112,6 +125,12 @@ namespace ana::ic {
     void recalculate_gpu(const ParameterWrapper& parameter) noexcept;
 
     void recalculate_cpu(const ParameterWrapper& parameter) noexcept;
+
+    /** eff_norm * m_ShapeHistogram -> m_Histogram, for the given parameters. */
+    void apply_norm(const ParameterWrapper& parameter) noexcept;
+
+    /** The normalisation every event's weight is scaled by. */
+    [[nodiscard]] double effective_norm(const ParameterWrapper& parameter) const noexcept;
   };
 
 }  // namespace ana::ic

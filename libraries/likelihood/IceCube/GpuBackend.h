@@ -8,14 +8,14 @@ namespace ana::ic {
 
   /**
    * Build a complete CUDA-C kernel source from a body written against a generic
-   * scalar type `real` and a power macro `RPOW`, by prefixing the typedef that
-   * selects the precision. One body then serves both the FP32 and FP64 CUDA
-   * paths, so the two can never drift apart. (Metal is FP32-only and keeps its
-   * own float source.)
+   * scalar type `real` and the math macros `RPOW` / `REXP` / `REXP2`, by
+   * prefixing the typedef that selects the precision. One body then serves both
+   * the FP32 and FP64 CUDA paths, so the two can never drift apart. (Metal is
+   * FP32-only and keeps its own float source.)
    */
   inline std::string cuda_kernel_source(bool fp64, const char* body) {
-    return std::string(fp64 ? "typedef double real;\n#define RPOW pow\n"
-                            : "typedef float real;\n#define RPOW powf\n") +
+    return std::string(fp64 ? "typedef double real;\n#define RPOW pow\n#define REXP exp\n#define REXP2 exp2\n"
+                            : "typedef float real;\n#define RPOW powf\n#define REXP expf\n#define REXP2 exp2f\n") +
            body;
   }
 
