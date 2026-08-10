@@ -86,7 +86,7 @@ namespace ana::dc {
                                       parameter[params::General::SinSqT12],
                                       parameter[params::General::DeltaM21]);
 
-    #pragma omp parallel for if (m_UseMultiThreading)
+    #pragma omp parallel for schedule(guided) if (m_UseMultiThreading)
     for (std::size_t i = 0UL; i < N; ++i) {
       const auto& data                    = m_CalculationData[i];
       m_Cache[data.type][data.target_bin] = osci(data);
