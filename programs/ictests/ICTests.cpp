@@ -1,3 +1,4 @@
+#include "CudaBackend.h"
 #include "DetectorSystematics.h"
 #include "ICComponentBreakdown.h"
 #include "IceCube/Binning.h"
@@ -26,6 +27,7 @@
 #include <cstring>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -775,6 +777,89 @@ TEST(ICSampleTest, SortIntoBinsMaintainsCsrInvariant) {
     ASSERT_TRUE(std::abs(s.e_true[i] - expected_original_index[i]) < 1e-9);
 }
 
+// The GPU kernels are dispatched over the chunk decomposition rather than the
+// bins, so these are the invariants the kernels rely on: nothing may fall
+// outside a chunk, no chunk may straddle two bins (a block reduces one chunk
+// into one bin), and every bin must own a chunk or the gather leaves it stale.
+// Driven with a deliberately tiny chunk size so bins split several ways.
+TEST(ICSampleTest, ChunkDecompositionPartitionsEveryBin) {
+  using io::ic::ICSample;
+
+  constexpr int kBins = 4;
+  // Populations {5, 0, 1, 7}: a bin that splits unevenly, an empty bin, a bin
+  // with a single event, and one that splits exactly.
+  const std::vector<int> populations = {5, 0, 1, 7};
+
+  ICSample s;
+  for (int b = 0; b < kBins; ++b)
+    for (int k = 0; k < populations[b]; ++k) {
+      s.e_true.push_back(1.0);
+      s.astro_baseline.push_back(1.0);
+      s.bin_idx.push_back(b);
+    }
+  s.sort_into_bins(kBins);
+
+  for (const std::size_t chunk_size : {std::size_t{1}, std::size_t{2}, std::size_t{3},
+                                       std::size_t{8}, ICSample::kDefaultEventsPerChunk}) {
+    s.build_chunks(kBins, chunk_size);
+
+    ASSERT_EQ(s.bin_chunk_offsets.size(), static_cast<std::size_t>(kBins) + 1) << chunk_size;
+    ASSERT_EQ(s.bin_chunk_offsets.front(), 0u) << chunk_size;
+    ASSERT_EQ(s.bin_chunk_offsets.back(), s.n_chunks()) << chunk_size;
+
+    // chunk_offsets partitions the whole event range, in order.
+    ASSERT_EQ(s.chunk_offsets.front(), 0u) << chunk_size;
+    ASSERT_EQ(s.chunk_offsets.back(), s.size()) << chunk_size;
+    for (std::size_t c = 0; c + 1 < s.chunk_offsets.size(); ++c)
+      ASSERT_LE(s.chunk_offsets[c], s.chunk_offsets[c + 1]) << chunk_size;
+
+    for (int b = 0; b < kBins; ++b) {
+      const std::size_t first = s.bin_chunk_offsets[b];
+      const std::size_t last  = s.bin_chunk_offsets[b + 1];
+      // Every bin owns at least one chunk, even the empty one.
+      ASSERT_GT(last, first) << "bin " << b << " chunk_size " << chunk_size;
+      // Its chunks exactly cover the bin's CSR range and nothing else.
+      EXPECT_EQ(s.chunk_offsets[first], s.bin_offsets[b]) << "bin " << b;
+      EXPECT_EQ(s.chunk_offsets[last], s.bin_offsets[b + 1]) << "bin " << b;
+      // No chunk is longer than the requested size.
+      for (std::size_t c = first; c < last; ++c)
+        EXPECT_LE(s.chunk_offsets[c + 1] - s.chunk_offsets[c], chunk_size) << "bin " << b;
+    }
+  }
+}
+
+// Every GPU backend the build actually has. The kernels and the host code that
+// drives them are shared, so each of the GPU tests below runs against all of
+// them rather than against whichever one the developer's laptop happens to
+// provide -- CUDA in FP32 and FP64 are separate cases because the two compile
+// different kernel sources from the same body.
+struct GpuBackendCase {
+  const char*                                          name;
+  bool                                                 fp64;
+  std::function<std::shared_ptr<ana::ic::GpuBackend>()> make;
+};
+
+static std::vector<GpuBackendCase> available_gpu_backends() {
+  using ana::ic::CudaBackend;
+  using ana::ic::GpuBackend;
+  using ana::ic::MetalBackend;
+
+  std::vector<GpuBackendCase> cases;
+  if (MetalBackend::available())
+    cases.push_back({"metal", false, [] {
+                       return std::static_pointer_cast<GpuBackend>(std::make_shared<MetalBackend>());
+                     }});
+  if (CudaBackend::available()) {
+    cases.push_back({"cuda-fp32", false, [] {
+                       return std::static_pointer_cast<GpuBackend>(std::make_shared<CudaBackend>(false));
+                     }});
+    cases.push_back({"cuda-fp64", true, [] {
+                       return std::static_pointer_cast<GpuBackend>(std::make_shared<CudaBackend>(true));
+                     }});
+  }
+  return cases;
+}
+
 // 2D test binning: Log10Energy in [2, 5) with 3 bins, CosZenith in [-1, 1) with
 // 2 bins -> 6 analysis bins total.
 static Binning synthetic_binning() {
@@ -1118,63 +1203,136 @@ TEST(AtmosphericBreakdownTest, MetalSplitMatchesHistogram) {
 // The GPU SAY path (flux kernels leaving per-event weights on the GPU + the
 // say_ssq reduction kernel) must reproduce the CPU path within FP32 tolerance,
 // at the Asimov point and away from it. Skipped when no Metal device exists.
-TEST(SampleLikelihoodTest, MetalSaySsqMatchesCpu) {
-  using ana::ic::MetalBackend;
+TEST(SampleLikelihoodTest, GpuSaySsqMatchesCpu) {
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
 
-  if (!MetalBackend::available()) {
-    GTEST_SKIP() << "Metal backend is unavailable";
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
   }
 
   const Binning          binning = synthetic_binning();
   const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
 
-  const io::ic::SampleConfig cfg{.name       = "metal_ssq_sample",
+  const io::ic::SampleConfig cfg{.name       = "gpu_ssq_sample",
                                  .binning    = binning,
                                  .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
-  const auto backend = std::make_shared<MetalBackend>();
+  for (const GpuBackendCase& backend_case : backends) {
+    SCOPED_TRACE(backend_case.name);
+    const auto backend = backend_case.make();
+
+    SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+    SampleLikelihood gpu(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
+
+    const std::vector<double> nominal_values = nominal_parameter_values();
+    ParameterWrapper          nominal(params::ic::number_of_parameters());
+    nominal.reset_parameter(nominal_values.data());
+
+    cpu.generate_asimov(nominal);
+    gpu.generate_asimov(nominal);
+
+    // Move every ssq-relevant parameter off its nominal value so the SAY term
+    // (data fixed at the nominal Asimov, prediction and ssq recomputed) is
+    // sensitive to a wrong ssq, then compare the partial -2lnL.
+    std::vector<double> perturbed_values     = nominal_values;
+    perturbed_values[params::ic::AstroNorm]  = 1.9;
+    perturbed_values[params::ic::ConvNorm]   = 1.2;
+    perturbed_values[params::ic::PromptNorm] = 0.6;
+
+    // An FP32 backend carries FP32 flux weights and an FP32 reduction, so it
+    // only gets a loose bound -- still tight enough to catch a structurally
+    // wrong ssq (missing component, wrong bin, chunk boundary off by one). An
+    // FP64 backend runs the same arithmetic as the CPU oracle in the same
+    // precision and only differs by the reduction order, so it is held much
+    // tighter.
+    const double tolerance = backend_case.fp64 ? 1.0e-12 : 1.0e-4;
+
+    for (const auto& values : {nominal_values, perturbed_values}) {
+      ParameterWrapper parameter(params::ic::number_of_parameters());
+      parameter.reset_parameter(values.data());
+
+      const double llh_cpu = cpu.partial_llh(parameter);
+      const double llh_gpu = gpu.partial_llh(parameter);
+      ASSERT_TRUE(std::isfinite(llh_cpu) && std::isfinite(llh_gpu));
+
+      const double scale = std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0});
+      ASSERT_LT(std::fabs(llh_cpu - llh_gpu) / scale, tolerance);
+
+      // The per-bin predictions must agree too (flux kernels unchanged by the
+      // ssq work; this pins the readback-skip refactor).
+      const auto pred_cpu = cpu.predicted();
+      const auto pred_gpu = gpu.predicted();
+      for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
+        const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
+        ASSERT_LT(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale, tolerance) << "bin " << b;
+      }
+    }
+  }
+}
+
+// The chunk decomposition only does anything once a bin holds more events than
+// one chunk, which the tiny synthetic sample never does. This drives a sample
+// whose population is concentrated in one bin -- the shape that made the old
+// one-block-per-bin dispatch run the whole sample on a single SM -- so the
+// multi-chunk path and its gather are exercised against the CPU oracle.
+TEST(SampleLikelihoodTest, GpuMultiChunkBinsMatchCpu) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
+  }
+
+  const Binning binning = synthetic_binning();
+  io::ic::ICSample sample = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  // Rebuild the plan with a chunk size small enough that the sample's bins span
+  // several chunks each, including one that does not divide evenly.
+  ASSERT_GT(sample.size(), 0u);
+  sample.build_chunks(binning.total_bins(), /*events_per_chunk=*/1);
+  ASSERT_GT(sample.n_chunks(), static_cast<std::size_t>(binning.total_bins()));
+
+  const io::ic::SampleConfig cfg{.name       = "gpu_chunked_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  std::vector<double> values = nominal_parameter_values();
+  ParameterWrapper    nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(values.data());
+
+  values[params::ic::AstroNorm]  = 1.9;
+  values[params::ic::ConvNorm]   = 1.2;
+  values[params::ic::PromptNorm] = 0.6;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(values.data());
 
   SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
-  SampleLikelihood gpu(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
-
-  const std::vector<double> nominal_values = nominal_parameter_values();
-  ParameterWrapper          nominal(params::ic::number_of_parameters());
-  nominal.reset_parameter(nominal_values.data());
-
   cpu.generate_asimov(nominal);
-  gpu.generate_asimov(nominal);
+  const double llh_cpu = cpu.partial_llh(perturbed);
+  ASSERT_TRUE(std::isfinite(llh_cpu));
 
-  // Move every ssq-relevant parameter off its nominal value so the SAY term
-  // (data fixed at the nominal Asimov, prediction and ssq recomputed) is
-  // sensitive to a wrong ssq, then compare the partial -2lnL.
-  std::vector<double> perturbed_values     = nominal_values;
-  perturbed_values[params::ic::AstroNorm]  = 1.9;
-  perturbed_values[params::ic::ConvNorm]   = 1.2;
-  perturbed_values[params::ic::PromptNorm] = 0.6;
+  for (const GpuBackendCase& backend_case : backends) {
+    SCOPED_TRACE(backend_case.name);
+    const auto       backend = backend_case.make();
+    SampleLikelihood gpu(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
+    gpu.generate_asimov(nominal);
 
-  for (const auto& values : {nominal_values, perturbed_values}) {
-    ParameterWrapper parameter(params::ic::number_of_parameters());
-    parameter.reset_parameter(values.data());
+    const double llh_gpu   = gpu.partial_llh(perturbed);
+    const double tolerance = backend_case.fp64 ? 1.0e-12 : 1.0e-4;
+    ASSERT_TRUE(std::isfinite(llh_gpu));
+    ASSERT_LT(std::fabs(llh_cpu - llh_gpu) / std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0}),
+              tolerance);
 
-    const double llh_cpu = cpu.partial_llh(parameter);
-    const double llh_gpu = gpu.partial_llh(parameter);
-    ASSERT_TRUE(std::isfinite(llh_cpu) && std::isfinite(llh_gpu));
-
-    // FP32 flux weights + FP32 ssq reduction vs FP64: a loose relative bound
-    // still catches a structurally wrong ssq (missing component, wrong bin).
-    const double scale = std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0});
-    ASSERT_TRUE(std::fabs(llh_cpu - llh_gpu) / scale < 1.0e-4);
-
-    // The per-bin predictions must agree too (flux kernels unchanged by the
-    // ssq work; this pins the readback-skip refactor).
     const auto pred_cpu = cpu.predicted();
     const auto pred_gpu = gpu.predicted();
     for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
       const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
-      ASSERT_TRUE(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale < 1.0e-4);
+      ASSERT_LT(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale, tolerance) << "bin " << b;
     }
   }
 }
@@ -1186,11 +1344,11 @@ TEST(SampleLikelihoodTest, MetalSaySsqMatchesCpu) {
 // back when it dies, or the saving is traded for a leak that grows per point.
 // None of that is observable from the fit results, hence the counters.
 TEST(GpuBackendTest, SharedBackendUploadsAndCompilesOnce) {
-  using ana::ic::MetalBackend;
   using ana::ic::SampleLikelihood;
 
-  if (!MetalBackend::available()) {
-    GTEST_SKIP() << "Metal backend is unavailable";
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
   }
 
   const Binning          binning = synthetic_binning();
@@ -1201,30 +1359,33 @@ TEST(GpuBackendTest, SharedBackendUploadsAndCompilesOnce) {
                                  .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
-  const auto backend = std::make_shared<MetalBackend>();
+  for (const GpuBackendCase& backend_case : backends) {
+    SCOPED_TRACE(backend_case.name);
+    const auto backend = backend_case.make();
 
-  SampleLikelihood first(sample, cfg, synthetic_settings(), backend->create_session(),
-                         /*use_say=*/true);
-  const std::size_t columns_after_first = backend->column_count();
-  const std::size_t kernels_after_first = backend->kernel_compile_count();
+    SampleLikelihood first(sample, cfg, synthetic_settings(), backend->create_session(),
+                           /*use_say=*/true);
+    const std::size_t columns_after_first = backend->column_count();
+    const std::size_t kernels_after_first = backend->kernel_compile_count();
 
-  ASSERT_GT(columns_after_first, 0u);
-  // powerlaw_hist, atmo_hist, say_ssq, and bin_gather (the second half of every
-  // one of those reductions, see GpuBinReduce).
-  ASSERT_EQ(kernels_after_first, 4u);
+    ASSERT_GT(columns_after_first, 0u);
+    // powerlaw_hist, atmo_hist, say_ssq, and bin_gather (the second half of every
+    // one of those reductions, see GpuBinReduce).
+    ASSERT_EQ(kernels_after_first, 4u);
 
-  SampleLikelihood second(sample, cfg, synthetic_settings(), backend->create_session(),
-                          /*use_say=*/true);
-  EXPECT_EQ(backend->column_count(), columns_after_first);
-  EXPECT_EQ(backend->kernel_compile_count(), kernels_after_first);
+    SampleLikelihood second(sample, cfg, synthetic_settings(), backend->create_session(),
+                            /*use_say=*/true);
+    EXPECT_EQ(backend->column_count(), columns_after_first);
+    EXPECT_EQ(backend->kernel_compile_count(), kernels_after_first);
+  }
 }
 
 TEST(GpuBackendTest, SessionOutputsFreedOnDestruction) {
-  using ana::ic::MetalBackend;
   using ana::ic::SampleLikelihood;
 
-  if (!MetalBackend::available()) {
-    GTEST_SKIP() << "Metal backend is unavailable";
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
   }
 
   const Binning          binning = synthetic_binning();
@@ -1235,23 +1396,26 @@ TEST(GpuBackendTest, SessionOutputsFreedOnDestruction) {
                                  .mc_binning = binning,
                                  .components = {"astro", "conventional", "prompt"}};
 
-  const auto backend = std::make_shared<MetalBackend>();
-  ASSERT_EQ(backend->live_output_count(), 0u);
+  for (const GpuBackendCase& backend_case : backends) {
+    SCOPED_TRACE(backend_case.name);
+    const auto backend = backend_case.make();
+    ASSERT_EQ(backend->live_output_count(), 0u);
 
-  std::size_t live_while_alive = 0;
-  for (int i = 0; i < 5; ++i) {
-    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), backend->create_session(),
-                                /*use_say=*/true);
-    if (i == 0) {
-      live_while_alive = backend->live_output_count();
-      ASSERT_GT(live_while_alive, 0u);
+    std::size_t live_while_alive = 0;
+    for (int i = 0; i < 5; ++i) {
+      SampleLikelihood likelihood(sample, cfg, synthetic_settings(), backend->create_session(),
+                                  /*use_say=*/true);
+      if (i == 0) {
+        live_while_alive = backend->live_output_count();
+        ASSERT_GT(live_while_alive, 0u);
+      }
+      // Every iteration must cost the same: outputs are per session, never pooled
+      // across them, so a session that failed to free would show up as growth.
+      EXPECT_EQ(backend->live_output_count(), live_while_alive);
     }
-    // Every iteration must cost the same: outputs are per session, never pooled
-    // across them, so a session that failed to free would show up as growth.
-    EXPECT_EQ(backend->live_output_count(), live_while_alive);
-  }
 
-  EXPECT_EQ(backend->live_output_count(), 0u);
+    EXPECT_EQ(backend->live_output_count(), 0u);
+  }
 }
 
 // Scan workers build their fits and evaluate them concurrently over one shared
@@ -1260,12 +1424,12 @@ TEST(GpuBackendTest, SessionOutputsFreedOnDestruction) {
 // race in the shared kernel/column caches, or two sessions sharing a command
 // stream, would show up here and nowhere else.
 TEST(GpuBackendTest, ConcurrentSessionsMatchSequential) {
-  using ana::ic::MetalBackend;
   using ana::ic::SampleLikelihood;
   using ana::ParameterWrapper;
 
-  if (!MetalBackend::available()) {
-    GTEST_SKIP() << "Metal backend is unavailable";
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
   }
 
   const Binning          binning = synthetic_binning();
@@ -1292,27 +1456,33 @@ TEST(GpuBackendTest, ConcurrentSessionsMatchSequential) {
     return likelihood.partial_llh(perturbed);
   };
 
-  // One session at a time, on a backend of its own: the reference.
-  const auto sequential_backend = std::make_shared<MetalBackend>();
-  const double expected         = evaluate(sequential_backend->create_session());
-  ASSERT_TRUE(std::isfinite(expected));
+  for (const GpuBackendCase& backend_case : backends) {
+    SCOPED_TRACE(backend_case.name);
 
-  // Sessions built and run concurrently over one shared backend. The sessions
-  // are created on this thread and the work is done on the workers, which is
-  // how ICLikelihood drives them.
-  constexpr int      kWorkers = 8;
-  const auto         shared   = std::make_shared<MetalBackend>();
-  std::vector<std::future<double>> results;
-  results.reserve(kWorkers);
-  for (int i = 0; i < kWorkers; ++i)
-    results.push_back(std::async(std::launch::async, evaluate, shared->create_session()));
+    // One session at a time, on a backend of its own: the reference.
+    const auto   sequential_backend = backend_case.make();
+    const double expected           = evaluate(sequential_backend->create_session());
+    ASSERT_TRUE(std::isfinite(expected));
 
-  for (auto& result : results)
-    EXPECT_DOUBLE_EQ(result.get(), expected);
+    // Sessions built and run concurrently over one shared backend. The sessions
+    // are created on this thread and the work is done on the workers, which is
+    // how ICLikelihood drives them. Bit-equality (not a tolerance) is the point:
+    // the chunk decomposition is fixed at load time and the gather is a fixed
+    // tree, so the reduction order cannot depend on how the work was scheduled.
+    constexpr int      kWorkers = 8;
+    const auto         shared   = backend_case.make();
+    std::vector<std::future<double>> results;
+    results.reserve(kWorkers);
+    for (int i = 0; i < kWorkers; ++i)
+      results.push_back(std::async(std::launch::async, evaluate, shared->create_session()));
 
-  // ... and the sharing really happened: one set of kernels, one set of columns.
-  EXPECT_EQ(shared->kernel_compile_count(), 4u);
-  EXPECT_EQ(shared->column_count(), sequential_backend->column_count());
+    for (auto& result : results)
+      EXPECT_DOUBLE_EQ(result.get(), expected);
+
+    // ... and the sharing really happened: one set of kernels, one set of columns.
+    EXPECT_EQ(shared->kernel_compile_count(), 4u);
+    EXPECT_EQ(shared->column_count(), sequential_backend->column_count());
+  }
 }
 
 // An "astro"-only sample must run on a sample whose atmospheric columns were

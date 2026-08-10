@@ -761,8 +761,8 @@ int main(int argc, char** argv) {
       result::write_results(fit, "Output");
     } else {
       // perform_1d_scan(options, module, "AstroNorm");
-      perform_2d_scan(options, module);
-      // perform_2d_scan_regular(options, module);
+      // perform_2d_scan(options, module);
+      perform_2d_scan_regular(options, module);
     }
   } catch (const std::exception& e) {
     std::cout << e.what() << '\n';
