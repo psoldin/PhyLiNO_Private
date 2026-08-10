@@ -939,6 +939,64 @@ static io::ic::ICSample synthetic_sample(const Binning& binning,
   return sample;
 }
 
+// Large synthetic sample over synthetic_binning(), built for measuring FP32
+// accumulation error rather than for correctness. Two properties matter and
+// neither holds in synthetic_sample()'s 2-events-per-bin fixture:
+//
+//   * enough events per bin that the chunk decomposition actually engages
+//     (chunks are 8192 events over 256 threads, so the grid-stride loop only
+//     iterates more than once past ~256 events per bin), and
+//   * per-event weights spanning several decades within a single bin, which is
+//     the case where a naive running sum loses the most -- adding a 1e-9
+//     contribution to a 1e-2 accumulator discards the smaller term almost
+//     entirely in FP32.
+//
+// The energies sweep each log10-energy bin's full decade and the baselines fall
+// steeply with energy, so the weights inside one bin span roughly four decades.
+static io::ic::ICSample large_synthetic_sample(const Binning& binning, const int events_per_bin) {
+  const double zeniths[2] = {2.0, 0.5};
+
+  io::ic::ICSample sample;
+  const int        n_events = 3 * 2 * events_per_bin;
+  sample.e_true.reserve(n_events);
+  sample.astro_baseline.reserve(n_events);
+  sample.bin_idx.reserve(n_events);
+
+  for (int eb = 0; eb < 3; ++eb) {
+    for (int zb = 0; zb < 2; ++zb) {
+      for (int k = 0; k < events_per_bin; ++k) {
+        // Sweep the decade this energy bin covers, staying strictly inside it.
+        const double frac    = (static_cast<double>(k) + 0.5) / static_cast<double>(events_per_bin);
+        const double log10_e = 2.0 + static_cast<double>(eb) + frac;
+        const double e_true  = std::pow(10.0, log10_e);
+
+        // Steeply falling baseline -> ~4 decades of weight spread within a bin.
+        const double base = 1.0e-3 * std::pow(e_true / 1.0e3, -1.7);
+
+        sample.e_true.push_back(e_true);
+        sample.astro_baseline.push_back(base);
+        sample.conv_baseline.push_back(5.0 * base);
+        sample.conv_alt.push_back(0.9 * 5.0 * base);
+        sample.prompt_baseline.push_back(0.1 * base);
+        sample.prompt_alt.push_back(0.9 * 0.1 * base);
+        for (int b = 0; b < params::ic::nBarrParams; ++b)
+          sample.barr_conv[b].push_back(1.0e-2 * (b + 1) * base);
+
+        const double reco[2] = {e_true, zeniths[zb]};
+        sample.bin_idx.push_back(binning.bin_index(reco));
+      }
+    }
+  }
+  if (static_cast<int>(sample.size()) != n_events)
+    throw std::logic_error("failed to construct the complete large synthetic sample");
+
+  sample.sort_into_bins(binning.total_bins());
+  if (static_cast<int>(sample.size()) != n_events || sample.bin_offsets.empty()
+      || sample.bin_offsets.back() != sample.size())
+    throw std::logic_error("large synthetic sample does not have a valid CSR layout");
+  return sample;
+}
+
 static ana::ic::GlobalFluxSettings synthetic_settings() {
   return ana::ic::GlobalFluxSettings{.e_ref_gev                = 1.0e5,
                                      .astro_reference_index    = 2.0,
@@ -1335,6 +1393,93 @@ TEST(SampleLikelihoodTest, GpuMultiChunkBinsMatchCpu) {
       ASSERT_LT(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale, tolerance) << "bin " << b;
     }
   }
+}
+
+// Quantifies how far the FP32 Metal prediction sits from the FP64 CPU one on a
+// sample large enough for the accumulation error to matter (240k events, weights
+// spanning ~4 decades per bin). This is the number that bounds the fit's
+// resolution on Metal: Minuit's numerical gradient differences have to stand
+// clear of it, so it is worth measuring rather than only bounding.
+//
+// Measured on an M-series GPU with this fixture (max relative deviation):
+//
+//   fast math on,  plain accumulation   3.370e-7   <- the pre-2026-08-09 build
+//   fast math off, plain accumulation   2.648e-7
+//   fast math off, Neumaier             2.648e-7   <- current
+//
+// So essentially all of the gain is fastMathEnabled = NO in MetalBackend, i.e.
+// the accurate exp rather than the accumulation: the chunk decomposition
+// already caps the grid-stride loop at ~32 iterations and the tree reduction is
+// pairwise, leaving per-event FP32 rounding as the floor. The bound below is
+// therefore a guard on the compile options, not on the compensation.
+TEST(GpuBackendTest, MetalFp32PredictionTracksCpuFp64) {
+  using ana::ic::MetalBackend;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  if (!MetalBackend::available()) {
+    GTEST_SKIP() << "Metal backend is unavailable";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = large_synthetic_sample(binning, /*events_per_bin=*/40000);
+
+  const io::ic::SampleConfig cfg{.name       = "metal_precision_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const auto backend = std::make_shared<MetalBackend>();
+
+  SampleLikelihood cpu(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+  SampleLikelihood gpu(sample, cfg, synthetic_settings(), backend->create_session(), /*use_say=*/true);
+
+  // Off the nominal point, so every kernel path (spectral reweighting, Barr
+  // gradients, CR gradient) is exercised rather than short-circuited.
+  std::vector<double> values         = nominal_parameter_values();
+  values[params::ic::AstroNorm]      = 1.9;
+  values[params::ic::SpectralIndex]  = 2.7;
+  values[params::ic::ConvNorm]       = 1.2;
+  values[params::ic::PromptNorm]     = 0.6;
+  values[params::ic::DeltaGamma]     = 0.05;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  cpu.generate_asimov(parameter);
+  gpu.generate_asimov(parameter);
+  ASSERT_TRUE(std::isfinite(cpu.partial_llh(parameter)));
+  ASSERT_TRUE(std::isfinite(gpu.partial_llh(parameter)));
+
+  const auto pred_cpu = cpu.predicted();
+  const auto pred_gpu = gpu.predicted();
+  ASSERT_TRUE(pred_cpu.size() == pred_gpu.size());
+  ASSERT_TRUE(!pred_cpu.empty());
+
+  double max_rel = 0.0;
+  double sum_sq  = 0.0;
+  int    counted = 0;
+  for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
+    if (std::fabs(pred_cpu[b]) < 1.0e-30) continue;
+    const double rel = std::fabs(pred_gpu[b] - pred_cpu[b]) / std::fabs(pred_cpu[b]);
+    max_rel          = std::max(max_rel, rel);
+    sum_sq += rel * rel;
+    ++counted;
+  }
+  ASSERT_TRUE(counted > 0);
+  const double rms_rel = std::sqrt(sum_sq / static_cast<double>(counted));
+
+  const double llh_cpu = cpu.partial_llh(parameter);
+  const double llh_gpu = gpu.partial_llh(parameter);
+  const double llh_rel = std::fabs(llh_gpu - llh_cpu) / std::max(std::fabs(llh_cpu), 1.0);
+
+  std::cout << "  [precision] events=" << sample.size() << " bins=" << counted
+            << "  per-bin prediction max_rel=" << max_rel << " rms_rel=" << rms_rel
+            << "  partial_llh rel=" << llh_rel << "\n";
+
+  // Bound set an order of magnitude above the ~1e-7 that compensated FP32
+  // accumulation delivers here, so it fails on a lost compensation (~1e-5)
+  // without being brittle against GPU-model differences in exp.
+  ASSERT_TRUE(max_rel < 1.0e-6);
 }
 
 // The point of splitting the backend from the session is that the expensive
