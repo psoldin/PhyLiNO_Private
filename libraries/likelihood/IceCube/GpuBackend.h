@@ -7,6 +7,53 @@
 namespace ana::ic {
 
   /**
+   * Neumaier compensated addition, the accumulation every kernel's grid-stride
+   * loop uses in place of a plain `acc += x`.
+   *
+   * `(acc - t) + x` (or the swapped form when |x| > |acc|) is the *exact*
+   * rounding error of `t = acc + x` -- a theorem about binary floating point,
+   * not an approximation -- so carrying those residuals in `cmp` and folding
+   * them back at the end makes the loop's error independent of its iteration
+   * count.
+   *
+   * Measured worth on this workload: none. MetalFp32PredictionTracksCpuFp64
+   * reports max relative deviation 2.648e-7 both with this compensation and
+   * with a plain `acc += x`, identical to four digits. The reason is that the
+   * chunk decomposition already bounds the damage: chunks are 8192 events over
+   * 256 threads, so the grid-stride loop runs only ~32 times per thread, and
+   * the tree reduction that follows it is pairwise (log2 error growth). What is
+   * left is per-event FP32 rounding of the weights themselves, which no
+   * summation algorithm can recover.
+   *
+   * It is kept because it costs a few ALU ops on kernels that are bound by
+   * memory and transcendentals, and it stops being free insurance only if the
+   * chunk size ever grows: the serial loop is the one part of the reduction
+   * whose error would then scale linearly.
+   *
+   * IMPORTANT: this is a no-op under fast math, which is licensed to
+   * reassociate `(acc - (acc + x)) + x` to zero and delete the compensation
+   * entirely. MetalBackend compiles with fastMathEnabled = NO -- which does
+   * matter, for the exp accuracy rather than for this. NVRTC is precise by
+   * default and must not be given --use_fast_math.
+   */
+  inline constexpr const char* kNeumaierMetal = R"METAL(
+      inline void neumaier_add(thread float& acc, thread float& cmp, const float x) {
+        const float t = acc + x;
+        cmp += (fabs(acc) >= fabs(x)) ? ((acc - t) + x) : ((x - t) + acc);
+        acc = t;
+      }
+    )METAL";
+
+  /** CUDA twin of kNeumaierMetal; `real` and RFABS come from the precision prelude. */
+  inline constexpr const char* kNeumaierCuda = R"CUDA(
+      __device__ inline void neumaier_add(real& acc, real& cmp, const real x) {
+        const real t = acc + x;
+        cmp += (RFABS(acc) >= RFABS(x)) ? ((acc - t) + x) : ((x - t) + acc);
+        acc = t;
+      }
+    )CUDA";
+
+  /**
    * Build a complete CUDA-C kernel source from a body written against a generic
    * scalar type `real` and the math macros `RPOW` / `REXP` / `REXP2`, by
    * prefixing the typedef that selects the precision. One body then serves both
@@ -14,9 +61,26 @@ namespace ana::ic {
    * FP32-only and keeps its own float source.)
    */
   inline std::string cuda_kernel_source(bool fp64, const char* body) {
-    return std::string(fp64 ? "typedef double real;\n#define RPOW pow\n#define REXP exp\n#define REXP2 exp2\n"
-                            : "typedef float real;\n#define RPOW powf\n#define REXP expf\n#define REXP2 exp2f\n") +
-           body;
+    return std::string(fp64 ? "typedef double real;\n#define RPOW pow\n#define REXP exp\n#define REXP2 "
+                              "exp2\n#define RFABS fabs\n"
+                            : "typedef float real;\n#define RPOW powf\n#define REXP expf\n#define REXP2 "
+                              "exp2f\n#define RFABS fabsf\n") +
+           kNeumaierCuda + body;
+  }
+
+  /**
+   * Prelude shared by every MSL kernel body: the standard library, the
+   * threadgroup width the tree reductions are written against, and the
+   * compensated add. Mirrors cuda_kernel_source() so the two dialects keep one
+   * definition of each.
+   */
+  inline std::string metal_kernel_source(const char* body) {
+    return std::string(R"METAL(
+      #include <metal_stdlib>
+      using namespace metal;
+      constant uint kThreadsPerGroup = 256;
+    )METAL") +
+           kNeumaierMetal + body;
   }
 
   /**
@@ -25,6 +89,17 @@ namespace ana::ic {
    * matches the active backend's language().
    */
   enum class GpuLanguage { Metal, Cuda };
+
+  /**
+   * Pick the body matching `lang` and wrap it in that dialect's prelude. Every
+   * component builds its kernel source through here, so neither dialect can
+   * lose the shared definitions (compensated add, threadgroup width, precision
+   * typedef) by forgetting to prepend them.
+   */
+  inline std::string gpu_kernel_source(const GpuLanguage lang, const bool fp64, const char* metal_body,
+                                       const char* cuda_body) {
+    return lang == GpuLanguage::Cuda ? cuda_kernel_source(fp64, cuda_body) : metal_kernel_source(metal_body);
+  }
 
   /**
    * Pure-C++ facade over the GPU work of one IceCube sample. MetalSession

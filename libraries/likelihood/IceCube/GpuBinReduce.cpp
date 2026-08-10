@@ -23,12 +23,8 @@ namespace ana::ic {
     // small (ceil(bin population / kEventsPerChunk)), so this is a cheap tail
     // pass; the block-stride loop is only there for the few fat bins whose chunk
     // count exceeds the group size.
-    constexpr const char* kGatherMetal = R"METAL(
-      #include <metal_stdlib>
-      using namespace metal;
-
+    constexpr const char* kGatherMetalBody = R"METAL(
       struct GatherParams { int n_bins; int offset; };
-      constant uint kThreadsPerGroup = 256;
 
       kernel void bin_gather(
           device const float*  partial           [[buffer(0)]],
@@ -41,8 +37,14 @@ namespace ana::ic {
         if (bin >= (uint)p.n_bins) return;
         const uint start = bin_chunk_offsets[bin];
         const uint end   = bin_chunk_offsets[bin + 1];
+        // The stride loop is short for a typical bin but runs into the hundreds
+        // for the fat bins that hold most of the sample, so it gets the same
+        // compensation as the flux kernels' event loops.
         float acc = 0.0f;
-        for (uint j = start + tid; j < end; j += kThreadsPerGroup) acc += partial[(uint)p.offset + j];
+        float cmp = 0.0f;
+        for (uint j = start + tid; j < end; j += kThreadsPerGroup)
+          neumaier_add(acc, cmp, partial[(uint)p.offset + j]);
+        acc += cmp;
         threadgroup float shared[kThreadsPerGroup];
         shared[tid] = acc;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -73,7 +75,10 @@ namespace ana::ic {
         const unsigned int start    = bin_chunk_offsets[bin];
         const unsigned int end      = bin_chunk_offsets[bin + 1];
         real acc = 0.0;
-        for (unsigned int j = start + tid; j < end; j += nthreads) acc += partial[(unsigned int)p.offset + j];
+        real cmp = 0.0;
+        for (unsigned int j = start + tid; j < end; j += nthreads)
+          neumaier_add(acc, cmp, partial[(unsigned int)p.offset + j]);
+        acc += cmp;
         __shared__ real sdata[256];
         sdata[tid] = acc;
         __syncthreads();
@@ -106,11 +111,9 @@ namespace ana::ic {
                                std::to_string(sample.bin_chunk_offsets.size()) +
                                " - 1 bins, the component was built for " + std::to_string(n_bins));
 
-    const std::string cuda_src = m_Gpu->language() == GpuLanguage::Cuda
-                                     ? cuda_kernel_source(m_Gpu->is_fp64(), kGatherCudaBody)
-                                     : std::string{};
-    const char*       src      = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kGatherMetal;
-    m_Gpu->ensure_kernel("bin_gather", src);
+    const std::string src =
+        gpu_kernel_source(m_Gpu->language(), m_Gpu->is_fp64(), kGatherMetalBody, kGatherCudaBody);
+    m_Gpu->ensure_kernel("bin_gather", src.c_str());
 
     // Both uploads deduplicate against every other component of this sample --
     // and, across fits, against every other session -- because the cache is

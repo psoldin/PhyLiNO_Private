@@ -149,6 +149,7 @@ namespace ana::ic {
 
     void recalculate(const ParameterWrapper& parameter) noexcept;
     void recalculate_gpu(const ParameterWrapper& parameter) noexcept;
+    void recalculate_cpu(const ParameterWrapper& parameter) noexcept;
 
     /** ConvNorm * m_ConvShape + PromptNorm * m_PromptShape -> m_Histogram. */
     void apply_norms(const ParameterWrapper& parameter) noexcept;

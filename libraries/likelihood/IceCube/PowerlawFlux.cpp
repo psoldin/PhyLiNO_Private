@@ -33,15 +33,11 @@ namespace ana::ic {
     // reduction, writing one partial per chunk that bin_gather then sums per
     // bin. Buffer order matches the GpuSession convention: inputs (e_true,
     // baseline, chunk_offsets), params, partial, per_event.
-    constexpr const char* kKernelMetal = R"METAL(
-      #include <metal_stdlib>
-      using namespace metal;
-
+    constexpr const char* kKernelMetalBody = R"METAL(
       struct PowerlawParams {
         float eff_norm; float log_eref; float exponent; int write_pe;
         float gamma_2; float log_ebreak; float pivot; int broken;
       };
-      constant uint kThreadsPerGroup = 256;
 
       kernel void powerlaw_hist(
           device const float*      e_true        [[buffer(0)]],
@@ -57,6 +53,7 @@ namespace ana::ic {
         const uint start = chunk_offsets[chunk];
         const uint end   = chunk_offsets[chunk + 1];
         float acc = 0.0f;
+        float cmp = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           const float loge = log_e_true[i];
           float w;
@@ -70,8 +67,9 @@ namespace ana::ic {
             w = baseline[i] * exp(p.exponent * (loge - p.log_eref));
           }
           if (p.write_pe) per_event[i] = p.eff_norm * w;
-          acc += w;
+          neumaier_add(acc, cmp, w);
         }
+        acc += cmp;
         threadgroup float shared[kThreadsPerGroup];
         shared[tid] = acc;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -111,6 +109,7 @@ namespace ana::ic {
         const unsigned int start    = chunk_offsets[chunk];
         const unsigned int end      = chunk_offsets[chunk + 1];
         real acc = 0.0;
+        real cmp = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           const real loge = log_e_true[i];
           real w;
@@ -124,8 +123,9 @@ namespace ana::ic {
             w = baseline[i] * REXP(p.exponent * (loge - p.log_eref));
           }
           if (p.write_pe) per_event[i] = p.eff_norm * w;
-          acc += w;
+          neumaier_add(acc, cmp, w);
         }
+        acc += cmp;
         __shared__ real sdata[256];
         sdata[tid] = acc;
         __syncthreads();
@@ -166,10 +166,9 @@ namespace ana::ic {
 
     if (m_Gpu) {
       const std::size_t M = sample.size();
-      const std::string cuda_src =
-          m_Gpu->language() == GpuLanguage::Cuda ? cuda_kernel_source(m_Gpu->is_fp64(), kKernelCudaBody) : std::string{};
-      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kKernelMetal;
-      m_Gpu->ensure_kernel("powerlaw_hist", src);
+      const std::string src =
+          gpu_kernel_source(m_Gpu->language(), m_Gpu->is_fp64(), kKernelMetalBody, kKernelCudaBody);
+      m_Gpu->ensure_kernel("powerlaw_hist", src.c_str());
       m_hETrue    = m_Gpu->upload_column(sample.e_true.data(), M);
       m_hLogETrue = m_Gpu->upload_column(sample.log_e_true.data(), M);
       m_hBaseline = m_Gpu->upload_column(sample.astro_baseline.data(), M);

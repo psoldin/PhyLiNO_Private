@@ -181,9 +181,20 @@ namespace ana::ic {
     if (b->pipelines.count(key)) return;
 
     @autoreleasepool {
-      NSError*       err = nil;
-      id<MTLLibrary> lib = [b->dev newLibraryWithSource:[NSString stringWithUTF8String:source]
-                                                options:[MTLCompileOptions new]
+      NSError*            err  = nil;
+      MTLCompileOptions*  opts = [MTLCompileOptions new];
+      // Not the default (fast math is on unless you say otherwise). Two reasons,
+      // both about the FP32 path's accuracy, which is what limits the fit's
+      // resolution on Metal:
+      //   1. fast math reassociates freely, which folds the Neumaier
+      //      compensation term to a constant zero and deletes it -- the
+      //      compensated sums below would be dead code.
+      //   2. it selects the low-accuracy exp/exp2, evaluated once per event in
+      //      every flux kernel. That error is per-event and no summation
+      //      algorithm can recover it.
+      opts.fastMathEnabled = NO;
+      id<MTLLibrary> lib   = [b->dev newLibraryWithSource:[NSString stringWithUTF8String:source]
+                                                options:opts
                                                   error:&err];
       if (!lib)
         throw std::runtime_error(std::string("MetalBackend: compile of '") + name + "' failed: " +

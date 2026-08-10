@@ -45,10 +45,7 @@ namespace ana::ic {
     // bin_gather then sums per bin. Buffer order matches the GpuSession
     // convention: inputs (e_true, conv/prompt baseline+alt, 4 Barr gradients,
     // 6 veto coefficients, chunk_offsets), params, partial, per_event.
-    constexpr const char* kKernelMetal = R"METAL(
-      #include <metal_stdlib>
-      using namespace metal;
-
+    constexpr const char* kKernelMetalBody = R"METAL(
       struct AtmoParams {
         float cr; float dg; float conv_norm; float prompt_norm;
         float barr0; float barr1; float barr2; float barr3;
@@ -61,7 +58,6 @@ namespace ana::ic {
       // log10(PF) -> PF as an exp2, which is one hardware instruction where
       // pow(10, x) is a log and an exp.
       constant float kLog2Of10 = 3.321928094887362f;
-      constant uint kThreadsPerGroup = 256;
 
       kernel void atmo_hist(
           device const float*  log_e_true   [[buffer(0)]],
@@ -89,7 +85,9 @@ namespace ana::ic {
         const uint start = chunk_offsets[chunk];
         const uint end   = chunk_offsets[chunk + 1];
         float conv_acc   = 0.0f;
+        float conv_cmp   = 0.0f;
         float prompt_acc = 0.0f;
+        float prompt_cmp = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           const float loge = log_e_true[i];
           float cw = 0.0f;
@@ -108,7 +106,7 @@ namespace ana::ic {
                                    veto_conv_c[i] * p.veto_e * p.veto_e;
               cw *= exp2(kLog2Of10 * log_pf);
             }
-            conv_acc += cw;
+            neumaier_add(conv_acc, conv_cmp, cw);
           }
 
           const float pb = prompt_base[i];
@@ -120,11 +118,14 @@ namespace ana::ic {
                                    veto_pr_c[i] * p.veto_e * p.veto_e;
               pw *= exp2(kLog2Of10 * log_pf);
             }
-            prompt_acc += pw;
+            neumaier_add(prompt_acc, prompt_cmp, pw);
           }
 
           if (p.write_pe) per_event[i] = p.conv_norm * cw + p.prompt_norm * pw;
         }
+
+        conv_acc += conv_cmp;
+        prompt_acc += prompt_cmp;
 
         threadgroup float shared[kThreadsPerGroup];
         shared[tid] = conv_acc;
@@ -194,7 +195,9 @@ namespace ana::ic {
         const unsigned int start    = chunk_offsets[chunk];
         const unsigned int end      = chunk_offsets[chunk + 1];
         real conv_acc   = 0.0;
+        real conv_cmp   = 0.0;
         real prompt_acc = 0.0;
+        real prompt_cmp = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           const real loge = log_e_true[i];
           real cw = 0.0;
@@ -213,7 +216,7 @@ namespace ana::ic {
                                   veto_conv_c[i] * p.veto_e * p.veto_e;
               cw *= REXP2(kLog2Of10 * log_pf);
             }
-            conv_acc += cw;
+            neumaier_add(conv_acc, conv_cmp, cw);
           }
 
           const real pb = prompt_base[i];
@@ -225,11 +228,14 @@ namespace ana::ic {
                                   veto_pr_c[i] * p.veto_e * p.veto_e;
               pw *= REXP2(kLog2Of10 * log_pf);
             }
-            prompt_acc += pw;
+            neumaier_add(prompt_acc, prompt_cmp, pw);
           }
 
           if (p.write_pe) per_event[i] = p.conv_norm * cw + p.prompt_norm * pw;
         }
+
+        conv_acc += conv_cmp;
+        prompt_acc += prompt_cmp;
 
         __shared__ real sdata[256];
         sdata[tid] = conv_acc;
@@ -373,10 +379,9 @@ namespace ana::ic {
 
     if (m_Gpu) {
       const std::size_t M = sample.size();
-      const std::string cuda_src =
-          m_Gpu->language() == GpuLanguage::Cuda ? cuda_kernel_source(m_Gpu->is_fp64(), kKernelCudaBody) : std::string{};
-      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kKernelMetal;
-      m_Gpu->ensure_kernel("atmo_hist", src);
+      const std::string src =
+          gpu_kernel_source(m_Gpu->language(), m_Gpu->is_fp64(), kKernelMetalBody, kKernelCudaBody);
+      m_Gpu->ensure_kernel("atmo_hist", src.c_str());
       m_hETrue      = m_Gpu->upload_column(sample.e_true.data(), M);
       m_hLogETrue   = m_Gpu->upload_column(sample.log_e_true.data(), M);
       m_hConvBase   = m_Gpu->upload_column(sample.conv_baseline.data(), M);
@@ -457,16 +462,16 @@ namespace ana::ic {
     apply_norms(parameter);
   }
 
-  void AtmosphericFlux::recalculate(const ParameterWrapper& parameter) noexcept {
-    if (m_Gpu) {
-      recalculate_gpu(parameter);
-      return;
-    }
+  void AtmosphericFlux::recalculate_cpu(const ParameterWrapper& parameter) noexcept {
+    const AtmoCoeffs c = make_coeffs(parameter,
+                                     m_ConvDeltaGammaERef,
+                                     m_PromptDeltaGammaERef,
+                                     m_UseVeto,
+                                     m_VetoRescaleEnergy,
+                                     m_VetoAnchorEnergy);
 
-    const AtmoCoeffs c = make_coeffs(parameter, m_ConvDeltaGammaERef, m_PromptDeltaGammaERef, m_UseVeto,
-                                     m_VetoRescaleEnergy, m_VetoAnchorEnergy);
-    const auto&      off    = m_Sample.bin_offsets;
-    const int        n_bins = static_cast<int>(m_Histogram.size());
+    const auto& off    = m_Sample.bin_offsets;
+    const int   n_bins = static_cast<int>(m_Histogram.size());
 
     // guided, not the default static schedule: bin populations span orders of
     // magnitude, so an even split of the bin index range is an uneven split of
@@ -487,6 +492,14 @@ namespace ana::ic {
     }
 
     apply_norms(parameter);
+  }
+
+  void AtmosphericFlux::recalculate(const ParameterWrapper& parameter) noexcept {
+    if (m_Gpu) {
+      recalculate_gpu(parameter);
+      return;
+    }
+    return recalculate_cpu(parameter);
   }
 
   AtmoBreakdown AtmosphericFlux::breakdown(const ParameterWrapper& parameter) const {
@@ -523,9 +536,15 @@ namespace ana::ic {
   inline bool check_shape_parameters(const ParameterWrapper& parameter, const bool use_veto) noexcept {
     using namespace params::ic;
     return  parameter.check_parameter_changed(CRGrad)
-    | parameter.check_parameter_changed(DeltaGamma)
-    | parameter.check_parameter_changed(BarrH, BarrZ)
-    | (use_veto && parameter.check_parameter_changed(VetoThreshold));
+    || parameter.check_parameter_changed(DeltaGamma)
+    || parameter.check_parameter_changed(BarrH, BarrZ)
+    || (use_veto && parameter.check_parameter_changed(VetoThreshold));
+  }
+
+  inline bool check_norm_parameters(const ParameterWrapper& parameter) noexcept {
+    using namespace params::ic;
+    return parameter.check_parameter_changed(ConvNorm)
+    || parameter.check_parameter_changed(PromptNorm);
   }
 
   void AtmosphericFlux::apply_norms(const ParameterWrapper& parameter) noexcept {
@@ -540,9 +559,11 @@ namespace ana::ic {
     using namespace params::ic;
 
     const bool shape_changed = check_shape_parameters(parameter, m_UseVeto);
-    const bool norm_changed  = parameter.check_parameter_changed(ConvNorm)
-                             | parameter.check_parameter_changed(PromptNorm);
+    const bool norm_changed  = check_norm_parameters(parameter);
 
+    // This is only for the case this is the first likelihood evaluation function
+    // call. Some parameters are initialized to zero, which would not trigger
+    // re-calculation.
     if (!m_Seeded) {
       recalculate(parameter);
       m_Seeded = true;

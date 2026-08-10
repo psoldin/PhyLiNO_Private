@@ -65,12 +65,8 @@ namespace ana::ic {
       int has_atmo;
     };
 
-    constexpr const char* kSsqKernelMetal = R"METAL(
-      #include <metal_stdlib>
-      using namespace metal;
-
+    constexpr const char* kSsqKernelMetalBody = R"METAL(
       struct SsqParams { int has_astro; int has_atmo; };
-      constant uint kThreadsPerGroup = 256;
 
       kernel void say_ssq(
           device const float* astro_pe      [[buffer(0)]],
@@ -84,12 +80,14 @@ namespace ana::ic {
         const uint start = chunk_offsets[chunk];
         const uint end   = chunk_offsets[chunk + 1];
         float acc = 0.0f;
+        float cmp = 0.0f;
         for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
           float w = 0.0f;
           if (p.has_astro) w += astro_pe[i];
           if (p.has_atmo)  w += atmo_pe[i];
-          acc += w * w;
+          neumaier_add(acc, cmp, w * w);
         }
+        acc += cmp;
         threadgroup float shared[kThreadsPerGroup];
         shared[tid] = acc;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -122,12 +120,14 @@ namespace ana::ic {
         const unsigned int start    = chunk_offsets[chunk];
         const unsigned int end      = chunk_offsets[chunk + 1];
         real acc = 0.0;
+        real cmp = 0.0;
         for (unsigned int i = start + tid; i < end; i += nthreads) {
           real w = 0.0;
           if (p.has_astro) w += astro_pe[i];
           if (p.has_atmo)  w += atmo_pe[i];
-          acc += w * w;
+          neumaier_add(acc, cmp, w * w);
         }
+        acc += cmp;
         __shared__ real sdata[256];
         sdata[tid] = acc;
         __syncthreads();
@@ -263,10 +263,9 @@ namespace ana::ic {
         (m_Astro && m_Astro->per_event_handle() >= 0) || (m_Atmo && m_Atmo->per_event_handle() >= 0);
     if (gpu && use_say && gpu_per_event) {
       m_Gpu = std::move(gpu);
-      const std::string cuda_src =
-          m_Gpu->language() == GpuLanguage::Cuda ? cuda_kernel_source(m_Gpu->is_fp64(), kSsqKernelCudaBody) : std::string{};
-      const char* src = m_Gpu->language() == GpuLanguage::Cuda ? cuda_src.c_str() : kSsqKernelMetal;
-      m_Gpu->ensure_kernel("say_ssq", src);
+      const std::string src =
+          gpu_kernel_source(m_Gpu->language(), m_Gpu->is_fp64(), kSsqKernelMetalBody, kSsqKernelCudaBody);
+      m_Gpu->ensure_kernel("say_ssq", src.c_str());
       m_SsqReduce.emplace(m_Gpu, sample, static_cast<std::size_t>(mc_bins));
       m_hSsq = m_Gpu->alloc_output(mc_bins);
     }
