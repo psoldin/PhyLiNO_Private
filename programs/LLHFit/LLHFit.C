@@ -555,28 +555,11 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
  * @param parameter_name Name of the parameter to profile, as it appears in the
  *                       config's parameter list.
  */
-void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name) {
+void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
+                             const std::string& parameter_name, int index, double low, double high) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
-
-  const auto found = std::ranges::find(names, parameter_name);
-  if (found == names.end())
-    throw std::runtime_error("No parameter named '" + parameter_name + "' in the config");
-
-  const int   index     = static_cast<int>(std::ranges::distance(names.begin(), found));
-  const auto& parameter = input_parameters.parameters()[index];
-
-  // The window has to come from somewhere, and a parameter with no bounds gives
-  // no honest one: start value +- a few step widths would be an invention, and
-  // one that quietly decides the answer for a parameter whose profile is wide.
-  const auto& lower = parameter.lower_bound();
-  const auto& upper = parameter.upper_bound();
-  if (!lower || !upper)
-    throw std::runtime_error("Parameter '" + parameter_name + "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
-
-  const double low  = *lower;
-  const double high = *upper;
 
   const scan1d::Settings settings;
 
@@ -727,6 +710,109 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   std::cout << "Scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed << " fitted in this run\n";
 }
 
+/// Looks up parameter_name and requires the window to come from its own
+/// config LowerBound/UpperBound: a parameter with no bounds gives no honest
+/// window, and start value +- a few step widths would be an invention that
+/// quietly decides the answer for a parameter whose profile is wide.
+void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+
+  const auto found = std::ranges::find(names, parameter_name);
+  if (found == names.end())
+    throw std::runtime_error("No parameter named '" + parameter_name + "' in the config");
+
+  const int   index     = static_cast<int>(std::ranges::distance(names.begin(), found));
+  const auto& parameter = input_parameters.parameters()[index];
+
+  const auto& lower = parameter.lower_bound();
+  const auto& upper = parameter.upper_bound();
+  if (!lower || !upper)
+    throw std::runtime_error("Parameter '" + parameter_name + "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
+
+  perform_1d_scan_window(options, module, parameter_name, index, *lower, *upper);
+}
+
+/**
+ * Runs a 1D scan over every non-fixed parameter in the config.
+ *
+ * A parameter with both LowerBound and UpperBound set scans that window, same
+ * as perform_1d_scan. A parameter missing one or both is not skipped: a
+ * single shared free fit (all non-fixed parameters floating) supplies a
+ * Migrad/Hesse error per parameter, and the missing side of the window is
+ * approximated as fitted_value +- 3 * error. Doubling or tripling the error
+ * this way is only ever a coarse proxy for the true profile width -- it is
+ * what a parabolic error extrapolates to, not what the (possibly asymmetric,
+ * possibly flat) likelihood actually does out there -- so a side that does
+ * have a config bound always keeps that bound instead of the approximation:
+ * the config value is the real physical edge, and takes precedence.
+ */
+void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+
+  std::vector<std::size_t> unbounded_indices;
+  for (std::size_t i = 0; i < input_parameters.size(); ++i) {
+    if (input_parameters.fixed(static_cast<int>(i)))
+      continue;
+    const auto& parameter = input_parameters.parameters()[i];
+    if (!parameter.lower_bound() || !parameter.upper_bound())
+      unbounded_indices.push_back(i);
+  }
+
+  // The fallback window needs a fitted value and an error per parameter, and
+  // Migrad already computes both for every floating parameter in one pass --
+  // no reason to pay for a second fit just to profile one of them.
+  std::vector<double> fallback_values;
+  std::vector<double> fallback_errors;
+  bool                 have_fallback_fit = false;
+  if (!unbounded_indices.empty()) {
+    ana::Fit reference_fit(options, module);
+    reference_fit.minimize();
+    const auto min = reference_fit.get_minimizer();
+    if (reference_fit.converged() && min->Errors() != nullptr) {
+      fallback_values.assign(min->X(), min->X() + input_parameters.size());
+      fallback_errors.assign(min->Errors(), min->Errors() + input_parameters.size());
+      have_fallback_fit = true;
+    } else {
+      std::cout << "Reference fit for approximated windows did not converge or has no errors; "
+                   "parameters without config bounds will be skipped\n";
+    }
+  }
+
+  constexpr double kErrorMultiplier = 3.0;
+
+  for (std::size_t i = 0; i < input_parameters.size(); ++i) {
+    if (input_parameters.fixed(static_cast<int>(i)))
+      continue;
+
+    const auto& parameter = input_parameters.parameters()[i];
+    const auto& lower     = parameter.lower_bound();
+    const auto& upper     = parameter.upper_bound();
+
+    double low;
+    double high;
+    if (lower && upper) {
+      low  = *lower;
+      high = *upper;
+    } else {
+      if (!have_fallback_fit)
+        continue;
+
+      const double value = fallback_values[i];
+      const double error = fallback_errors[i];
+      low                = lower ? *lower : value - kErrorMultiplier * error;
+      high               = upper ? *upper : value + kErrorMultiplier * error;
+
+      std::cout << names[i] << ": approximated window [" << low << ", " << high
+                << "] from fitted value " << value << " +- " << error << '\n';
+    }
+
+    std::cout << "Scanning " << names[i] << "...\n";
+    perform_1d_scan_window(options, module, names[i], static_cast<int>(i), low, high);
+  }
+}
+
 int main(int argc, char** argv) {
   ROOT::EnableThreadSafety();
 
@@ -757,12 +843,15 @@ int main(int argc, char** argv) {
     // which needs one converged result rather than a surface.
     if (options->inputOptions().fit_only()) {
       ana::Fit fit(options, module);
+      auto     min = fit.get_minimizer();
+      min->SetVariableValue(params::ic::AstroNorm, 2.0);
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
       // perform_1d_scan(options, module, "AstroNorm");
+      perform_1d_scan_all(options, module);
       // perform_2d_scan(options, module);
-      perform_2d_scan_regular(options, module);
+      // perform_2d_scan_regular(options, module);
     }
   } catch (const std::exception& e) {
     std::cout << e.what() << '\n';
