@@ -1,6 +1,7 @@
 #include "AtmosphericFlux.h"
 
 #include "../../io/IceCube/ICParameter.h"
+#include "Df64.h"
 
 #include <cmath>
 #include <iostream>
@@ -257,6 +258,156 @@ namespace ana::ic {
       }
     )CUDA";
 
+    // Params struct for the Metal-only df64 kernel below. log_eref (conv and
+    // prompt) are split hi+lo (see Df64.h::df_from_double), the same reason
+    // PowerlawFlux's df64 SPL kernel splits its own log_eref: it feeds an
+    // exp() argument, where FP32 rounding of a large-ish log difference is
+    // exactly the error df64 exists to remove. cr/dg/norms/barr/veto_e stay
+    // plain float -- barr and veto are multiplicative correction factors
+    // close to 1, a much smaller share of the total error than the base
+    // value and the exp() are.
+    struct AtmoParamsDf64 {
+      float cr;
+      float dg;
+      float conv_norm;
+      float prompt_norm;
+      float barr0;
+      float barr1;
+      float barr2;
+      float barr3;
+      float log_eref_conv_hi;
+      float log_eref_conv_lo;
+      float log_eref_prompt_hi;
+      float log_eref_prompt_lo;
+      int   write_pe;
+      int   use_veto;
+      float veto_e;
+      int   n_chunks;
+    };
+
+    // Metal-only df64 twin of kKernelMetalBody: log_e_true, conv/prompt base
+    // and alt upload as hi+lo float32 pairs (see Df64.h) instead of one
+    // float32 each, and the CRGrad interpolation + exp() reweight run in
+    // double-float arithmetic. Barr and veto stay plain FP32 -- see
+    // AtmoParamsDf64's comment for why that is where the line is drawn.
+    constexpr const char* kKernelMetalBodyDf64 = R"METAL(
+      struct AtmoParamsDf64 {
+        float cr; float dg; float conv_norm; float prompt_norm;
+        float barr0; float barr1; float barr2; float barr3;
+        float log_eref_conv_hi; float log_eref_conv_lo;
+        float log_eref_prompt_hi; float log_eref_prompt_lo;
+        int write_pe;
+        int use_veto;
+        float veto_e;
+        int n_chunks;
+      };
+      constant float kLog2Of10Df64 = 3.321928094887362f;
+
+      kernel void atmo_hist_df64(
+          device const float*      log_e_hi        [[buffer(0)]],
+          device const float*      log_e_lo        [[buffer(1)]],
+          device const float*      conv_base_hi    [[buffer(2)]],
+          device const float*      conv_base_lo    [[buffer(3)]],
+          device const float*      conv_alt_hi     [[buffer(4)]],
+          device const float*      conv_alt_lo     [[buffer(5)]],
+          device const float*      prompt_base_hi  [[buffer(6)]],
+          device const float*      prompt_base_lo  [[buffer(7)]],
+          device const float*      prompt_alt_hi   [[buffer(8)]],
+          device const float*      prompt_alt_lo   [[buffer(9)]],
+          device const float*      barr0           [[buffer(10)]],
+          device const float*      barr1           [[buffer(11)]],
+          device const float*      barr2           [[buffer(12)]],
+          device const float*      barr3           [[buffer(13)]],
+          device const float*      veto_conv_a     [[buffer(14)]],
+          device const float*      veto_conv_b     [[buffer(15)]],
+          device const float*      veto_conv_c     [[buffer(16)]],
+          device const float*      veto_pr_a       [[buffer(17)]],
+          device const float*      veto_pr_b       [[buffer(18)]],
+          device const float*      veto_pr_c       [[buffer(19)]],
+          device const uint*       chunk_offsets   [[buffer(20)]],
+          constant AtmoParamsDf64& p               [[buffer(21)]],
+          device float*            partial         [[buffer(22)]],
+          device float*            per_event       [[buffer(23)]],
+          uint chunk [[threadgroup_position_in_grid]],
+          uint tid [[thread_position_in_threadgroup]])
+      {
+        const uint start = chunk_offsets[chunk];
+        const uint end   = chunk_offsets[chunk + 1];
+        float conv_acc   = 0.0f;
+        float conv_cmp   = 0.0f;
+        float prompt_acc = 0.0f;
+        float prompt_cmp = 0.0f;
+        const df32 log_eref_conv   = df32{p.log_eref_conv_hi, p.log_eref_conv_lo};
+        const df32 log_eref_prompt = df32{p.log_eref_prompt_hi, p.log_eref_prompt_lo};
+        for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
+          const df32 loge = df32{log_e_hi[i], log_e_lo[i]};
+          float cw = 0.0f;
+          float pw = 0.0f;
+
+          const df32 cb = df32{conv_base_hi[i], conv_base_lo[i]};
+          if (cb.hi > 0.0f) {
+            const df32 alt   = df32{conv_alt_hi[i], conv_alt_lo[i]};
+            df32       cw_df = df_add(cb, df_mul(df32{p.cr, 0.0f}, df_sub(alt, cb)));
+            float      factor = 1.0f;
+            factor *= 1.0f + p.barr0 * barr0[i] / cb.hi;
+            factor *= 1.0f + p.barr1 * barr1[i] / cb.hi;
+            factor *= 1.0f + p.barr2 * barr2[i] / cb.hi;
+            factor *= 1.0f + p.barr3 * barr3[i] / cb.hi;
+            if (p.use_veto) {
+              const float log_pf = veto_conv_a[i] + veto_conv_b[i] * p.veto_e +
+                                   veto_conv_c[i] * p.veto_e * p.veto_e;
+              factor *= exp2(kLog2Of10Df64 * log_pf);
+            }
+            const df32 expo = df_exp(df_mul(df_sub(loge, log_eref_conv), df32{-p.dg, 0.0f}));
+            cw_df = df_mul(df_mul(cw_df, expo), df32{factor, 0.0f});
+            cw = cw_df.hi;
+            conv_cmp += cw_df.lo;
+            neumaier_add(conv_acc, conv_cmp, cw_df.hi);
+          }
+
+          const df32 pb = df32{prompt_base_hi[i], prompt_base_lo[i]};
+          if (pb.hi > 0.0f) {
+            const df32 alt   = df32{prompt_alt_hi[i], prompt_alt_lo[i]};
+            df32       pw_df = df_add(pb, df_mul(df32{p.cr, 0.0f}, df_sub(alt, pb)));
+            float      factor = 1.0f;
+            if (p.use_veto) {
+              const float log_pf = veto_pr_a[i] + veto_pr_b[i] * p.veto_e +
+                                   veto_pr_c[i] * p.veto_e * p.veto_e;
+              factor *= exp2(kLog2Of10Df64 * log_pf);
+            }
+            const df32 expo = df_exp(df_mul(df_sub(loge, log_eref_prompt), df32{-p.dg, 0.0f}));
+            pw_df = df_mul(df_mul(pw_df, expo), df32{factor, 0.0f});
+            pw = pw_df.hi;
+            prompt_cmp += pw_df.lo;
+            neumaier_add(prompt_acc, prompt_cmp, pw_df.hi);
+          }
+
+          if (p.write_pe) per_event[i] = p.conv_norm * cw + p.prompt_norm * pw;
+        }
+
+        conv_acc += conv_cmp;
+        prompt_acc += prompt_cmp;
+
+        threadgroup float shared[kThreadsPerGroup];
+        shared[tid] = conv_acc;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint s = kThreadsPerGroup / 2; s > 0; s >>= 1) {
+          if (tid < s) shared[tid] += shared[tid + s];
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (tid == 0) partial[chunk] = shared[0];
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        shared[tid] = prompt_acc;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint s = kThreadsPerGroup / 2; s > 0; s >>= 1) {
+          if (tid < s) shared[tid] += shared[tid + s];
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (tid == 0) partial[(uint)p.n_chunks + chunk] = shared[0];
+      }
+    )METAL";
+
     // The scalar part of one evaluation: everything that does not vary per event.
     struct AtmoCoeffs {
       double cr;
@@ -397,6 +548,14 @@ namespace ana::ic {
         m_hVetoConv[k]   = m_UseVeto ? m_Gpu->upload_column(sample.veto_conv[k].data(), M) : m_hETrue;
         m_hVetoPrompt[k] = m_UseVeto ? m_Gpu->upload_column(sample.veto_prompt[k].data(), M) : m_hETrue;
       }
+      if (m_Gpu->language() == GpuLanguage::Metal) {
+        m_Gpu->ensure_kernel("atmo_hist_df64", metal_kernel_source(kKernelMetalBodyDf64).c_str());
+        m_Gpu->upload_column_df64(sample.log_e_true.data(), M, m_hLogEHi, m_hLogELo);
+        m_Gpu->upload_column_df64(sample.conv_baseline.data(), M, m_hConvBaseHi, m_hConvBaseLo);
+        m_Gpu->upload_column_df64(sample.conv_alt.data(), M, m_hConvAltHi, m_hConvAltLo);
+        m_Gpu->upload_column_df64(sample.prompt_baseline.data(), M, m_hPromptBaseHi, m_hPromptBaseLo);
+        m_Gpu->upload_column_df64(sample.prompt_alt.data(), M, m_hPromptAltHi, m_hPromptAltLo);
+      }
       // Two reduced quantities: the conventional and prompt histograms.
       m_Reduce.emplace(m_Gpu, sample, m_Histogram.size(), /*n_quantities=*/2);
       m_hConvHist   = m_Gpu->alloc_output(m_Histogram.size());
@@ -431,6 +590,48 @@ namespace ana::ic {
           m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0);
       p.n_chunks          = static_cast<int>(m_Reduce->n_chunks());
     };
+
+    // Metal-only df64 path (see kKernelMetalBodyDf64 / AtmoParamsDf64): the
+    // CRGrad interpolation and the exp() reweight run in double-float
+    // arithmetic on log_e/conv/prompt base+alt uploaded as hi+lo float32
+    // pairs, instead of one plain-FP32 column each. Barr/veto stay FP32.
+    if (m_Gpu->language() == GpuLanguage::Metal) {
+      AtmoParamsDf64 p{};
+      p.cr                        = static_cast<float>(parameter[CRGrad]);
+      p.dg                        = static_cast<float>(parameter[DeltaGamma]);
+      p.conv_norm                 = static_cast<float>(parameter[ConvNorm]);
+      p.prompt_norm               = static_cast<float>(parameter[PromptNorm]);
+      p.barr0                     = static_cast<float>(parameter[BarrH + 0]);
+      p.barr1                     = static_cast<float>(parameter[BarrH + 1]);
+      p.barr2                     = static_cast<float>(parameter[BarrH + 2]);
+      p.barr3                     = static_cast<float>(parameter[BarrH + 3]);
+      const df64::Df32 lref_conv   = df64::df_from_double(std::log(m_ConvDeltaGammaERef));
+      const df64::Df32 lref_prompt = df64::df_from_double(std::log(m_PromptDeltaGammaERef));
+      p.log_eref_conv_hi          = lref_conv.hi;
+      p.log_eref_conv_lo          = lref_conv.lo;
+      p.log_eref_prompt_hi        = lref_prompt.hi;
+      p.log_eref_prompt_lo        = lref_prompt.lo;
+      p.write_pe                  = m_NeedPerEvent ? 1 : 0;
+      p.use_veto                  = m_UseVeto ? 1 : 0;
+      p.veto_e                    = static_cast<float>(
+          m_UseVeto ? m_VetoRescaleEnergy * std::pow(10.0, parameter[VetoThreshold]) - m_VetoAnchorEnergy : 0.0);
+      p.n_chunks                  = static_cast<int>(m_Reduce->n_chunks());
+
+      const int inputs_df64[] = {m_hLogEHi,        m_hLogELo,        m_hConvBaseHi,    m_hConvBaseLo,
+                                 m_hConvAltHi,     m_hConvAltLo,     m_hPromptBaseHi,  m_hPromptBaseLo,
+                                 m_hPromptAltHi,   m_hPromptAltLo,   m_hBarr[0],       m_hBarr[1],
+                                 m_hBarr[2],       m_hBarr[3],       m_hVetoConv[0],   m_hVetoConv[1],
+                                 m_hVetoConv[2],   m_hVetoPrompt[0], m_hVetoPrompt[1], m_hVetoPrompt[2],
+                                 m_Reduce->chunk_offsets()};
+      m_Gpu->dispatch("atmo_hist_df64", inputs_df64, 21, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                      m_Reduce->n_chunks());
+      m_Reduce->gather(m_hConvHist, /*q=*/0);
+      m_Reduce->gather(m_hPromptHist, /*q=*/1);
+      read_back_hist<float>(*m_Gpu, m_hConvHist, m_ConvShape);
+      read_back_hist<float>(*m_Gpu, m_hPromptHist, m_PromptShape);
+      apply_norms(parameter);
+      return;
+    }
 
     // Chunk-parallel: the kernel reduces each chunk to two partials -- one
     // conventional, one prompt -- and gather() sums each bin's partials into

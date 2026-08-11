@@ -1,6 +1,7 @@
 #include "PowerlawFlux.h"
 
 #include "../../io/IceCube/ICParameter.h"
+#include "Df64.h"
 
 #include <cmath>
 #include <iostream>
@@ -137,6 +138,74 @@ namespace ana::ic {
       }
     )CUDA";
 
+    // Params struct for the Metal-only df64 single-power-law kernel below.
+    // log_eref is split hi+lo (see Df64.h::df_from_double); exponent and
+    // eff_norm stay plain float -- each reaches the per-event weight through
+    // one multiply, not an accumulation or a transcendental, so FP32 there
+    // does not reintroduce the error df64 exists to remove.
+    struct PowerlawParamsDf64 {
+      float exponent;
+      float log_eref_hi;
+      float log_eref_lo;
+      float eff_norm;
+      int   write_pe;
+    };
+
+    // Metal-only: Apple GPUs have no native double, so the single-power-law
+    // weight -- baseline_i * exp(exponent * (logE_i - logEref)) -- is computed
+    // in df32 (hi+lo float pair) arithmetic instead of plain FP32. See Df64.h
+    // for why: neither a wider column upload nor a more precise per-event exp
+    // is available any other way on this hardware, and those two are exactly
+    // what the plain-FP32 kernel's ~2.6e-7 relative floor (GpuBackend.h,
+    // MetalFp32PredictionTracksCpuFp64) is made of. BPL keeps the plain-FP32
+    // kernel above; only SPL (the default/most-used model) is ported so far.
+    constexpr const char* kKernelMetalBodySplDf64 = R"METAL(
+      struct PowerlawParamsDf64 {
+        float exponent; float log_eref_hi; float log_eref_lo; float eff_norm; int write_pe;
+      };
+
+      kernel void powerlaw_hist_spl_df64(
+          device const float*          log_e_hi      [[buffer(0)]],
+          device const float*          log_e_lo      [[buffer(1)]],
+          device const float*          baseline_hi   [[buffer(2)]],
+          device const float*          baseline_lo   [[buffer(3)]],
+          device const uint*           chunk_offsets [[buffer(4)]],
+          constant PowerlawParamsDf64& p             [[buffer(5)]],
+          device float*                partial       [[buffer(6)]],
+          device float*                per_event     [[buffer(7)]],
+          uint chunk [[threadgroup_position_in_grid]],
+          uint tid [[thread_position_in_threadgroup]])
+      {
+        const uint start = chunk_offsets[chunk];
+        const uint end   = chunk_offsets[chunk + 1];
+        float acc = 0.0f;
+        float cmp = 0.0f;
+        const df32 log_eref = df32{p.log_eref_hi, p.log_eref_lo};
+        for (uint i = start + tid; i < end; i += kThreadsPerGroup) {
+          const df32 loge  = df32{log_e_hi[i], log_e_lo[i]};
+          const df32 arg   = df_mul(df_sub(loge, log_eref), df32{p.exponent, 0.0f});
+          const df32 shape = df_exp(arg);
+          const df32 base  = df32{baseline_hi[i], baseline_lo[i]};
+          const df32 w     = df_mul(base, shape);
+          if (p.write_pe) per_event[i] = p.eff_norm * (w.hi + w.lo);
+          // w.lo folds into the compensation term exactly like a Neumaier
+          // residual would; neumaier_add then absorbs w.hi's own accumulation
+          // error on top, so both error sources are tracked, not just one.
+          cmp += w.lo;
+          neumaier_add(acc, cmp, w.hi);
+        }
+        acc += cmp;
+        threadgroup float shared[kThreadsPerGroup];
+        shared[tid] = acc;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint s = kThreadsPerGroup / 2; s > 0; s >>= 1) {
+          if (tid < s) shared[tid] += shared[tid + s];
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (tid == 0) partial[chunk] = shared[0];
+      }
+    )METAL";
+
   }  // namespace
 
   PowerlawFlux::PowerlawFlux(const io::ic::ICSample&     sample,
@@ -172,6 +241,11 @@ namespace ana::ic {
       m_hETrue    = m_Gpu->upload_column(sample.e_true.data(), M);
       m_hLogETrue = m_Gpu->upload_column(sample.log_e_true.data(), M);
       m_hBaseline = m_Gpu->upload_column(sample.astro_baseline.data(), M);
+      if (m_Gpu->language() == GpuLanguage::Metal) {
+        m_Gpu->ensure_kernel("powerlaw_hist_spl_df64", metal_kernel_source(kKernelMetalBodySplDf64).c_str());
+        m_Gpu->upload_column_df64(sample.log_e_true.data(), M, m_hLogEHi, m_hLogELo);
+        m_Gpu->upload_column_df64(sample.astro_baseline.data(), M, m_hBaselineHi, m_hBaselineLo);
+      }
       m_Reduce.emplace(m_Gpu, sample, m_Histogram.size());
       m_hHist     = m_Gpu->alloc_output(m_Histogram.size());
       // The per-event weights are read only by say_ssq, never on the host.
@@ -344,6 +418,29 @@ namespace ana::ic {
       p.pivot      = static_cast<R>(pivot);
       p.broken     = broken ? 1 : 0;
     };
+
+    // Metal-only df64 path for the single-power-law model: same math as the
+    // plain-FP32 dispatch below, but through the double-float kernel (see
+    // Df64.h / kKernelMetalBodySplDf64) that keeps baseline and logE at close
+    // to their source double precision instead of truncating both to a single
+    // float32 mantissa. BPL falls through to the FP32 path unchanged.
+    if (!broken && m_Gpu->language() == GpuLanguage::Metal) {
+      PowerlawParamsDf64 p{};
+      p.exponent             = static_cast<float>(m_ReferenceIndex - gamma);
+      const df64::Df32 logeref = df64::df_from_double(std::log(m_ERef));
+      p.log_eref_hi           = logeref.hi;
+      p.log_eref_lo           = logeref.lo;
+      p.eff_norm              = static_cast<float>(effective_norm(parameter));
+      p.write_pe              = m_NeedPerEvent ? 1 : 0;
+
+      const int inputs[] = {m_hLogEHi, m_hLogELo, m_hBaselineHi, m_hBaselineLo, m_Reduce->chunk_offsets()};
+      m_Gpu->dispatch("powerlaw_hist_spl_df64", inputs, 5, &p, sizeof(p), m_Reduce->partial(), m_hPerEvent,
+                      m_Reduce->n_chunks());
+      m_Reduce->gather(m_hHist);
+      read_back_hist<float>(*m_Gpu, m_hHist, m_ShapeHistogram);
+      apply_norm(parameter);
+      return;
+    }
 
     // Chunk-parallel: the kernel reduces each chunk to a partial, then
     // gather() sums each bin's partials into m_hHist (see GpuBinReduce). What

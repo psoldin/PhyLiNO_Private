@@ -44,6 +44,88 @@ namespace ana::ic {
       }
     )METAL";
 
+  /**
+   * Double-float (df32 hi+lo) arithmetic for Metal, the MSL twin of
+   * libraries/likelihood/IceCube/Df64.h. CUDA has no counterpart: a CUDA
+   * backend with is_fp64() true already computes in real double, and the
+   * fp32 CUDA path is the same fast/approximate mode Metal has without this
+   * -- df64 exists only to work around Apple GPUs having no double at all.
+   *
+   * Mechanically transcribed from Df64.h, which is unit-tested (Df64Test.cpp)
+   * against std::exp/double arithmetic in plain C++ float -- the same
+   * +,-,*,fma() semantics Metal uses with fastMathEnabled = NO (see
+   * kNeumaierMetal above), so that validation carries over without needing a
+   * GPU to test the algorithm itself. Only the input precision (a df64 column
+   * upload, see GpuSession::upload_column_df64) and this transcription are
+   * Metal-specific.
+   */
+  inline constexpr const char* kDf64Metal = R"METAL(
+      struct df32 { float hi; float lo; };
+
+      inline df32 two_sum(const float a, const float b) {
+        const float s   = a + b;
+        const float bb  = s - a;
+        const float err = (a - (s - bb)) + (b - bb);
+        return df32{s, err};
+      }
+
+      inline df32 two_prod(const float a, const float b) {
+        const float p   = a * b;
+        const float err = fma(a, b, -p);
+        return df32{p, err};
+      }
+
+      inline df32 df_neg(const df32 a) { return df32{-a.hi, -a.lo}; }
+
+      inline df32 df_add(const df32 a, const df32 b) {
+        const df32  s  = two_sum(a.hi, b.hi);
+        const float lo = s.lo + a.lo + b.lo;
+        return two_sum(s.hi, lo);
+      }
+
+      inline df32 df_sub(const df32 a, const df32 b) { return df_add(a, df_neg(b)); }
+
+      inline df32 df_mul(const df32 a, const df32 b) {
+        const df32  p  = two_prod(a.hi, b.hi);
+        const float lo = p.lo + a.hi * b.lo + a.lo * b.hi;
+        return two_sum(p.hi, lo);
+      }
+
+      // Cody-Waite range reduction (x = n*ln2 + r, |r| <= ln2/2) + a 12-term
+      // Maclaurin series for exp(r) via Horner in df64. Constants are
+      // float32-pair splits of ln2, 1/ln2 and 1/k! for k=0..12 -- identical
+      // literals to Df64.h's df_exp(), computed offline to double precision.
+      inline df32 df_exp(const df32 x) {
+        const df32  kLn2      = df32{0.6931471824645996f, -1.9046542121259336e-09f};
+        const float kInvLn2Hi = 1.4426950216293335f;
+
+        const df32 kInvFact[13] = {
+          df32{1.0f, 0.0f},
+          df32{1.0f, 0.0f},
+          df32{0.5f, 0.0f},
+          df32{0.1666666716337204f, -4.967053879312289e-09f},
+          df32{0.0416666679084301f, -1.2417634698280722e-09f},
+          df32{0.008333333767950535f, -4.34617203337595e-10f},
+          df32{0.0013888889225199819f, -3.3631094437103215e-11f},
+          df32{0.00019841270113829523f, -2.725596874933456e-12f},
+          df32{2.4801587642286904e-05f, -3.40699609366682e-13f},
+          df32{2.7557318844628753e-06f, 3.793571224297229e-14f},
+          df32{2.755731998149713e-07f, -7.575112209051195e-15f},
+          df32{2.5052107943679403e-08f, 4.4176230446483665e-16f},
+          df32{2.0876755879584152e-09f, 1.1082839809204342e-16f},
+        };
+
+        const float n = round(x.hi * kInvLn2Hi);
+        const df32  r = df_sub(x, df_mul(df32{n, 0.0f}, kLn2));
+
+        df32 sum = kInvFact[12];
+        for (int k = 11; k >= 0; --k) sum = df_add(df_mul(sum, r), kInvFact[k]);
+
+        const float scale = exp2(n);
+        return df32{sum.hi * scale, sum.lo * scale};
+      }
+    )METAL";
+
   /** CUDA twin of kNeumaierMetal; `real` and RFABS come from the precision prelude. */
   inline constexpr const char* kNeumaierCuda = R"CUDA(
       __device__ inline void neumaier_add(real& acc, real& cmp, const real x) {
@@ -80,7 +162,7 @@ namespace ana::ic {
       using namespace metal;
       constant uint kThreadsPerGroup = 256;
     )METAL") +
-           kNeumaierMetal + body;
+           kNeumaierMetal + kDf64Metal + body;
   }
 
   /**
@@ -161,6 +243,19 @@ namespace ana::ic {
 
     /** Upload CSR bin offsets as uint32 (deduplicated like columns). */
     virtual int upload_offsets(const std::size_t* data, std::size_t n) = 0;
+
+    /** Upload a per-event double column as a df32 hi+lo pair (see Df64.h):
+        two float32 buffers instead of upload_column()'s one, together
+        carrying close to the source column's full double precision. Writes
+        the two handles to `hi`/`lo` (deduplicated by source pointer like
+        upload_column()). Only meaningful where the backend has no native
+        double -- i.e. Metal; the base implementation sets both handles to -1
+        and does nothing, since a CUDA fp64 backend already computes in real
+        double and CUDA fp32 is the existing fast/approximate path. */
+    virtual void upload_column_df64(const double* /*data*/, std::size_t /*n*/, int& hi, int& lo) {
+      hi = -1;
+      lo = -1;
+    }
 
     /** Allocate a zeroed output buffer of n scalars, owned by this session and
         freed with it. Never deduplicated: two samples writing one histogram

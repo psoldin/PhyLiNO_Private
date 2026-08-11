@@ -116,6 +116,15 @@ namespace ana::ic {
     int                           m_hBaseline = -1;
     int                           m_hHist     = -1;
     int                           m_hPerEvent = -1;
+    // df64 (hi+lo float32 pair) columns, uploaded only on Metal (see Df64.h):
+    // Apple GPUs have no native double, so the single-power-law model's
+    // per-event weight is computed in double-float precision there instead of
+    // plain FP32. -1 on any other backend (CUDA already has real fp64, or
+    // uses the plain FP32 path with the same tolerance it always had).
+    int                           m_hLogEHi     = -1;
+    int                           m_hLogELo     = -1;
+    int                           m_hBaselineHi = -1;
+    int                           m_hBaselineLo = -1;
     // Owns the chunk-offset binding, the per-chunk partial buffer and the
     // gather dispatch that turns those partials into m_hHist.
     std::optional<GpuBinReduce>   m_Reduce;

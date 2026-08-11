@@ -138,6 +138,23 @@ namespace ana::ic {
     std::array<int, params::ic::nBarrParams>         m_hBarr{};
     std::array<int, 3>                               m_hVetoConv{};
     std::array<int, 3>                               m_hVetoPrompt{};
+    // df64 (hi+lo float32 pair) columns, uploaded only on Metal (see Df64.h):
+    // Apple GPUs have no native double, so the CRGrad interpolation and the
+    // exp() reweight are computed in double-float precision there instead of
+    // plain FP32, the same workaround as PowerlawFlux's SPL kernel. Barr and
+    // veto stay plain-FP32 multiplicative correction factors (close to 1,
+    // much smaller a contribution to the total error than the base value and
+    // the exp()). -1 on any other backend.
+    int                                              m_hLogEHi        = -1;
+    int                                              m_hLogELo        = -1;
+    int                                              m_hConvBaseHi    = -1;
+    int                                              m_hConvBaseLo    = -1;
+    int                                              m_hConvAltHi     = -1;
+    int                                              m_hConvAltLo     = -1;
+    int                                              m_hPromptBaseHi  = -1;
+    int                                              m_hPromptBaseLo  = -1;
+    int                                              m_hPromptAltHi   = -1;
+    int                                              m_hPromptAltLo   = -1;
     // One histogram output per reduced quantity: the conventional and prompt
     // halves come back separately from a single sweep over the events.
     int                                              m_hConvHist   = -1;

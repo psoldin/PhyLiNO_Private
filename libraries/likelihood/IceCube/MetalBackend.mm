@@ -14,6 +14,7 @@
 #include "MetalBackend.h"
 
 #include "../../io/IceCube/ICConstants.h"
+#include "Df64.h"
 
 #include <atomic>
 #include <cstdint>
@@ -45,6 +46,9 @@ namespace ana::ic {
       // thread may still be appending columns.
       std::deque<id<MTLBuffer>>                        columns;   // shared column buffers
       std::unordered_map<const void*, int>             colCache;  // source ptr -> index into columns
+      // df64 columns (see upload_column_df64): two buffers per source ptr,
+      // both indices into `columns` above so they share its lifetime/lock.
+      std::unordered_map<const void*, std::pair<int, int>> dfColCache;
       std::unordered_map<std::string,
                          id<MTLComputePipelineState>>  pipelines; // kernel name -> pso
 
@@ -232,6 +236,42 @@ namespace ana::ic {
       b->columns.push_back(buf);
       b->columnCount.fetch_add(1, std::memory_order_relaxed);
       return alias_row(s, buf);
+    }
+  }
+
+  void MetalSession::upload_column_df64(const double* data, std::size_t n, int& hi, int& lo) {
+    auto* b = static_cast<MetalState*>(m_Backend->m_State);
+    auto* s = static_cast<MetalSessionState*>(m_State);
+
+    const std::scoped_lock lock(b->mutex);
+
+    if (auto it = b->dfColCache.find(data); it != b->dfColCache.end()) {
+      hi = alias_row(s, b->columns[it->second.first]);
+      lo = alias_row(s, b->columns[it->second.second]);
+      return;
+    }
+
+    @autoreleasepool {
+      std::vector<float> f_hi(n), f_lo(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        const auto pair = ana::ic::df64::df_from_double(data[i]);
+        f_hi[i]         = pair.hi;
+        f_lo[i]         = pair.lo;
+      }
+      id<MTLBuffer> buf_hi = [b->dev newBufferWithBytes:f_hi.data()
+                                                  length:n * sizeof(float)
+                                                 options:MTLResourceStorageModeShared];
+      id<MTLBuffer> buf_lo = [b->dev newBufferWithBytes:f_lo.data()
+                                                  length:n * sizeof(float)
+                                                 options:MTLResourceStorageModeShared];
+      const int idx_hi = static_cast<int>(b->columns.size());
+      b->columns.push_back(buf_hi);
+      const int idx_lo = static_cast<int>(b->columns.size());
+      b->columns.push_back(buf_lo);
+      b->dfColCache[data] = {idx_hi, idx_lo};
+      b->columnCount.fetch_add(2, std::memory_order_relaxed);
+      hi = alias_row(s, buf_hi);
+      lo = alias_row(s, buf_lo);
     }
   }
 

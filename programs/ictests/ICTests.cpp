@@ -1403,15 +1403,26 @@ TEST(SampleLikelihoodTest, GpuMultiChunkBinsMatchCpu) {
 //
 // Measured on an M-series GPU with this fixture (max relative deviation):
 //
-//   fast math on,  plain accumulation   3.370e-7   <- the pre-2026-08-09 build
-//   fast math off, plain accumulation   2.648e-7
-//   fast math off, Neumaier             2.648e-7   <- current
+//   fast math on,  plain accumulation                     3.370e-7   <- the pre-2026-08-09 build
+//   fast math off, plain accumulation                     2.648e-7
+//   fast math off, Neumaier                               2.648e-7
+//   fast math off, Neumaier, SPL df64 (Metal)              1.806e-8
+//   fast math off, Neumaier, SPL + atmo df64 (Metal)       1.400e-8   <- current
 //
-// So essentially all of the gain is fastMathEnabled = NO in MetalBackend, i.e.
-// the accurate exp rather than the accumulation: the chunk decomposition
-// already caps the grid-stride loop at ~32 iterations and the tree reduction is
-// pairwise, leaving per-event FP32 rounding as the floor. The bound below is
-// therefore a guard on the compile options, not on the compensation.
+// The Neumaier step bought nothing (see kNeumaierMetal in GpuBackend.h): the
+// floor was per-event FP32 rounding of the input columns and the exp() call,
+// neither of which any summation algorithm recovers. df64 (Df64.h) widens
+// both -- baseline/logE-derived columns upload as hi+lo float32 pairs instead
+// of one float32, and the per-event weight runs in double-float arithmetic --
+// for PowerlawFlux's SPL model and now AtmosphericFlux's conv/prompt CRGrad +
+// exp() reweight (kKernelMetalBodyDf64). Barr and veto stay plain FP32 in the
+// atmo kernel (small multiplicative correction factors close to 1), which is
+// part of why the gain from adding atmo df64 is modest -- 1.806e-8 to
+// 1.400e-8 -- rather than another order of magnitude: the SAY per-event write
+// is also still plain FP32 and increasingly sets the floor. Neither reaches
+// the ~5700x that Df64Test.cpp measures for df_exp() in isolation, for the
+// same reason. The bound below is therefore a guard on both the compile
+// options and the df64 kernels actually dispatching, not on the compensation.
 TEST(GpuBackendTest, MetalFp32PredictionTracksCpuFp64) {
   using ana::ic::MetalBackend;
   using ana::ic::SampleLikelihood;
@@ -1476,10 +1487,11 @@ TEST(GpuBackendTest, MetalFp32PredictionTracksCpuFp64) {
             << "  per-bin prediction max_rel=" << max_rel << " rms_rel=" << rms_rel
             << "  partial_llh rel=" << llh_rel << "\n";
 
-  // Bound set an order of magnitude above the ~1e-7 that compensated FP32
-  // accumulation delivers here, so it fails on a lost compensation (~1e-5)
-  // without being brittle against GPU-model differences in exp.
-  ASSERT_TRUE(max_rel < 1.0e-6);
+  // Bound set half an order of magnitude above the ~1.8e-8 the df64 SPL
+  // kernel delivers here, so it fails on a regression back to plain FP32
+  // (~2.6e-7, over 10x looser) without being brittle against GPU-model
+  // differences in exp.
+  ASSERT_TRUE(max_rel < 1.0e-7);
 }
 
 // The point of splitting the backend from the session is that the expensive
@@ -1515,8 +1527,12 @@ TEST(GpuBackendTest, SharedBackendUploadsAndCompilesOnce) {
 
     ASSERT_GT(columns_after_first, 0u);
     // powerlaw_hist, atmo_hist, say_ssq, and bin_gather (the second half of every
-    // one of those reductions, see GpuBinReduce).
-    ASSERT_EQ(kernels_after_first, 4u);
+    // one of those reductions, see GpuBinReduce) -- plus, on Metal only,
+    // powerlaw_hist_spl_df64 and atmo_hist_df64 (see PowerlawFlux/
+    // AtmosphericFlux): the double-float kernels that work around Apple GPUs
+    // having no native double.
+    const std::string name(backend_case.name);
+    ASSERT_EQ(kernels_after_first, name == "metal" ? 6u : 4u);
 
     SampleLikelihood second(sample, cfg, synthetic_settings(), backend->create_session(),
                             /*use_say=*/true);
@@ -1625,7 +1641,7 @@ TEST(GpuBackendTest, ConcurrentSessionsMatchSequential) {
       EXPECT_DOUBLE_EQ(result.get(), expected);
 
     // ... and the sharing really happened: one set of kernels, one set of columns.
-    EXPECT_EQ(shared->kernel_compile_count(), 4u);
+    EXPECT_EQ(shared->kernel_compile_count(), std::string(backend_case.name) == "metal" ? 6u : 4u);
     EXPECT_EQ(shared->column_count(), sequential_backend->column_count());
   }
 }
