@@ -1,6 +1,7 @@
 bin/
 lib/
 build/
+build?/
 result/
 .idea/
 xcode/
@@ -11,6 +12,10 @@ compile_commands.json
 .cache/
 .vscode/
 Output*.json
+evaluation/
+docs/
+ANTS*/
+.ua/
 
 # Personal working notes, kept out of the repository
 NOTES.md
