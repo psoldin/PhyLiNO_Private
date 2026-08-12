@@ -606,15 +606,24 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
 
   // A free fit gives the reference the delta likelihood is measured against
   // before any scan point exists. It is only a starting value: any scan point
-  // may undercut it, and refine() takes the lower of the two.
+  // may undercut it, and refine() takes the lower of the two. Saved to disk
+  // as BestFit_<parameter> so analysis can reference the true unfixed
+  // minimum instead of the lowest sampled scan point.
+  const std::string best_fit_name = "BestFit_" + parameter_name;
+
   double seed_llh = std::numeric_limits<double>::infinity();
-  {
+  if (const auto known = stored_fit(best_fit_name, names, format)) {
+    seed_llh = known->llh;
+    std::cout << "Best fit already stored: " << parameter_name << " = " << known->llh << '\n';
+  } else {
     ana::Fit seed_fit(options, module);
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
     if (std::isfinite(seed_min->MinValue())) {
       seed_llh = seed_min->MinValue();
+
+      result::write_results(seed_fit, best_fit_name);
 
       // The free fit is the best guess available for the coarse scan, whose
       // points have no fitted neighbour to take one from yet.
@@ -768,15 +777,24 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
     }
   }
 
-  // Only needed to seed the very first fits, before any grid point has a
-  // value of its own to seed from; there is no adaptive reference level here.
-  if (warm_start) {
+  // Also the source of the true (unfixed) best fit, saved to disk as
+  // BestFit_<parameter> so analysis can reference it instead of the lowest
+  // sampled grid point.
+  const std::string best_fit_name = "BestFitRegular_" + parameter_name;
+
+  if (const auto known = stored_fit(best_fit_name, names, format)) {
+    std::cout << "Best fit already stored: " << parameter_name << " = " << known->llh << '\n';
+  } else {
     ana::Fit seed_fit(options, module);
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
-    if (seed_fit.converged() && std::isfinite(seed_min->MinValue()))
-      seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+    if (std::isfinite(seed_min->MinValue())) {
+      result::write_results(seed_fit, best_fit_name);
+
+      if (warm_start && seed_fit.converged())
+        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+    }
 
     std::cout << "Seed fit: " << parameter_name << " = " << seed_min->X()[index] << (seed_fit.converged() ? "" : " (did not converge)")
               << '\n';
