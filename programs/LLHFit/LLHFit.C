@@ -181,6 +181,15 @@ namespace {
     return name.str();
   }
 
+  /// 1D counterpart of node_name_regular(const scan::Node&) above -- distinct
+  /// from node_name(parameter, node) so a regular-grid point never shares a
+  /// resume file with an adaptive-grid point at the same integer index.
+  std::string node_name_regular(const std::string& parameter, int node) {
+    std::stringstream name;
+    name << "OutputRegular_" << parameter << '_' << node;
+    return name.str();
+  }
+
 }  // namespace
 
 /**
@@ -710,6 +719,162 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
   std::cout << "Scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed << " fitted in this run\n";
 }
 
+/**
+ * @brief Profiles a single configured parameter on a regular grid instead of
+ * the adaptive lattice of perform_1d_scan_window.
+ *
+ * Same window convention as perform_1d_scan_window (taken from the caller),
+ * same warm-start/resume machinery, but every point in [low, high] is fitted
+ * up front rather than refined around confidence crossings.
+ *
+ * @param points Number of grid points, including both endpoints.
+ */
+void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
+                                     const std::string& parameter_name, int index, double low, double high, int points) {
+  if (points < 2)
+    throw std::runtime_error("perform_1d_scan_regular_window needs at least 2 points");
+
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+  const auto& format           = options->inputOptions().output_format();
+
+  const int scan_workers = std::max(1, options->inputOptions().scan_workers());
+
+  // Randomized start values exist to spread the start points on purpose, which
+  // seeding every fit from its neighbour would undo. The two do not combine.
+  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
+  if (options->inputOptions().scan_warm_start() && !warm_start)
+    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+
+  scanseed::Store<int> seeds;
+
+  const double spacing = (high - low) / (points - 1);
+
+  auto position = [&](int node) { return low + node * spacing; };
+
+  {
+    nlohmann::json grid;
+    grid[parameter_name] = {{"low", low}, {"high", high}, {"points", points}};
+
+    const std::string grid_path = "scan_grid_regular_" + parameter_name + ".json";
+    if (std::filesystem::exists(grid_path)) {
+      std::ifstream  existing_file(grid_path);
+      nlohmann::json existing = nlohmann::json::parse(existing_file);
+      if (existing != grid)
+        throw std::runtime_error(grid_path + " in this directory describes a different grid; the OutputRegular_" + parameter_name +
+                                  "_i files here belong to that one. Scan into an empty directory instead.");
+    } else {
+      std::ofstream(grid_path) << grid.dump(2) << '\n';
+    }
+  }
+
+  // Only needed to seed the very first fits, before any grid point has a
+  // value of its own to seed from; there is no adaptive reference level here.
+  if (warm_start) {
+    ana::Fit seed_fit(options, module);
+    seed_fit.minimize();
+
+    const auto seed_min = seed_fit.get_minimizer();
+    if (seed_fit.converged() && std::isfinite(seed_min->MinValue()))
+      seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+
+    std::cout << "Seed fit: " << parameter_name << " = " << seed_min->X()[index] << (seed_fit.converged() ? "" : " (did not converge)")
+              << '\n';
+  }
+
+  // Each worker builds its own Fit -- and therefore its own likelihood -- over
+  // the shared module, whose only state is the immutable MC sample. Points are
+  // handed out one at a time, so a slow fit does not stall the others.
+  const int        n_workers = std::clamp(scan_workers, 1, points);
+  std::atomic<int> next_index{0};
+  std::mutex       profile_mutex;
+
+  std::map<int, double> profile;
+  int                   fits_performed = 0;
+
+  auto worker = [&]() {
+    for (int node = next_index.fetch_add(1); node < points; node = next_index.fetch_add(1)) {
+      const std::string name = node_name_regular(parameter_name, node);
+
+      if (const auto known = stored_fit(name, names, format)) {
+        // A resumed run puts the points it reads back into the store, so the
+        // fits it still has to do start from a neighbour just as they would
+        // have in the run that was interrupted.
+        if (warm_start && !known->parameters.empty())
+          seeds.store(node, known->parameters);
+
+        const std::scoped_lock lock(profile_mutex);
+        profile[node] = known->llh;
+        continue;
+      }
+
+      ana::Fit fit(options, module);
+      auto     min = fit.get_minimizer();
+      min->SetVariableValue(index, position(node));
+      min->FixVariable(index);
+
+      // The scanned parameter is fixed above, so what is carried over is the
+      // profiled parameters, and those barely move between adjacent points.
+      if (warm_start) {
+        const auto start = seeds.nearest(node, [](int a, int b) { return std::abs(static_cast<double>(a - b)); });
+        if (!start.empty())
+          apply_start_values(*min, input_parameters, start);
+      }
+
+      fit.minimize();
+
+      result::write_results(fit, name);
+
+      if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
+        seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
+
+      // Minuit reporting "Edm is above max" is common at the edges of the
+      // window and still leaves a usable likelihood, so the value is taken
+      // whenever it is finite rather than only when the fit converged.
+      const std::scoped_lock lock(profile_mutex);
+      profile[node] = min->MinValue();
+      ++fits_performed;
+    }
+  };
+
+  std::cout << "Regular scan of " << parameter_name << ": " << points << " points"
+            << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
+
+  std::vector<std::thread> workers;
+  workers.reserve(n_workers);
+  for (int w = 0; w < n_workers; ++w)
+    workers.emplace_back(worker);
+
+  for (auto& t : workers)
+    t.join();
+
+  std::cout << "Regular scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed
+            << " fitted in this run\n";
+}
+
+/// Looks up parameter_name and requires the window to come from its own
+/// config LowerBound/UpperBound, same convention as perform_1d_scan, but
+/// walks a regular grid of `points` values instead of the adaptive lattice.
+void perform_1d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
+                              const std::string& parameter_name, int points) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+
+  const auto found = std::ranges::find(names, parameter_name);
+  if (found == names.end())
+    throw std::runtime_error("No parameter named '" + parameter_name + "' in the config");
+
+  const int   index     = static_cast<int>(std::ranges::distance(names.begin(), found));
+  const auto& parameter = input_parameters.parameters()[index];
+
+  const auto& lower = parameter.lower_bound();
+  const auto& upper = parameter.upper_bound();
+  if (!lower || !upper)
+    throw std::runtime_error("Parameter '" + parameter_name + "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
+
+  perform_1d_scan_regular_window(options, module, parameter_name, index, *lower, *upper, points);
+}
+
 /// Looks up parameter_name and requires the window to come from its own
 /// config LowerBound/UpperBound: a parameter with no bounds gives no honest
 /// window, and start value +- a few step widths would be an invention that
@@ -746,8 +911,14 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
  * possibly flat) likelihood actually does out there -- so a side that does
  * have a config bound always keeps that bound instead of the approximation:
  * the config value is the real physical edge, and takes precedence.
+ *
+ * @param regular When true, every parameter is scanned on a regular grid of
+ *                `points` points (perform_1d_scan_regular_window) instead of
+ *                the adaptive lattice (perform_1d_scan_window).
+ * @param points  Grid points per parameter; only used when regular is true.
  */
-void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module) {
+void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, bool regular = false,
+                          int points = 30) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
 
@@ -809,7 +980,10 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
     }
 
     std::cout << "Scanning " << names[i] << "...\n";
-    perform_1d_scan_window(options, module, names[i], static_cast<int>(i), low, high);
+    if (regular)
+      perform_1d_scan_regular_window(options, module, names[i], static_cast<int>(i), low, high, points);
+    else
+      perform_1d_scan_window(options, module, names[i], static_cast<int>(i), low, high);
   }
 }
 
@@ -849,7 +1023,7 @@ int main(int argc, char** argv) {
       result::write_results(fit, "Output");
     } else {
       // perform_1d_scan(options, module, "AstroNorm");
-      perform_1d_scan_all(options, module);
+      perform_1d_scan_all(options, module, true, 30);
       // perform_2d_scan(options, module);
       // perform_2d_scan_regular(options, module);
     }
