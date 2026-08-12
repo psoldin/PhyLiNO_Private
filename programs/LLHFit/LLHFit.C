@@ -252,15 +252,24 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
 
   // A free fit gives the reference the delta likelihood is measured against
   // before any grid point exists. It is only a starting value: any scan point
-  // may undercut it, and refine() takes the lower of the two.
+  // may undercut it, and refine() takes the lower of the two. Saved to disk as
+  // BestFit so analysis can reference the true unfixed minimum instead of the
+  // lowest sampled grid point.
+  const std::string best_fit_name = "BestFit";
+
   double seed_llh = std::numeric_limits<double>::infinity();
-  {
+  if (const auto known = stored_fit(best_fit_name, names, format)) {
+    seed_llh = known->llh;
+    std::cout << "Best fit already stored: " << known->llh << '\n';
+  } else {
     ana::Fit seed_fit(options, module);
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
     if (std::isfinite(seed_min->MinValue())) {
       seed_llh = seed_min->MinValue();
+
+      result::write_results(seed_fit, best_fit_name);
 
       // The free fit is the best guess available for the coarse grid, whose
       // points have no fitted neighbour to take one from yet.
@@ -443,16 +452,27 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
     }
   }
 
-  // Only needed to seed the very first fits, before any grid point has a
-  // value of its own to seed from; there is no adaptive reference level here,
-  // so unlike perform_2d_scan the free fit's likelihood itself goes unused.
-  if (warm_start) {
+  // Also the source of the true (unfixed) best fit, saved to disk as
+  // BestFitRegular so analysis can reference it instead of the lowest sampled
+  // grid point. There is no adaptive reference level here, so unlike
+  // perform_2d_scan the free fit's likelihood itself is otherwise unused --
+  // it only seeds the very first fits, before any grid point has a value of
+  // its own to seed from.
+  const std::string best_fit_name = "BestFitRegular";
+
+  if (const auto known = stored_fit(best_fit_name, names, format)) {
+    std::cout << "Best fit already stored: " << known->llh << '\n';
+  } else {
     ana::Fit seed_fit(options, module);
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
-    if (seed_fit.converged() && std::isfinite(seed_min->MinValue()))
-      seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+    if (std::isfinite(seed_min->MinValue())) {
+      result::write_results(seed_fit, best_fit_name);
+
+      if (warm_start && seed_fit.converged())
+        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
+    }
 
     std::cout << "Seed fit: SpectralIndex = " << seed_min->X()[static_cast<int>(SpectralIndex)]
               << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)] << (seed_fit.converged() ? "" : " (did not converge)")
