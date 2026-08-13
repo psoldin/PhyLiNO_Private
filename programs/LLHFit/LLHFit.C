@@ -190,6 +190,169 @@ namespace {
     return name.str();
   }
 
+  /// Randomized start values exist to spread the start points on purpose, which
+  /// seeding every fit from its neighbour would undo. The two do not combine.
+  bool resolve_warm_start(const std::shared_ptr<io::Options>& options) {
+    const auto& input      = options->inputOptions();
+    const bool  warm_start = input.scan_warm_start() && !input.randomize_seeds();
+    if (input.scan_warm_start() && !warm_start)
+      std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+    return warm_start;
+  }
+
+  /// Writes `path` the first time a scan runs in this directory; on every later
+  /// run checks the stored descriptor still matches, so Output_* files from a
+  /// differently configured scan are never silently reused.
+  void write_or_check_grid(const std::string& path, const nlohmann::json& grid, const std::string& kind, const std::string& file_pattern) {
+    if (std::filesystem::exists(path)) {
+      std::ifstream  existing_file(path);
+      nlohmann::json existing = nlohmann::json::parse(existing_file);
+      if (existing != grid)
+        throw std::runtime_error(path + " in this directory describes a different " + kind + "; the " + file_pattern +
+                                  " files here belong to that one. Scan into an empty directory instead.");
+    } else {
+      std::ofstream(path) << grid.dump(2) << '\n';
+    }
+  }
+
+  /// Result of the free (unfixed) fit that bootstraps a scan: its likelihood as
+  /// the reference the adaptive grids measure delta chi2 from, and its
+  /// converged parameters as the fallback warm-start point for cells that have
+  /// no fitted neighbour yet.
+  struct SeedFit {
+    double              llh        = std::numeric_limits<double>::infinity();
+    std::vector<double> parameters;  ///< Fitted X; empty if not run, non-finite, or read back from disk.
+    bool                converged  = false;
+    bool                from_store = false;  ///< True if read back from best_fit_name instead of freshly fitted.
+  };
+
+  /**
+   * @brief Loads or runs the free fit a scan bootstraps from.
+   *
+   * Read back from best_fit_name if a previous run already wrote it, so a
+   * resumed scan does not redo its own free fit. Otherwise runs one, saves it,
+   * and -- for a converged, finite result -- seeds the warm-start fallback used
+   * before any scan point has a fitted neighbour of its own.
+   */
+  template <typename Key>
+  SeedFit bootstrap_seed_fit(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
+                              const std::string& best_fit_name, const std::vector<std::string>& names, const std::string& format,
+                              bool warm_start, scanseed::Store<Key>& seeds, std::size_t n_parameters) {
+    if (const auto known = stored_fit(best_fit_name, names, format)) {
+      std::cout << "Best fit already stored: " << known->llh << '\n';
+      return {known->llh, {}, false, true};
+    }
+
+    ana::Fit seed_fit(options, module);
+    seed_fit.minimize();
+
+    const auto seed_min = seed_fit.get_minimizer();
+
+    SeedFit result;
+    result.converged = seed_fit.converged();
+
+    if (std::isfinite(seed_min->MinValue())) {
+      result.llh = seed_min->MinValue();
+      result.parameters.assign(seed_min->X(), seed_min->X() + n_parameters);
+
+      result::write_results(seed_fit, best_fit_name);
+
+      // The free fit is the best guess available before any scan point has a
+      // fitted neighbour of its own to take one from yet.
+      if (warm_start && result.converged)
+        seeds.set_fallback(result.parameters);
+    } else {
+      std::cout << "Seed fit produced no likelihood; the reference will come from the coarse scan\n";
+    }
+
+    return result;
+  }
+
+  /**
+   * @brief Runs one batch of scan points across a worker pool, filling in `surface`.
+   *
+   * Shared by all four scan flavours (2D/1D, adaptive/regular): the only things
+   * that differ between them are how a node is named, how it fixes the
+   * minimizer's scanned variable(s), and the metric used to find a warm-start
+   * neighbour -- all three come in as callables.
+   *
+   * Each worker builds its own Fit -- and therefore its own likelihood -- over
+   * the shared module, whose only state is the immutable MC sample. Points are
+   * handed out one at a time, so a slow fit does not stall the others.
+   *
+   * @param nodes          Points to fill in, in the order they should be handed out.
+   * @param surface        Filled in as points complete.
+   * @param name_fn        Key -> output file base name.
+   * @param apply_fixed    Sets and fixes the minimizer's scanned variable(s) for a node.
+   * @param distance       Metric between two keys, used for the warm-start lookup.
+   * @param fits_performed Accumulates the count of fits actually run (as opposed
+   *                       to read back from a resumed point).
+   */
+  template <typename Key, typename NameFn, typename ApplyFixed, typename Distance>
+  void run_scan_batch(std::vector<Key> nodes, std::map<Key, double>& surface, std::shared_ptr<io::Options> options,
+                       std::shared_ptr<ana::ExperimentModule> module, const io::InputParameter& input_parameters,
+                       const std::vector<std::string>& names, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds,
+                       int scan_workers, NameFn&& name_fn, ApplyFixed&& apply_fixed, Distance&& distance, int& fits_performed) {
+    const int        n_nodes   = static_cast<int>(nodes.size());
+    const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
+    std::atomic<int> next_index{0};
+    std::mutex       surface_mutex;
+
+    auto worker = [&]() {
+      for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
+        const Key          node = nodes[pos];
+        const std::string  name = name_fn(node);
+
+        if (const auto known = stored_fit(name, names, format)) {
+          // A resumed run puts the points it reads back into the store, so the
+          // fits it still has to do start from a neighbour just as they would
+          // have in the run that was interrupted.
+          if (warm_start && !known->parameters.empty())
+            seeds.store(node, known->parameters);
+
+          const std::scoped_lock lock(surface_mutex);
+          surface[node] = known->llh;
+          continue;
+        }
+
+        ana::Fit fit(options, module);
+        auto     min = fit.get_minimizer();
+        apply_fixed(*min, node);
+
+        // The scanned variable(s) are fixed above, so what warm start carries
+        // over is the nuisance parameters, and those barely move between
+        // adjacent points.
+        if (warm_start) {
+          const auto start = seeds.nearest(node, distance);
+          if (!start.empty())
+            apply_start_values(*min, input_parameters, start);
+        }
+
+        fit.minimize();
+
+        result::write_results(fit, name);
+
+        if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
+          seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
+
+        // Minuit reporting "Edm is above max" is common at the edges of the
+        // window and still leaves a usable likelihood, so the value is taken
+        // whenever it is finite rather than only when the fit converged.
+        const std::scoped_lock lock(surface_mutex);
+        surface[node] = min->MinValue();
+        ++fits_performed;
+      }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(n_workers);
+    for (int w = 0; w < n_workers; ++w)
+      workers.emplace_back(worker);
+
+    for (auto& t : workers)
+      t.join();
+  }
+
 }  // namespace
 
 /**
@@ -219,11 +382,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
 
-  // Randomized start values exist to spread the start points on purpose, which
-  // seeding every fit from its neighbour would undo. The two do not combine.
-  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
-  if (options->inputOptions().scan_warm_start() && !warm_start)
-    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+  const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<scan::Node> seeds;
 
@@ -233,56 +392,34 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   const double spacing_y = (high_y - low_y) / settings.lattice_y();
 
   auto position = [&](const scan::Node& node) { return std::pair{low_x + node.x * spacing_x, low_y + node.y * spacing_y}; };
+  auto distance = [&](const scan::Node& a, const scan::Node& b) {
+    return std::hypot(static_cast<double>(a.x - b.x) * spacing_x, static_cast<double>(a.y - b.y) * spacing_y);
+  };
+  auto apply_fixed = [&](ROOT::Math::Minimizer& min, const scan::Node& node) {
+    const auto [x, y] = position(node);
+    min.SetVariableValue(SpectralIndex, x);
+    min.SetVariableValue(AstroNorm, y);
+    min.FixVariable(AstroNorm);
+    min.FixVariable(SpectralIndex);
+  };
 
   {
     nlohmann::json grid;
     grid["SpectralIndex"] = {{"low", low_x}, {"high", high_x}, {"lattice", settings.lattice_x()}};
     grid["AstroNorm"]     = {{"low", low_y}, {"high", high_y}, {"lattice", settings.lattice_y()}};
     grid["levels"]        = settings.levels;
-
-    if (std::filesystem::exists("scan_grid.json")) {
-      std::ifstream  existing_file("scan_grid.json");
-      nlohmann::json existing = nlohmann::json::parse(existing_file);
-      if (existing != grid)
-        throw std::runtime_error("scan_grid.json in this directory describes a different lattice; the Output_i_j files here belong to that one. Scan into an empty directory instead.");
-    } else {
-      std::ofstream("scan_grid.json") << grid.dump(2) << '\n';
-    }
+    write_or_check_grid("scan_grid.json", grid, "lattice", "Output_i_j");
   }
 
-  // A free fit gives the reference the delta likelihood is measured against
+  // The free fit gives the reference the delta likelihood is measured against
   // before any grid point exists. It is only a starting value: any scan point
   // may undercut it, and refine() takes the lower of the two. Saved to disk as
   // BestFit so analysis can reference the true unfixed minimum instead of the
   // lowest sampled grid point.
-  const std::string best_fit_name = "BestFit";
-
-  double seed_llh = std::numeric_limits<double>::infinity();
-  if (const auto known = stored_fit(best_fit_name, names, format)) {
-    seed_llh = known->llh;
-    std::cout << "Best fit already stored: " << known->llh << '\n';
-  } else {
-    ana::Fit seed_fit(options, module);
-    seed_fit.minimize();
-
-    const auto seed_min = seed_fit.get_minimizer();
-    if (std::isfinite(seed_min->MinValue())) {
-      seed_llh = seed_min->MinValue();
-
-      result::write_results(seed_fit, best_fit_name);
-
-      // The free fit is the best guess available for the coarse grid, whose
-      // points have no fitted neighbour to take one from yet.
-      if (warm_start && seed_fit.converged())
-        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
-
-      std::cout << "Seed fit: SpectralIndex = " << seed_min->X()[static_cast<int>(SpectralIndex)]
-                << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)]
-                << (seed_fit.converged() ? "" : " (did not converge)") << '\n';
-    } else {
-      std::cout << "Seed fit produced no likelihood; the reference will come from the coarse grid\n";
-    }
-  }
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit", names, format, warm_start, seeds, input_parameters.size());
+  if (!seed.from_store && !seed.parameters.empty())
+    std::cout << "Seed fit: SpectralIndex = " << seed.parameters[static_cast<int>(SpectralIndex)]
+              << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
 
   int fits_performed = 0;
 
@@ -293,81 +430,11 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
     // interrupted run still leaves a filled-in neighbourhood of the best fit.
     if (!surface.empty()) {
       const scan::Node best = std::ranges::min_element(surface, {}, [](const auto& entry) { return entry.second; })->first;
-      std::ranges::sort(ordered, {}, [&](const scan::Node& node) {
-        return std::hypot(static_cast<double>(node.x - best.x) * spacing_x, static_cast<double>(node.y - best.y) * spacing_y);
-      });
+      std::ranges::sort(ordered, {}, [&](const scan::Node& node) { return distance(node, best); });
     }
 
-    // Each worker builds its own Fit -- and therefore its own likelihood -- over
-    // the shared module, whose only state is the immutable MC sample. Points are
-    // handed out one at a time, so a slow fit does not stall the others.
-    const int        n_nodes   = static_cast<int>(ordered.size());
-    const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
-    std::atomic<int> next_index{0};
-    std::mutex       surface_mutex;
-
-    auto worker = [&]() {
-      for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
-        const scan::Node  node = ordered[pos];
-        const std::string name = node_name(node);
-
-        if (const auto known = stored_fit(name, names, format)) {
-          // A resumed run puts the points it reads back into the store, so the
-          // fits it still has to do start from a neighbour just as they would
-          // have in the run that was interrupted.
-          if (warm_start && !known->parameters.empty())
-            seeds.store(node, known->parameters);
-
-          const std::scoped_lock lock(surface_mutex);
-          surface[node] = known->llh;
-          continue;
-        }
-
-        const auto [x, y] = position(node);
-
-        ana::Fit fit(options, module);
-        auto     min = fit.get_minimizer();
-        min->SetVariableValue(SpectralIndex, x);
-        min->SetVariableValue(AstroNorm, y);
-        min->FixVariable(AstroNorm);
-        min->FixVariable(SpectralIndex);
-
-        // The scanned pair is fixed above, so what is carried over is the
-        // nuisance parameters, and those barely move between adjacent points.
-        // The ordering above hands the points out from the current minimum
-        // outwards, so the nearest known point is usually an immediate
-        // neighbour rather than something across the window.
-        if (warm_start) {
-          const auto start = seeds.nearest(node, [&](const scan::Node& a, const scan::Node& b) {
-            return std::hypot(static_cast<double>(a.x - b.x) * spacing_x, static_cast<double>(a.y - b.y) * spacing_y);
-          });
-          if (!start.empty())
-            apply_start_values(*min, input_parameters, start);
-        }
-
-        fit.minimize();
-
-        result::write_results(fit, name);
-
-        if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
-          seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
-
-        // Minuit reporting "Edm is above max" is common at the edges of the
-        // window and still leaves a usable likelihood, so the value is taken
-        // whenever it is finite rather than only when the fit converged.
-        const std::scoped_lock lock(surface_mutex);
-        surface[node] = min->MinValue();
-        ++fits_performed;
-      }
-    };
-
-    std::vector<std::thread> workers;
-    workers.reserve(n_workers);
-    for (int w = 0; w < n_workers; ++w)
-      workers.emplace_back(worker);
-
-    for (auto& t : workers)
-      t.join();
+    run_scan_batch(std::move(ordered), surface, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
+                   [](const scan::Node& node) { return node_name(node); }, apply_fixed, distance, fits_performed);
   };
 
   auto report = [scan_workers](int round, std::size_t split, std::size_t cells, std::size_t points) {
@@ -378,7 +445,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       std::cout << "Refinement " << round << ": splitting " << split << " of " << cells << " cells (" << points << " points so far)\n";
   };
 
-  const scan::Surface surface = scan::refine(settings, seed_llh, evaluate, report);
+  const scan::Surface surface = scan::refine(settings, seed.llh, evaluate, report);
 
   std::cout << "Scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
@@ -398,7 +465,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
  * logic picking up the other's fit at the same integer coordinates but a
  * different physical point.
  *
- * Not wired into the command line: call it in place of perform_2d_scan.
+ * Selected via --scanMode 2d-regular.
  *
  * @param points_x Number of grid points along SpectralIndex.
  * @param points_y Number of grid points along AstroNorm.
@@ -421,11 +488,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
 
-  // Randomized start values exist to spread the start points on purpose, which
-  // seeding every fit from its neighbour would undo. The two do not combine.
-  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
-  if (options->inputOptions().scan_warm_start() && !warm_start)
-    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+  const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<scan::Node> seeds;
 
@@ -433,23 +496,22 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   const double spacing_y = (high_y - low_y) / (points_y - 1);
 
   auto position = [&](const scan::Node& node) { return std::pair{low_x + node.x * spacing_x, low_y + node.y * spacing_y}; };
+  auto distance = [&](const scan::Node& a, const scan::Node& b) {
+    return std::hypot(static_cast<double>(a.x - b.x) * spacing_x, static_cast<double>(a.y - b.y) * spacing_y);
+  };
+  auto apply_fixed = [&](ROOT::Math::Minimizer& min, const scan::Node& node) {
+    const auto [x, y] = position(node);
+    min.SetVariableValue(SpectralIndex, x);
+    min.SetVariableValue(AstroNorm, y);
+    min.FixVariable(AstroNorm);
+    min.FixVariable(SpectralIndex);
+  };
 
   {
     nlohmann::json grid;
     grid["SpectralIndex"] = {{"low", low_x}, {"high", high_x}, {"points", points_x}};
     grid["AstroNorm"]     = {{"low", low_y}, {"high", high_y}, {"points", points_y}};
-
-    const std::string grid_path = "scan_grid_regular.json";
-    if (std::filesystem::exists(grid_path)) {
-      std::ifstream  existing_file(grid_path);
-      nlohmann::json existing = nlohmann::json::parse(existing_file);
-      if (existing != grid)
-        throw std::runtime_error(grid_path +
-                                 " in this directory describes a different grid; the OutputRegular_i_j files here belong to that "
-                                 "one. Scan into an empty directory instead.");
-    } else {
-      std::ofstream(grid_path) << grid.dump(2) << '\n';
-    }
+    write_or_check_grid("scan_grid_regular.json", grid, "grid", "OutputRegular_i_j");
   }
 
   // Also the source of the true (unfixed) best fit, saved to disk as
@@ -458,26 +520,10 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   // perform_2d_scan the free fit's likelihood itself is otherwise unused --
   // it only seeds the very first fits, before any grid point has a value of
   // its own to seed from.
-  const std::string best_fit_name = "BestFitRegular";
-
-  if (const auto known = stored_fit(best_fit_name, names, format)) {
-    std::cout << "Best fit already stored: " << known->llh << '\n';
-  } else {
-    ana::Fit seed_fit(options, module);
-    seed_fit.minimize();
-
-    const auto seed_min = seed_fit.get_minimizer();
-    if (std::isfinite(seed_min->MinValue())) {
-      result::write_results(seed_fit, best_fit_name);
-
-      if (warm_start && seed_fit.converged())
-        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
-    }
-
-    std::cout << "Seed fit: SpectralIndex = " << seed_min->X()[static_cast<int>(SpectralIndex)]
-              << ", AstroNorm = " << seed_min->X()[static_cast<int>(AstroNorm)] << (seed_fit.converged() ? "" : " (did not converge)")
-              << '\n';
-  }
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", names, format, warm_start, seeds, input_parameters.size());
+  if (!seed.from_store && !seed.parameters.empty())
+    std::cout << "Seed fit: SpectralIndex = " << seed.parameters[static_cast<int>(SpectralIndex)]
+              << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
 
   std::vector<scan::Node> nodes;
   nodes.reserve(static_cast<std::size_t>(points_x) * points_y);
@@ -485,79 +531,14 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
     for (int iy = 0; iy < points_y; ++iy)
       nodes.push_back(scan::Node{ix, iy});
 
-  // Each worker builds its own Fit -- and therefore its own likelihood -- over
-  // the shared module, whose only state is the immutable MC sample. Points are
-  // handed out one at a time, so a slow fit does not stall the others.
-  const int        n_nodes   = static_cast<int>(nodes.size());
-  const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
-  std::atomic<int> next_index{0};
-  std::mutex       surface_mutex;
-
   scan::Surface surface;
   int           fits_performed = 0;
 
-  auto worker = [&]() {
-    for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
-      const scan::Node  node = nodes[pos];
-      const std::string name = node_name_regular(node);
-
-      if (const auto known = stored_fit(name, names, format)) {
-        // A resumed run puts the points it reads back into the store, so the
-        // fits it still has to do start from a neighbour just as they would
-        // have in the run that was interrupted.
-        if (warm_start && !known->parameters.empty())
-          seeds.store(node, known->parameters);
-
-        const std::scoped_lock lock(surface_mutex);
-        surface[node] = known->llh;
-        continue;
-      }
-
-      const auto [x, y] = position(node);
-
-      ana::Fit fit(options, module);
-      auto     min = fit.get_minimizer();
-      min->SetVariableValue(SpectralIndex, x);
-      min->SetVariableValue(AstroNorm, y);
-      min->FixVariable(AstroNorm);
-      min->FixVariable(SpectralIndex);
-
-      // The scanned pair is fixed above, so what is carried over is the
-      // nuisance parameters, and those barely move between adjacent grid points.
-      if (warm_start) {
-        const auto start = seeds.nearest(node, [&](const scan::Node& a, const scan::Node& b) {
-          return std::hypot(static_cast<double>(a.x - b.x) * spacing_x, static_cast<double>(a.y - b.y) * spacing_y);
-        });
-        if (!start.empty())
-          apply_start_values(*min, input_parameters, start);
-      }
-
-      fit.minimize();
-
-      result::write_results(fit, name);
-
-      if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
-        seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
-
-      // Minuit reporting "Edm is above max" is common at the edges of the
-      // window and still leaves a usable likelihood, so the value is taken
-      // whenever it is finite rather than only when the fit converged.
-      const std::scoped_lock lock(surface_mutex);
-      surface[node] = min->MinValue();
-      ++fits_performed;
-    }
-  };
-
-  std::cout << "Regular grid: " << n_nodes << " points (" << points_x << " x " << points_y << ")"
+  std::cout << "Regular grid: " << nodes.size() << " points (" << points_x << " x " << points_y << ")"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  std::vector<std::thread> workers;
-  workers.reserve(n_workers);
-  for (int w = 0; w < n_workers; ++w)
-    workers.emplace_back(worker);
-
-  for (auto& t : workers)
-    t.join();
+  run_scan_batch(std::move(nodes), surface, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
+                 [](const scan::Node& node) { return node_name_regular(node); }, apply_fixed, distance, fits_performed);
 
   std::cout << "Regular grid scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
@@ -579,7 +560,9 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
  * Points are named by their integer lattice index, so a resumed run picks up
  * every fit an earlier one completed.
  *
- * Not wired into the command line: call it in place of perform_2d_scan.
+ * Selected via --scanMode 1d, either for every non-fixed parameter
+ * (perform_1d_scan_all) or, with --scanParameter, just this one
+ * (perform_1d_scan).
  *
  * @param parameter_name Name of the parameter to profile, as it appears in the
  *                       config's parameter list.
@@ -594,11 +577,7 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
 
   const int scan_workers = std::max(1, options->inputOptions().scan_workers());
 
-  // Randomized start values exist to spread the start points on purpose, which
-  // seeding every fit from its neighbour would undo. The two do not combine.
-  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
-  if (options->inputOptions().scan_warm_start() && !warm_start)
-    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+  const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<int> seeds;
 
@@ -606,56 +585,28 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
   // exactly representable and gives each one a stable name.
   const double spacing = (high - low) / settings.lattice();
 
-  auto position = [&](int node) { return low + node * spacing; };
+  auto position     = [&](int node) { return low + node * spacing; };
+  auto distance      = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
+  auto apply_fixed = [&](ROOT::Math::Minimizer& min, int node) {
+    min.SetVariableValue(index, position(node));
+    min.FixVariable(index);
+  };
 
   {
     nlohmann::json grid;
     grid[parameter_name] = {{"low", low}, {"high", high}, {"lattice", settings.lattice()}};
     grid["levels"]       = settings.levels;
-
-    const std::string grid_path = "scan_grid_" + parameter_name + ".json";
-    if (std::filesystem::exists(grid_path)) {
-      std::ifstream  existing_file(grid_path);
-      nlohmann::json existing = nlohmann::json::parse(existing_file);
-      if (existing != grid)
-        throw std::runtime_error(grid_path + " in this directory describes a different lattice; the Output_" + parameter_name + "_i files here belong to that one. Scan into an empty directory instead.");
-    } else {
-      std::ofstream(grid_path) << grid.dump(2) << '\n';
-    }
+    write_or_check_grid("scan_grid_" + parameter_name + ".json", grid, "lattice", "Output_" + parameter_name + "_i");
   }
 
-  // A free fit gives the reference the delta likelihood is measured against
+  // The free fit gives the reference the delta likelihood is measured against
   // before any scan point exists. It is only a starting value: any scan point
   // may undercut it, and refine() takes the lower of the two. Saved to disk
   // as BestFit_<parameter> so analysis can reference the true unfixed
   // minimum instead of the lowest sampled scan point.
-  const std::string best_fit_name = "BestFit_" + parameter_name;
-
-  double seed_llh = std::numeric_limits<double>::infinity();
-  if (const auto known = stored_fit(best_fit_name, names, format)) {
-    seed_llh = known->llh;
-    std::cout << "Best fit already stored: " << parameter_name << " = " << known->llh << '\n';
-  } else {
-    ana::Fit seed_fit(options, module);
-    seed_fit.minimize();
-
-    const auto seed_min = seed_fit.get_minimizer();
-    if (std::isfinite(seed_min->MinValue())) {
-      seed_llh = seed_min->MinValue();
-
-      result::write_results(seed_fit, best_fit_name);
-
-      // The free fit is the best guess available for the coarse scan, whose
-      // points have no fitted neighbour to take one from yet.
-      if (warm_start && seed_fit.converged())
-        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
-
-      std::cout << "Seed fit: " << parameter_name << " = " << seed_min->X()[index]
-                << (seed_fit.converged() ? "" : " (did not converge)") << '\n';
-    } else {
-      std::cout << "Seed fit produced no likelihood; the reference will come from the coarse scan\n";
-    }
-  }
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + parameter_name, names, format, warm_start, seeds, input_parameters.size());
+  if (!seed.from_store && !seed.parameters.empty())
+    std::cout << "Seed fit: " << parameter_name << " = " << seed.parameters[index] << (seed.converged ? "" : " (did not converge)") << '\n';
 
   int fits_performed = 0;
 
@@ -666,73 +617,11 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
     // interrupted run still leaves a filled-in neighbourhood of the best fit.
     if (!profile.empty()) {
       const int best = std::ranges::min_element(profile, {}, [](const auto& entry) { return entry.second; })->first;
-      std::ranges::sort(ordered, {}, [&](int node) { return std::abs(node - best); });
+      std::ranges::sort(ordered, {}, [&](int node) { return distance(node, best); });
     }
 
-    // Each worker builds its own Fit -- and therefore its own likelihood -- over
-    // the shared module, whose only state is the immutable MC sample. Points are
-    // handed out one at a time, so a slow fit does not stall the others.
-    const int        n_nodes   = static_cast<int>(ordered.size());
-    const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
-    std::atomic<int> next_index{0};
-    std::mutex       profile_mutex;
-
-    auto worker = [&]() {
-      for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
-        const int         node = ordered[pos];
-        const std::string name = node_name(parameter_name, node);
-
-        if (const auto known = stored_fit(name, names, format)) {
-          // A resumed run puts the points it reads back into the store, so the
-          // fits it still has to do start from a neighbour just as they would
-          // have in the run that was interrupted.
-          if (warm_start && !known->parameters.empty())
-            seeds.store(node, known->parameters);
-
-          const std::scoped_lock lock(profile_mutex);
-          profile[node] = known->llh;
-          continue;
-        }
-
-        ana::Fit fit(options, module);
-        auto     min = fit.get_minimizer();
-        min->SetVariableValue(index, position(node));
-        min->FixVariable(index);
-
-        // The scanned parameter is fixed above, so what is carried over is the
-        // profiled parameters, and those barely move between adjacent points.
-        // The ordering above hands the points out from the current minimum
-        // outwards, so the nearest known point is usually an immediate
-        // neighbour rather than something across the window.
-        if (warm_start) {
-          const auto start = seeds.nearest(node, [](int a, int b) { return std::abs(static_cast<double>(a - b)); });
-          if (!start.empty())
-            apply_start_values(*min, input_parameters, start);
-        }
-
-        fit.minimize();
-
-        result::write_results(fit, name);
-
-        if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
-          seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
-
-        // Minuit reporting "Edm is above max" is common at the edges of the
-        // window and still leaves a usable likelihood, so the value is taken
-        // whenever it is finite rather than only when the fit converged.
-        const std::scoped_lock lock(profile_mutex);
-        profile[node] = min->MinValue();
-        ++fits_performed;
-      }
-    };
-
-    std::vector<std::thread> workers;
-    workers.reserve(n_workers);
-    for (int w = 0; w < n_workers; ++w)
-      workers.emplace_back(worker);
-
-    for (auto& t : workers)
-      t.join();
+    run_scan_batch(std::move(ordered), profile, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
+                   [&](int node) { return node_name(parameter_name, node); }, apply_fixed, distance, fits_performed);
   };
 
   auto report = [scan_workers](int round, std::size_t split, std::size_t segments, std::size_t points) {
@@ -743,7 +632,7 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
       std::cout << "Refinement " << round << ": splitting " << split << " of " << segments << " intervals (" << points << " points so far)\n";
   };
 
-  const scan1d::Profile profile = scan1d::refine(settings, seed_llh, evaluate, report);
+  const scan1d::Profile profile = scan1d::refine(settings, seed.llh, evaluate, report);
 
   std::cout << "Scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed << " fitted in this run\n";
 }
@@ -769,122 +658,45 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
 
   const int scan_workers = std::max(1, options->inputOptions().scan_workers());
 
-  // Randomized start values exist to spread the start points on purpose, which
-  // seeding every fit from its neighbour would undo. The two do not combine.
-  const bool warm_start = options->inputOptions().scan_warm_start() && !options->inputOptions().randomize_seeds();
-  if (options->inputOptions().scan_warm_start() && !warm_start)
-    std::cout << "Warm start off: --randomizeSeeds already sets the start point of every scan fit\n";
+  const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<int> seeds;
 
   const double spacing = (high - low) / (points - 1);
 
-  auto position = [&](int node) { return low + node * spacing; };
+  auto position     = [&](int node) { return low + node * spacing; };
+  auto distance      = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
+  auto apply_fixed = [&](ROOT::Math::Minimizer& min, int node) {
+    min.SetVariableValue(index, position(node));
+    min.FixVariable(index);
+  };
 
   {
     nlohmann::json grid;
     grid[parameter_name] = {{"low", low}, {"high", high}, {"points", points}};
-
-    const std::string grid_path = "scan_grid_regular_" + parameter_name + ".json";
-    if (std::filesystem::exists(grid_path)) {
-      std::ifstream  existing_file(grid_path);
-      nlohmann::json existing = nlohmann::json::parse(existing_file);
-      if (existing != grid)
-        throw std::runtime_error(grid_path + " in this directory describes a different grid; the OutputRegular_" + parameter_name +
-                                  "_i files here belong to that one. Scan into an empty directory instead.");
-    } else {
-      std::ofstream(grid_path) << grid.dump(2) << '\n';
-    }
+    write_or_check_grid("scan_grid_regular_" + parameter_name + ".json", grid, "grid", "OutputRegular_" + parameter_name + "_i");
   }
 
   // Also the source of the true (unfixed) best fit, saved to disk as
   // BestFit_<parameter> so analysis can reference it instead of the lowest
   // sampled grid point.
-  const std::string best_fit_name = "BestFitRegular_" + parameter_name;
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular_" + parameter_name, names, format, warm_start, seeds, input_parameters.size());
+  if (!seed.from_store && !seed.parameters.empty())
+    std::cout << "Seed fit: " << parameter_name << " = " << seed.parameters[index] << (seed.converged ? "" : " (did not converge)") << '\n';
 
-  if (const auto known = stored_fit(best_fit_name, names, format)) {
-    std::cout << "Best fit already stored: " << parameter_name << " = " << known->llh << '\n';
-  } else {
-    ana::Fit seed_fit(options, module);
-    seed_fit.minimize();
-
-    const auto seed_min = seed_fit.get_minimizer();
-    if (std::isfinite(seed_min->MinValue())) {
-      result::write_results(seed_fit, best_fit_name);
-
-      if (warm_start && seed_fit.converged())
-        seeds.set_fallback(std::vector<double>(seed_min->X(), seed_min->X() + input_parameters.size()));
-    }
-
-    std::cout << "Seed fit: " << parameter_name << " = " << seed_min->X()[index] << (seed_fit.converged() ? "" : " (did not converge)")
-              << '\n';
-  }
-
-  // Each worker builds its own Fit -- and therefore its own likelihood -- over
-  // the shared module, whose only state is the immutable MC sample. Points are
-  // handed out one at a time, so a slow fit does not stall the others.
-  const int        n_workers = std::clamp(scan_workers, 1, points);
-  std::atomic<int> next_index{0};
-  std::mutex       profile_mutex;
+  std::vector<int> nodes;
+  nodes.reserve(static_cast<std::size_t>(points));
+  for (int i = 0; i < points; ++i)
+    nodes.push_back(i);
 
   std::map<int, double> profile;
   int                   fits_performed = 0;
 
-  auto worker = [&]() {
-    for (int node = next_index.fetch_add(1); node < points; node = next_index.fetch_add(1)) {
-      const std::string name = node_name_regular(parameter_name, node);
-
-      if (const auto known = stored_fit(name, names, format)) {
-        // A resumed run puts the points it reads back into the store, so the
-        // fits it still has to do start from a neighbour just as they would
-        // have in the run that was interrupted.
-        if (warm_start && !known->parameters.empty())
-          seeds.store(node, known->parameters);
-
-        const std::scoped_lock lock(profile_mutex);
-        profile[node] = known->llh;
-        continue;
-      }
-
-      ana::Fit fit(options, module);
-      auto     min = fit.get_minimizer();
-      min->SetVariableValue(index, position(node));
-      min->FixVariable(index);
-
-      // The scanned parameter is fixed above, so what is carried over is the
-      // profiled parameters, and those barely move between adjacent points.
-      if (warm_start) {
-        const auto start = seeds.nearest(node, [](int a, int b) { return std::abs(static_cast<double>(a - b)); });
-        if (!start.empty())
-          apply_start_values(*min, input_parameters, start);
-      }
-
-      fit.minimize();
-
-      result::write_results(fit, name);
-
-      if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
-        seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
-
-      // Minuit reporting "Edm is above max" is common at the edges of the
-      // window and still leaves a usable likelihood, so the value is taken
-      // whenever it is finite rather than only when the fit converged.
-      const std::scoped_lock lock(profile_mutex);
-      profile[node] = min->MinValue();
-      ++fits_performed;
-    }
-  };
-
   std::cout << "Regular scan of " << parameter_name << ": " << points << " points"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  std::vector<std::thread> workers;
-  workers.reserve(n_workers);
-  for (int w = 0; w < n_workers; ++w)
-    workers.emplace_back(worker);
-
-  for (auto& t : workers)
-    t.join();
+  run_scan_batch(std::move(nodes), profile, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
+                 [&](int node) { return node_name_regular(parameter_name, node); }, apply_fixed, distance, fits_performed);
 
   std::cout << "Regular scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed
             << " fitted in this run\n";
@@ -1049,10 +861,11 @@ int main(int argc, char** argv) {
 
     const auto module = modules.at(options->inputOptions().experiment());
 
-    // --fitOnly runs the plain fit and writes "Output.json"; without it the 2D
-    // scan is the entry point. The single fit is what the NNMFit parity harness
-    // drives (tools/nnmfit_oracle/compare_llh_value.py, run_fit_parity.sh),
-    // which needs one converged result rather than a surface.
+    // --fitOnly runs the plain fit and writes "Output.json"; without it the scan
+    // picked by --scanMode (2d by default) is the entry point. The single fit
+    // is what the NNMFit parity harness drives
+    // (tools/nnmfit_oracle/compare_llh_value.py, run_fit_parity.sh), which needs
+    // one converged result rather than a surface.
     if (options->inputOptions().fit_only()) {
       ana::Fit fit(options, module);
       auto     min = fit.get_minimizer();
@@ -1060,10 +873,27 @@ int main(int argc, char** argv) {
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
-      // perform_1d_scan(options, module, "AstroNorm");
-      perform_1d_scan_all(options, module, true, 30);
-      // perform_2d_scan(options, module);
-      // perform_2d_scan_regular(options, module);
+      const std::string& scan_mode      = options->inputOptions().scan_mode();
+      const std::string& scan_parameter = options->inputOptions().scan_parameter();
+      const int           scan_points    = options->inputOptions().scan_points();
+
+      if (scan_mode == "2d") {
+        perform_2d_scan(options, module);
+      } else if (scan_mode == "2d-regular") {
+        perform_2d_scan_regular(options, module, scan_points, scan_points);
+      } else if (scan_mode == "1d") {
+        if (scan_parameter.empty())
+          perform_1d_scan_all(options, module, false, scan_points);
+        else
+          perform_1d_scan(options, module, scan_parameter);
+      } else if (scan_mode == "1d-regular") {
+        if (scan_parameter.empty())
+          perform_1d_scan_all(options, module, true, scan_points);
+        else
+          perform_1d_scan_regular(options, module, scan_parameter, scan_points);
+      } else {
+        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 1d, 1d-regular");
+      }
     }
   } catch (const std::exception& e) {
     std::cout << e.what() << '\n';

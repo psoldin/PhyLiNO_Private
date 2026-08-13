@@ -78,6 +78,18 @@ endif()
 
 add_library(icecube SHARED ${files})
 
+# Arrow/Parquet are linked in statically (see below) so their symbols don't stay
+# local by default -- the linker still re-exports them into libicecube.so's own
+# dynamic symbol table. ROOT's TreePlayer transitively needs the system's older
+# libarrow.so.900 (for RDataFrame's Arrow reader), and re-exported symbols from
+# our newer, statically-linked Arrow collide with it at link time (TLS/non-TLS
+# layout mismatch on an internal rapidjson symbol). --exclude-libs keeps
+# everything pulled from static archives local to this .so, so nothing leaks
+# out to collide with the system Arrow.
+if(NOT APPLE)
+    target_link_options(icecube PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
+
 if(APPLE)
     target_link_libraries(icecube PRIVATE "-framework Metal" "-framework Foundation")
 endif()
@@ -94,8 +106,17 @@ target_include_directories(icecube PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_link_libraries(icecube PUBLIC io likelihood utilities ${Boost_LIBRARIES}
                       ROOT::Core ROOT::Tree ROOT::TreePlayer)
+# ICDataBase.h is a public header that includes arrow/type_fwd.h, so downstream
+# consumers (e.g. LLHFit) need Arrow's include dirs too -- PUBLIC, not PRIVATE.
+# Static libs, not arrow_shared/parquet_shared: LLHFit also links ROOT::TreePlayer,
+# whose libROOTDataFrame.so needs the system's older libarrow.so.900. A direct
+# NEEDED entry on our libarrow.so/libparquet.so (built at a newer Arrow version)
+# collides with that at link time (TLS/non-TLS layout mismatch on an internal
+# rapidjson symbol). Static linking keeps our Arrow/Parquet symbols out of the
+# executable's dynamic dependency list entirely, so there's nothing to collide.
+target_link_libraries(icecube PUBLIC Arrow::arrow_static)
 target_link_libraries(icecube PRIVATE nlohmann_json::nlohmann_json
-                      Arrow::arrow_shared Parquet::parquet_shared
+                      Parquet::parquet_static
                       protobuf::libprotobuf)
 
 # The per-bin flux and SAY ssq loops carry omp pragmas; without this target they

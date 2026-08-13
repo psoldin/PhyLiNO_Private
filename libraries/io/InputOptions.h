@@ -82,6 +82,25 @@ namespace io {
      */
     [[nodiscard]] bool scan_warm_start() const noexcept { return m_ScanWarmStart; }
 
+    /**
+     * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
+     * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
+     * (perform_2d_scan_regular), "1d" or "1d-regular" (perform_1d_scan_all,
+     * regular selecting its grid flavour). Validated in LLHFit.C, the only
+     * place that knows the scan functions.
+     */
+    [[nodiscard]] const std::string& scan_mode() const noexcept { return m_ScanMode; }
+
+    /**
+     * Restricts --scanMode 1d/1d-regular to this single named parameter
+     * (perform_1d_scan/perform_1d_scan_regular) instead of every non-fixed one
+     * (perform_1d_scan_all). Empty (the default) means "every parameter".
+     */
+    [[nodiscard]] const std::string& scan_parameter() const noexcept { return m_ScanParameter; }
+
+    /** Grid points per axis for --scanMode 2d-regular/1d-regular (--scanPoints, default 30). */
+    [[nodiscard]] int scan_points() const noexcept { return m_ScanPoints; }
+
     [[nodiscard]] const boost::property_tree::ptree& config_tree() const noexcept { return m_ConfigTree; }
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
@@ -140,6 +159,9 @@ namespace io {
     int    m_MultiThreadingCores{-1}; /**< OpenMP team size; -1 keeps the environment default. */
     int    m_ScanWorkers{1};          /**< Grid points the 2D scan fits concurrently. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
+    std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
+    std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
+    int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
