@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -67,10 +68,14 @@ namespace io::ic {
 
     // The sample's configured topology cut, as a dense keep-mask over the table's
     // rows: an event is kept if its topology column equals one of the configured
-    // class labels. Returns an empty mask when no cut is configured, which callers
-    // read as "keep everything". The labels are compared as doubles rather than
-    // casting the column to int: a NaN or a non-integral entry then compares false
-    // instead of hitting the undefined-behaviour cast.
+    // class labels, or (Topology.Exclude) kept unless it does. Returns an empty
+    // mask when no cut is configured, which callers read as "keep everything".
+    // The labels are compared as doubles rather than casting the column to int:
+    // a non-integral entry then compares false instead of hitting the
+    // undefined-behaviour cast. A NaN entry passes the cut by default (it is not
+    // a class label, so it is not "excluded" by any Values list either) --
+    // Topology.Values listing "NaN" opts into dropping it instead, for the one
+    // sample that specifically wants NaNs gone.
     arrow::Result<std::vector<bool>> topology_mask(const arrow::Table& table, const SampleConfig& cfg) {
       if (!cfg.filters_topology())
         return std::vector<bool>{};
@@ -80,8 +85,13 @@ namespace io::ic {
       std::vector<bool> keep(column.size(), false);
       for (std::size_t i = 0; i < column.size(); ++i) {
         const double value = column[i];
-        keep[i] = std::ranges::any_of(cfg.topology_values,
-                                      [value](const int label) { return value == static_cast<double>(label); });
+        if (std::isnan(value)) {
+          keep[i] = !cfg.topology_drop_nan;
+          continue;
+        }
+        const bool matches = std::ranges::any_of(
+            cfg.topology_values, [value](const int label) { return value == static_cast<double>(label); });
+        keep[i] = cfg.topology_exclude ? !matches : matches;
       }
       return keep;
     }

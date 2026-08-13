@@ -112,15 +112,24 @@ namespace io::ic {
 
     // Per-event topology cut ("Topology": { "Branch": ..., "Values": "1, 2" }):
     // keep only the events whose `topology_branch` column equals one of
-    // `topology_values`. Applied to the MC parquet and to a data parquet alike,
-    // before binning, so both sides of the likelihood see the same selection.
-    // Empty `topology_values` = no cut. Pre-binned inputs (muon/galactic
-    // templates, SnowStorm gradients, "DataCounts") were exported from the
-    // unfiltered sample, so parse_samples() rejects combining them with a cut.
+    // `topology_values` (or, with "Exclude": true, keep everything except
+    // those -- for the sample that should get "the rest" without enumerating
+    // every other sample's labels). Applied to the MC parquet and to a data
+    // parquet alike, before binning, so both sides of the likelihood see the
+    // same selection. Empty `topology_values` = no cut. Pre-binned inputs
+    // (muon/galactic templates, SnowStorm gradients, "DataCounts") were
+    // exported from the unfiltered sample, so parse_samples() rejects
+    // combining them with a cut.
+    //
+    // A NaN in `topology_branch` is not a class label, so it passes the cut
+    // (and Exclude) by default. List "NaN" among `Values` to opt into
+    // dropping NaN-labelled events instead.
     std::string      topology_branch;
     std::vector<int> topology_values;
+    bool             topology_exclude  = false;
+    bool             topology_drop_nan = false;
 
-    [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty(); }
+    [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty() || topology_drop_nan; }
 
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,

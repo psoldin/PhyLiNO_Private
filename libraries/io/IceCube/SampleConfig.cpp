@@ -1,5 +1,6 @@
 #include "SampleConfig.h"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/ptree.hpp>
 
 #include <map>
@@ -191,9 +192,14 @@ namespace io::ic {
       }
 
       if (const auto topology = node.get_child_optional("Topology")) {
-        sample.topology_branch = topology->get<std::string>("Branch");
+        sample.topology_branch  = topology->get<std::string>("Branch");
+        sample.topology_exclude = topology->get<bool>("Exclude", false);
 
         for (const std::string& value : split_trim(topology->get<std::string>("Values"), ',')) {
+          if (boost::iequals(value, "NaN")) {
+            sample.topology_drop_nan = true;
+            continue;
+          }
           std::size_t consumed = 0;
           int         parsed   = 0;
           try {
@@ -203,7 +209,7 @@ namespace io::ic {
           }
           if (consumed != value.size())
             throw std::runtime_error("parse_samples: sample '" + sample.name + "' Topology.Values entry '" + value +
-                                     "' is not an integer class label");
+                                     "' is not an integer class label or \"NaN\"");
           sample.topology_values.push_back(parsed);
         }
       }
