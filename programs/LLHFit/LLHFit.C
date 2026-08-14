@@ -868,8 +868,6 @@ int main(int argc, char** argv) {
     // one converged result rather than a surface.
     if (options->inputOptions().fit_only()) {
       ana::Fit fit(options, module);
-      auto     min = fit.get_minimizer();
-      min->SetVariableValue(params::ic::AstroNorm, 2.0);
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
