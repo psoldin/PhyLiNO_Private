@@ -454,14 +454,16 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
 }
 
 /**
- * @brief Maps AstroNorm against SpectralIndex on a plain regular grid.
+ * @brief Maps AstroNorm against AstroGamma2 on a plain regular grid.
  *
  * Unlike perform_2d_scan, every point of the grid is fitted once instead of
- * only where a contour needs resolving. The window and the default 30 x 30
- * point count match the reference scan in
- * shuyang/NT_roundtrip_fullE_numu (gamma_astro = SpectralIndex from 1.7 to
- * 2.8, astro_norm = AstroNorm from 0 to 3, both on 30 evenly spaced points),
- * so results line up point for point with those pickles.
+ * only where a contour needs resolving. The window matches the reference scan
+ * in galactic/ScanResults.hdf, index "astro_norm-gamma_2" (gamma_2 =
+ * AstroGamma2 from 2.4 to 3.0, astro_norm = AstroNorm from 1.4 to 2.6, both on
+ * 20 evenly spaced points), so with --scanPoints 20 results line up point for
+ * point with that grid. Note the reference file carries 25 extra off-grid
+ * points from a coarser 5 x 5 scan on top of the 20 x 20 grid; those are not
+ * reproduced here.
  *
  * Points are named "OutputRegular_i_j" -- distinct from perform_2d_scan's
  * "Output_i_j" -- so the two scans can share a directory without one's resume
@@ -470,14 +472,14 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
  *
  * Selected via --scanMode 2d-regular.
  *
- * @param points_x Number of grid points along SpectralIndex.
+ * @param points_x Number of grid points along AstroGamma2.
  * @param points_y Number of grid points along AstroNorm.
  */
 void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, int points_x = 30, int points_y = 30) {
-  constexpr double low_x  = 1.7;
-  constexpr double high_x = 2.8;
-  constexpr double low_y  = 0.0;
-  constexpr double high_y = 3.0;
+  constexpr double low_x  = 2.4;
+  constexpr double high_x = 3.0;
+  constexpr double low_y  = 1.4;
+  constexpr double high_y = 2.6;
 
   using namespace ana::ic;
   using enum params::ic::General;
@@ -504,16 +506,16 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   };
   auto apply_fixed = [&](ROOT::Math::Minimizer& min, const scan::Node& node) {
     const auto [x, y] = position(node);
-    min.SetVariableValue(SpectralIndex, x);
+    min.SetVariableValue(AstroGamma2, x);
     min.SetVariableValue(AstroNorm, y);
     min.FixVariable(AstroNorm);
-    min.FixVariable(SpectralIndex);
+    min.FixVariable(AstroGamma2);
   };
 
   {
     nlohmann::json grid;
-    grid["SpectralIndex"] = {{"low", low_x}, {"high", high_x}, {"points", points_x}};
-    grid["AstroNorm"]     = {{"low", low_y}, {"high", high_y}, {"points", points_y}};
+    grid["AstroGamma2"] = {{"low", low_x}, {"high", high_x}, {"points", points_x}};
+    grid["AstroNorm"]   = {{"low", low_y}, {"high", high_y}, {"points", points_y}};
     write_or_check_grid("scan_grid_regular.json", grid, "grid", "OutputRegular_i_j");
   }
 
@@ -525,7 +527,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   // its own to seed from.
   const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", names, format, warm_start, seeds, input_parameters.size());
   if (!seed.from_store && !seed.parameters.empty())
-    std::cout << "Seed fit: SpectralIndex = " << seed.parameters[static_cast<int>(SpectralIndex)]
+    std::cout << "Seed fit: AstroGamma2 = " << seed.parameters[static_cast<int>(AstroGamma2)]
               << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
 
   std::vector<scan::Node> nodes;
@@ -871,8 +873,6 @@ int main(int argc, char** argv) {
     // one converged result rather than a surface.
     if (options->inputOptions().fit_only()) {
       ana::Fit fit(options, module);
-      auto     min = fit.get_minimizer();
-      min->SetVariableValue(params::ic::AstroNorm, 2.0);
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
