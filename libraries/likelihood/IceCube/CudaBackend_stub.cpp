@@ -10,7 +10,7 @@
 
 namespace ana::ic {
 
-  CudaBackend::CudaBackend(bool) {
+  CudaBackend::CudaBackend(bool, int) {
     throw std::runtime_error("CudaBackend: CUDA backend not available in this build");
   }
 

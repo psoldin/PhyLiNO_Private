@@ -35,23 +35,23 @@
       "tracks": {
         "enabled": true,
         "binning": "tracks_3d",
-        "parquet": "/Users/soldin/Downloads/nnmfit_files/datasets/tracks_ftp_baseline/dataset_tracks_baseline.parquet",
-        "data": "/Users/soldin/Downloads/nnmfit_files/datasets/data/dataset_data_tracks_IC2010_to_IC2022_no_cscd_cascade_cscd_muon_wCoords.parquet",
+        "parquet": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/tracks_ftp_baseline/dataset_tracks_baseline.parquet",
+        "data": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/data/dataset_data_tracks_IC2010_to_IC2022_no_cscd_cascade_cscd_muon_wCoords.parquet",
         "livetime": 410978234.97,
         "components": "astro, conventional, prompt, muontemplate",
         "Template": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/template_tracks.txt",
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/template_tracks.txt",
           "Norm": "MuonNorm"
         },
         "Gradients": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_tracks.txt"
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/gradients_tracks.txt"
         },
         "Oscillations": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/osc_tracks.parquet"
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/osc_tracks.parquet"
         },
         "Galactic": {
           "cringefits": {
-            "File": "/Users/soldin/Downloads/nnmfit_files/exported/galactic_CringeFITS_tracks.txt",
+            "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/galactic_CringeFITS_tracks.txt",
             "Norm": "GalacticNorm0"
           }
         },
@@ -64,20 +64,20 @@
       "cscd_cascade": {
         "enabled": true,
         "binning": "cscd_cascade_3d",
-        "parquet": "/Users/soldin/Downloads/nnmfit_files/datasets/cscd_cascade_ftp_baseline/dataset_cscd_cascade_FTP_baseline_wCoords.parquet",
-        "data": "/Users/soldin/Downloads/nnmfit_files/datasets/data/data_cscd_cascade_FTP_Monopod_wCoords.parquet",
+        "parquet": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/cscd_cascade_ftp_baseline/dataset_cscd_cascade_FTP_baseline_wCoords.parquet",
+        "data": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/data/data_cscd_cascade_FTP_Monopod_wCoords.parquet",
         "livetime": 330315015.11,
         "components": "astro, conventional_veto, prompt_veto, muon",
         "Template": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/template_cscd_cascade.txt",
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/template_cscd_cascade.txt",
           "Norm": "MuonGunNorm"
         },
         "Gradients": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_cascade.txt"
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/gradients_cscd_cascade.txt"
         },
         "Galactic": {
           "cringefits": {
-            "File": "/Users/soldin/Downloads/nnmfit_files/exported/galactic_CringeFITS_cscd_cascade.txt",
+            "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/galactic_CringeFITS_cscd_cascade.txt",
             "Norm": "GalacticNorm0"
           }
         },
@@ -90,16 +90,16 @@
       "cscd_muon": {
         "enabled": true,
         "binning": "cscd_muon_2d",
-        "parquet": "/Users/soldin/Downloads/nnmfit_files/datasets/cscd_muon_ftp_baseline/dataset_cscd_muon_FTP_baseline_wCoords.parquet",
-        "data": "/Users/soldin/Downloads/nnmfit_files/datasets/data/data_cscd_muon_wCoords.parquet",
+        "parquet": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/cscd_muon_ftp_baseline/dataset_cscd_muon_FTP_baseline_wCoords.parquet",
+        "data": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/datasets/data/data_cscd_muon_wCoords.parquet",
         "livetime": 330315015.11,
         "components": "astro, conventional_veto, prompt_veto, muon",
         "Template": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/template_cscd_muon.txt",
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/template_cscd_muon.txt",
           "Norm": "MuonGunNorm"
         },
         "Gradients": {
-          "File": "/Users/soldin/Downloads/nnmfit_files/exported/gradients_cscd_muon.txt"
+          "File": "/net/data_icecube/soldin_1/NNMFit/PhyLiNO/build/programs/LLHFit/files/all/nnmfit_files/exported/gradients_cscd_muon.txt"
         },
         "Branches": {
           "RecoEnergy": "energy_monopod",

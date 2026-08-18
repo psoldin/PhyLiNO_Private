@@ -3,6 +3,8 @@
 // STL includes
 #include <chrono>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
 
 // boost includes
 #include <boost/filesystem.hpp>
@@ -11,6 +13,23 @@
 #include <boost/property_tree/ptree.hpp>
 
 namespace io {
+
+  std::vector<int> parse_gpu_devices(const std::string& spec) {
+    std::vector<int> devices;
+    if (spec.empty())
+      return devices;
+    std::stringstream entries(spec);
+    std::string       entry;
+    while (std::getline(entries, entry, ',')) {
+      const auto colon = entry.find(':');
+      if (colon == std::string::npos)
+        throw std::invalid_argument("--gpuDevices: expected \"device:count\", got \"" + entry + "\"");
+      const int device = std::stoi(entry.substr(0, colon));
+      const int count  = std::stoi(entry.substr(colon + 1));
+      devices.insert(devices.end(), count, device);
+    }
+    return devices;
+  }
 
   InputOptions::InputOptions(int argc, char** argv, experiment_options_t experiment_options)
     : m_Seed(std::chrono::system_clock::now().time_since_epoch().count())
@@ -32,6 +51,7 @@ namespace io {
 	("multiThreading,m", po::bool_switch(&m_UseMultiThreading), "Use multiple threads for fitting")
 	("threads", po::value<int>(&m_MultiThreadingCores)->default_value(-1), "OpenMP team size used when -m is given; -1 keeps the environment default")
 	("scanWorkers", po::value<int>(&m_ScanWorkers)->default_value(1), "Number of grid points the 2D scan fits concurrently (each worker runs a full fit)")
+	("gpuDevices", po::value<std::string>(&m_GpuDevices)->default_value(""), "GPU ordinal per scan worker, as device:count[,device:count...] (e.g. \"0:6,1:10\"); empty keeps every worker on device 0")
 	("scanWarmStart", po::value<bool>(&m_ScanWarmStart)->default_value(true), "Start each scan fit from the converged parameters of the nearest scan point already fitted (ignored with --randomizeSeeds)")
 	("scanMode", po::value<std::string>(&m_ScanMode)->default_value("2d"), "Which scan LLHFit runs when --fitOnly is not given: 2d|2d-regular|1d|1d-regular")
 	("scanParameter", po::value<std::string>(&m_ScanParameter)->default_value(""), "Restrict --scanMode 1d/1d-regular to a single named parameter instead of every non-fixed one")
@@ -63,6 +83,8 @@ namespace io {
     }
 
     notify(vm);
+
+    m_GpuDeviceOfWorker = parse_gpu_devices(m_GpuDevices);
 
     namespace pt = boost::property_tree;
 

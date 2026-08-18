@@ -26,7 +26,7 @@ namespace ana::linreg {
 
     [[nodiscard]] int number_of_parameters() const override { return params::linreg::number_of_parameters(); }
 
-    [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options) override {
+    [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options, int /*worker_index*/) override {
       return std::make_shared<LinRegLikelihood>(std::move(options), *m_InputOptions);
     }
 

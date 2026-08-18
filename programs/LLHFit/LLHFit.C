@@ -278,7 +278,10 @@ namespace {
    *
    * Each worker builds its own Fit -- and therefore its own likelihood -- over
    * the shared module, whose only state is the immutable MC sample. Points are
-   * handed out one at a time, so a slow fit does not stall the others.
+   * handed out one at a time, so a slow fit does not stall the others. Worker
+   * threads are numbered 0..n_workers-1 and keep that number for the pool's
+   * whole lifetime, which is what lets a GPU-backed module pin worker N to a
+   * fixed device via --gpuDevices (see InputOptions::gpu_device_for_worker()).
    *
    * @param nodes          Points to fill in, in the order they should be handed out.
    * @param surface        Filled in as points complete.
@@ -298,7 +301,7 @@ namespace {
     std::atomic<int> next_index{0};
     std::mutex       surface_mutex;
 
-    auto worker = [&]() {
+    auto worker = [&](int worker_index) {
       for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
         const Key          node = nodes[pos];
         const std::string  name = name_fn(node);
@@ -315,7 +318,7 @@ namespace {
           continue;
         }
 
-        ana::Fit fit(options, module);
+        ana::Fit fit(options, module, worker_index);
         auto     min = fit.get_minimizer();
         apply_fixed(*min, node);
 
@@ -347,7 +350,7 @@ namespace {
     std::vector<std::thread> workers;
     workers.reserve(n_workers);
     for (int w = 0; w < n_workers; ++w)
-      workers.emplace_back(worker);
+      workers.emplace_back(worker, w);
 
     for (auto& t : workers)
       t.join();

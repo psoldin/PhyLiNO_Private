@@ -4,12 +4,20 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 // includes
 #include "InputOptionBase.h"
 #include "InputParameter.h"
 
 namespace io {
+
+  // Expands --gpuDevices ("device:count[,device:count...]", e.g. "0:6,1:10")
+  // into one device ordinal per worker slot. "" (the default) returns {},
+  // meaning "no override, every worker uses device 0". A free function so it
+  // is testable without building a full InputOptions (which needs argv and a
+  // config file on disk).
+  [[nodiscard]] std::vector<int> parse_gpu_devices(const std::string& spec);
 
   /**
    * @brief Class representing input options for the program.
@@ -68,6 +76,21 @@ namespace io {
      * the device. Defaults to 1, i.e. the sequential scan.
      */
     [[nodiscard]] int scan_workers() const noexcept { return m_ScanWorkers; }
+
+    /**
+     * Which GPU ordinal scan worker `worker_index` (0-based, as handed to
+     * ExperimentModule::create_likelihood) should run on, from --gpuDevices.
+     * That flag is "device:count[,device:count...]", e.g. "0:6,1:10" fills
+     * device 0 with the first 6 workers and device 1 with the next 10, so
+     * bumping a count and rerunning is how you saturate one card before
+     * spilling onto the next. Empty (the default) means every worker uses
+     * device 0, i.e. today's single-GPU behaviour. Consulted only by GPU
+     * backends that support more than one device (currently IceCube/CUDA);
+     * wraps around if worker_index exceeds the expanded list.
+     */
+    [[nodiscard]] int gpu_device_for_worker(int worker_index) const noexcept {
+      return m_GpuDeviceOfWorker.empty() ? 0 : m_GpuDeviceOfWorker[worker_index % static_cast<int>(m_GpuDeviceOfWorker.size())];
+    }
 
     /**
      * Start each scan fit from the converged parameters of the nearest scan
@@ -158,6 +181,8 @@ namespace io {
     bool   m_UseMultiThreading;      /**< Flag indicating if the fit may use multiple threads. */
     int    m_MultiThreadingCores{-1}; /**< OpenMP team size; -1 keeps the environment default. */
     int    m_ScanWorkers{1};          /**< Grid points the 2D scan fits concurrently. */
+    std::string      m_GpuDevices;         /**< Raw --gpuDevices value, e.g. "0:6,1:10". */
+    std::vector<int> m_GpuDeviceOfWorker;  /**< --gpuDevices expanded to one device ordinal per worker slot. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
     std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
