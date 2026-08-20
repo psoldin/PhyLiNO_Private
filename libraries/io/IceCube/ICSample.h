@@ -33,7 +33,9 @@ namespace io::ic {
    *
    * Reconstructed energy/zenith are only needed to assign each event to an
    * analysis bin; that is done at load time and stored as the CSR bin layout,
-   * so no reco columns are retained for the fit loop.
+   * so the binned fit loop reads no reco columns at all. The unbinned KDE
+   * likelihood does need them per event, so a sample configured for it keeps
+   * the kde_* columns below; they stay empty for every other sample.
    */
   struct ICSample {
     // --- Per-event columns (fit-time) ---
@@ -66,6 +68,27 @@ namespace io::ic {
     // declaring the veto components.
     std::array<std::vector<double>, 3> veto_conv;
     std::array<std::vector<double>, 3> veto_prompt;
+
+    // --- Unbinned KDE columns (populated only when the sample's config carries
+    // an "Unbinned" block; empty otherwise, like every optional column above) ---
+    //
+    // The reconstructed coordinates the KDE density lives in, and the per-event
+    // kernel bandwidths taken from the reconstruction uncertainties. All four are
+    // parameter-independent, so they are read once and never touched during the
+    // fit -- only the weights move. Same index space as every column above.
+    //
+    //   kde_log_e   log10(E_reco / GeV)              [dex]
+    //   kde_zenith  reconstructed zenith             [rad]
+    //   kde_h_e     sigma_E / (E_reco * ln10)        [dex]
+    //   kde_h_z     per-event angular uncertainty    [rad]
+    //
+    // kde_h_e inverts the delta-method construction the ELEFANTS merge applies
+    // (sigma = ln10 * mu * sigma_log10), so it equals the estimator's own
+    // log-space width.
+    std::vector<double> kde_log_e;
+    std::vector<double> kde_zenith;
+    std::vector<double> kde_h_e;
+    std::vector<double> kde_h_z;
 
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
@@ -148,6 +171,10 @@ namespace io::ic {
       for (auto& grad : barr_conv) reorder(grad);
       for (auto& coefficient : veto_conv) reorder(coefficient);
       for (auto& coefficient : veto_prompt) reorder(coefficient);
+      reorder(kde_log_e);
+      reorder(kde_zenith);
+      reorder(kde_h_e);
+      reorder(kde_h_z);
       reorder(bin_idx);
 
       // CSR prefix sum over the now-sorted, valid events.

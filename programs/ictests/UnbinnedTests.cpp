@@ -1,3 +1,4 @@
+#include "IceCube/ICSample.h"
 #include "IceCube/SampleConfig.h"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -160,4 +161,28 @@ TEST(UnbinnedConfigTest, RejectsZenithOutOfRadianRange) {
       "Unbinned": { "enabled": true, "ZenithLo": -1.0, "ZenithHi": 0.0872 }
   } })");
   EXPECT_THROW(io::ic::parse_samples(tree), std::runtime_error);
+}
+
+// sort_into_bins() permutes every per-event column into bin-major order; a
+// column it does not reorder keeps the pre-sort order and silently misaligns
+// with the weights, which is the one way these columns can go wrong unnoticed.
+TEST(UnbinnedSampleTest, SortIntoBinsReordersKdeColumns) {
+  io::ic::ICSample s;
+  // Three events; the middle one is out of range and must be dropped, and the
+  // remaining two must be swapped into bin order (bin 1 then bin 0 on input).
+  s.e_true     = {10.0, 20.0, 30.0};
+  s.bin_idx    = {1, -1, 0};
+  s.kde_log_e  = {4.0, 5.0, 6.0};
+  s.kde_zenith = {2.0, 2.5, 3.0};
+  s.kde_h_e    = {0.1, 0.2, 0.3};
+  s.kde_h_z    = {0.01, 0.02, 0.03};
+
+  s.sort_into_bins(2);
+
+  ASSERT_EQ(s.size(), 2u);
+  EXPECT_DOUBLE_EQ(s.kde_log_e[0], 6.0);
+  EXPECT_DOUBLE_EQ(s.kde_log_e[1], 4.0);
+  EXPECT_DOUBLE_EQ(s.kde_zenith[0], 3.0);
+  EXPECT_DOUBLE_EQ(s.kde_h_e[1], 0.1);
+  EXPECT_DOUBLE_EQ(s.kde_h_z[0], 0.03);
 }
