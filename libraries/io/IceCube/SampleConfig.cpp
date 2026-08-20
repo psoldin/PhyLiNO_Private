@@ -161,6 +161,24 @@ namespace io::ic {
             throw std::runtime_error("parse_samples: sample '" + sample.name + "' galactic templates '" +
                                      sample.galactic[i].name + "' and '" + sample.galactic[j].name +
                                      "' share one norm parameter; the fit could not tell them apart");
+
+      // The unbinned density is a sum over per-event weights, and these three
+      // inputs have no per-event representation at all: the muon and galactic
+      // templates are per-bin rate files, and the SnowStorm gradients come from
+      // independent MC, so there is no event to attach them to even in
+      // principle. Silently dropping them would fit a different model than the
+      // config asks for.
+      if (sample.unbinned.enabled) {
+        const char* offender = nullptr;
+        if (!sample.template_file.empty()) offender = "a muon template (\"Template\")";
+        else if (!sample.gradient_file.empty()) offender = "SnowStorm gradients (\"Gradients\")";
+        else if (!sample.galactic.empty()) offender = "galactic templates (\"Galactic\")";
+        if (offender != nullptr)
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' combines Unbinned with " +
+                                   std::string(offender) +
+                                   ", which is a per-bin input with no per-event representation; fix the "
+                                   "corresponding parameters and remove the block");
+      }
     }
 
     // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
@@ -212,6 +230,49 @@ namespace io::ic {
                                      "' is not an integer class label or \"NaN\"");
           sample.topology_values.push_back(parsed);
         }
+      }
+
+      if (const auto unbinned = node.get_child_optional("Unbinned")) {
+        UnbinnedConfig& u   = sample.unbinned;
+        u.enabled           = unbinned->get<bool>("enabled", true);
+        u.energy_sigma_branch = unbinned->get<std::string>("EnergySigmaBranch", u.energy_sigma_branch);
+        u.zenith_sigma_branch = unbinned->get<std::string>("ZenithSigmaBranch", u.zenith_sigma_branch);
+        u.log_e_lo          = unbinned->get<double>("Log10EnergyLo", u.log_e_lo);
+        u.log_e_hi          = unbinned->get<double>("Log10EnergyHi", u.log_e_hi);
+        u.zenith_lo         = unbinned->get<double>("ZenithLo", u.zenith_lo);
+        u.zenith_hi         = unbinned->get<double>("ZenithHi", u.zenith_hi);
+        u.truncation        = unbinned->get<double>("Truncation", u.truncation);
+        u.thinning          = unbinned->get<int>("Thinning", u.thinning);
+
+        if (u.truncation <= 0.0)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has Unbinned.Truncation <= 0; nothing would contribute to the density");
+        if (u.thinning < 1)
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' has Unbinned.Thinning < 1");
+
+        if (u.energy_sigma_branch.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has an empty Unbinned.EnergySigmaBranch");
+        if (u.zenith_sigma_branch.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has an empty Unbinned.ZenithSigmaBranch");
+
+        // The binning axis this feeds is CosZenith (Binning.cpp applies std::cos to
+        // the raw angle), but the KDE's zenith coordinate is the raw angle itself, in
+        // radians. Pasting the CosZenith axis bounds in here (e.g. -1.0, 0.0872) would
+        // pass the hi > lo check below while silently building the wrong-unit domain.
+        constexpr double kPi = 3.14159265358979323846;
+        if (u.zenith_lo < 0.0 || u.zenith_lo > kPi || u.zenith_hi < 0.0 || u.zenith_hi > kPi)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has Unbinned.ZenithLo/ZenithHi outside [0, pi]; these are radians, not "
+                                   "the sample's CosZenith binning bounds");
+
+        if (u.log_e_hi <= u.log_e_lo)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has an empty Unbinned energy domain (Log10EnergyHi <= Log10EnergyLo)");
+        if (u.zenith_hi <= u.zenith_lo)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has an empty Unbinned zenith domain (ZenithHi <= ZenithLo)");
       }
 
       if (const auto galactic = node.get_child_optional("Galactic")) {

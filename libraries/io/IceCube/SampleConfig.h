@@ -48,6 +48,38 @@ namespace io::ic {
   };
 
   /**
+   * Unbinned extended-KDE likelihood settings for one sample (the "Unbinned"
+   * config block). Absent block, or enabled == false, leaves the sample on the
+   * binned Poisson/SAY path.
+   *
+   * The KDE energy coordinate is log10 of the sample's ordinary reco energy
+   * branch (Branches.RecoEnergy), so the binned and unbinned paths cannot end
+   * up scoring different observables. Only the two per-event uncertainty
+   * columns are named here, since nothing but this path reads them.
+   */
+  struct UnbinnedConfig {
+    bool        enabled             = false;
+    std::string energy_sigma_branch = "ELEFANTS_tg_sigma";     // linear GeV
+    std::string zenith_sigma_branch = "L5_sigma_paraboloid";   // radians
+
+    // KDE domain in KDE coordinates: log10(E_reco / GeV) and zenith in radians.
+    // Events outside are dropped at load, as out-of-binning events already are.
+    double log_e_lo  = 2.0;
+    double log_e_hi  = 7.0;
+    double zenith_lo = 0.0;
+    double zenith_hi = 3.14159265358979323846;
+
+    // Kernels beyond truncation * h are skipped. Large values recover the exact
+    // double sum (at the corresponding cost) and are how the truncation is validated.
+    double truncation = 5.0;
+
+    // Use every thinning-th MC event as a quadrature node, with its weight
+    // scaled by thinning. Cuts runtime linearly, adds MC-integration noise,
+    // leaves the statistical content unchanged. 1 = every event.
+    int thinning = 1;
+  };
+
+  /**
    * Config for one analysis sample: which parquet file backs it, its analysis
    * binning, which flux components it includes, its livetime, and per-sample
    * branch-name overrides. Populated by parse_samples() from the
@@ -128,6 +160,9 @@ namespace io::ic {
     std::vector<int> topology_values;
     bool             topology_exclude  = false;
     bool             topology_drop_nan = false;
+
+    // Unbinned extended-KDE likelihood ("Unbinned" block); disabled by default.
+    UnbinnedConfig unbinned;
 
     [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty() || topology_drop_nan; }
 
