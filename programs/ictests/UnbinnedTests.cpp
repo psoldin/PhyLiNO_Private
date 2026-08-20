@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <sstream>
 #include <string>
@@ -58,7 +59,7 @@ TEST(UnbinnedConfigTest, ParsesBlockWithDefaults) {
   ASSERT_EQ(samples.size(), 1u);
   const io::ic::UnbinnedConfig& u = samples[0].unbinned;
   EXPECT_TRUE(u.enabled);
-  EXPECT_EQ(u.energy_sigma_branch, "ELEFANTS_tg_sigma");
+  EXPECT_EQ(u.energy_sigma_branch, "ELEFANTS_tg_sigma_log10");
   EXPECT_EQ(u.zenith_sigma_branch, "L5_sigma_paraboloid");
   EXPECT_DOUBLE_EQ(u.log_e_lo, 2.0);
   EXPECT_DOUBLE_EQ(u.log_e_hi, 7.0);
@@ -348,8 +349,11 @@ TEST(UnbinnedLoadTest, DerivesCoordinatesAndDropsUnusableEvents) {
       .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
   cfg.parquet            = path;
   cfg.components         = {"astro"};
-  cfg.unbinned.enabled   = true;
-  cfg.unbinned.zenith_lo = 1.4836;
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+  cfg.unbinned.zenith_lo              = 1.4836;
   cfg.unbinned.zenith_hi = 3.14159265358979;
 
   const io::ic::ICDataBase db({cfg});
@@ -502,8 +506,11 @@ TEST(UnbinnedSampleLikelihoodTest, AsimovTotalMatchesBinnedAndMinimisesAtTruth) 
   cfg.parquet            = path;
   cfg.components         = {"astro"};
   cfg.livetime           = 1.0e7;
-  cfg.unbinned.enabled   = true;
-  cfg.unbinned.zenith_lo = 1.5;
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+  cfg.unbinned.zenith_lo              = 1.5;
   cfg.unbinned.zenith_hi = 3.05;
 
   const io::ic::ICDataBase db({cfg});
@@ -557,8 +564,11 @@ TEST(UnbinnedSampleLikelihoodTest, RejectsSayLikelihood) {
       .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
   cfg.parquet            = path;
   cfg.components         = {"astro"};
-  cfg.unbinned.enabled   = true;
-  cfg.unbinned.zenith_lo = 1.5;
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+  cfg.unbinned.zenith_lo              = 1.5;
   cfg.unbinned.zenith_hi = 3.05;
 
   const io::ic::ICDataBase          db({cfg});
@@ -573,6 +583,44 @@ TEST(UnbinnedSampleLikelihoodTest, RejectsSayLikelihood) {
   EXPECT_THROW(
       ana::ic::SampleLikelihood(db.sample(0), cfg, settings, /*gpu=*/nullptr, /*use_say=*/true),
       std::runtime_error);
+
+  std::remove(path.c_str());
+}
+
+// The uncertainty columns are not self-describing -- ELEFANTS emits log(sigma)
+// and the paraboloid sigma is in degrees -- so the transform is config, and a
+// wrong one must change the bandwidth rather than pass unnoticed.
+TEST(UnbinnedLoadTest, AppliesConfiguredSigmaTransforms) {
+  const std::string path = "ictests_unbinned_transform.parquet";
+  // log(0.3) and 0.61 degrees: the medians of the real ELEFANTS/paraboloid columns.
+  const double log_sigma = std::log(0.3);
+  write_double_parquet(path, {{"energy_truncated", {1.0e4, 1.0e5}},
+                              {"zenith_MPEFit", {2.0, 2.5}},
+                              {"MCPrimaryEnergy", {1.0e4, 1.0e5}},
+                              {"powerlaw", {1.0e-8, 1.0e-8}},
+                              {"sigma_e", {log_sigma, log_sigma}},
+                              {"sigma_z", {0.61, 0.61}}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet                         = path;
+  cfg.components                      = {"astro"};
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "sigma_e";
+  cfg.unbinned.zenith_sigma_branch    = "sigma_z";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::Exp;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::DegToRad;
+  cfg.unbinned.zenith_lo              = 1.5;
+  cfg.unbinned.zenith_hi              = 3.05;
+
+  // Name the database: binding a reference through sample() into a temporary
+  // would dangle the moment the full expression ends.
+  const io::ic::ICDataBase db({cfg});
+  const io::ic::ICSample&  s = db.sample(0);
+
+  ASSERT_EQ(s.size(), 2u);
+  EXPECT_NEAR(s.kde_h_e[0], 0.3, 1e-12);
+  EXPECT_NEAR(s.kde_h_z[0], 0.61 * std::numbers::pi / 180.0, 1e-15);
 
   std::remove(path.c_str());
 }

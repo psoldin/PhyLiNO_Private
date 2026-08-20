@@ -78,21 +78,24 @@ namespace io::ic {
    */
   template <class Visit>
   void for_each_neighbour(const KdeIndex& index, const double qe, const double qz, Visit&& visit) {
-    for (const KdeIndex::Band& band : index.bands) {
-      const int ce = static_cast<int>(std::floor((qe - index.lo[0]) / band.cell[0]));
-      const int cz = static_cast<int>(std::floor((qz - index.lo[1]) / band.cell[1]));
+    for (const auto& [cell, n_cells, first_cell] : index.bands) {
+      const int ce = static_cast<int>(std::floor((qe - index.lo[0]) / cell[0]));
+      const int cz = static_cast<int>(std::floor((qz - index.lo[1]) / cell[1]));
 
       for (int de = -1; de <= 1; ++de) {
         const int ie = ce + de;
-        if (ie < 0 || ie >= band.n_cells[0]) continue;
+        if (ie < 0 || ie >= n_cells[0]) continue;
         for (int dz = -1; dz <= 1; ++dz) {
           const int iz = cz + dz;
-          if (iz < 0 || iz >= band.n_cells[1]) continue;
+          if (iz < 0 || iz >= n_cells[1]) continue;
 
-          const std::size_t cell  = band.first_cell + static_cast<std::size_t>(ie) * band.n_cells[1] + iz;
-          const std::size_t begin = index.cell_offsets[cell];
-          const std::size_t end   = index.cell_offsets[cell + 1];
-          for (std::size_t k = begin; k < end; ++k) visit(index.cell_events[k]);
+          const std::size_t cellIdx  = first_cell + static_cast<std::size_t>(ie) * n_cells[1] + iz;
+          const std::size_t begin    = index.cell_offsets[cellIdx];
+          const std::size_t end      = index.cell_offsets[cellIdx + 1];
+
+          for (std::size_t k = begin; k < end; ++k) {
+            visit(index.cell_events[k]);
+          }
         }
       }
     }

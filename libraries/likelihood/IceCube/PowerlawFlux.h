@@ -136,7 +136,7 @@ namespace ana::ic {
     void recalculate_cpu(const ParameterWrapper& parameter) noexcept;
 
     /** eff_norm * m_ShapeHistogram -> m_Histogram, for the given parameters. */
-    void apply_norm(const ParameterWrapper& parameter) noexcept;
+    void apply_norm(double eff_norm) noexcept;
 
     /** The normalisation every event's weight is scaled by. */
     [[nodiscard]] double effective_norm(const ParameterWrapper& parameter) const noexcept;

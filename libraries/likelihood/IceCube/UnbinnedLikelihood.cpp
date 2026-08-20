@@ -10,7 +10,7 @@ namespace ana::ic {
   double KdeDensity::evaluate(const double qe, const double qz, const std::span<const double> w) const noexcept {
     double acc = 0.0;
     io::ic::for_each_neighbour(index, qe, qz, [&](const int i) {
-      const std::size_t e = static_cast<std::size_t>(i);
+      const auto e = static_cast<std::size_t>(i);
       acc += w[e] * reflected_gauss(qe, x_e[e], h_e[e], lo[0], hi[0]) *
              reflected_gauss(qz, x_z[e], h_z[e], lo[1], hi[1]);
     });

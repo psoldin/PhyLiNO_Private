@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -122,6 +123,19 @@ namespace io::ic {
       for (int64_t i = 0; i < n; ++i)
         pass[i] = ee->Value(i) == 1 && es->Value(i) == 0 && de->Value(i) == 1 && ds->Value(i) == 0;
       return pass;
+    }
+
+    // A per-event uncertainty column in whatever convention it was written in,
+    // turned into a bandwidth in the KDE's own units. See SigmaTransform.
+    double apply_sigma_transform(const double sigma, const SigmaTransform transform, const double e_reco) noexcept {
+      switch (transform) {
+        case SigmaTransform::None:        return sigma;
+        case SigmaTransform::Exp:         return std::exp(sigma);
+        case SigmaTransform::Pow10:       return std::pow(10.0, sigma);
+        case SigmaTransform::LinearToDex: return sigma / (e_reco * std::log(10.0));
+        case SigmaTransform::DegToRad:    return sigma * std::numbers::pi / 180.0;
+      }
+      return sigma;
     }
 
   }  // namespace
@@ -304,8 +318,8 @@ namespace io::ic {
       // density, which is a bias rather than a missing event.
       if (cfg.unbinned.enabled && out.bin_idx[i] >= 0) {
         const double log_e = e_reco[i] > 0.0 ? std::log10(e_reco[i]) : std::numeric_limits<double>::quiet_NaN();
-        const double h_e   = kde_sigma_e[i] / (e_reco[i] * std::log(10.0));
-        const double h_z   = kde_sigma_z[i];
+        const double h_e   = apply_sigma_transform(kde_sigma_e[i], cfg.unbinned.energy_sigma_transform, e_reco[i]);
+        const double h_z   = apply_sigma_transform(kde_sigma_z[i], cfg.unbinned.zenith_sigma_transform, e_reco[i]);
 
         const bool usable = std::isfinite(log_e) && std::isfinite(h_e) && std::isfinite(h_z) && h_e > 0.0 &&
                             h_z > 0.0 && log_e >= cfg.unbinned.log_e_lo && log_e < cfg.unbinned.log_e_hi &&

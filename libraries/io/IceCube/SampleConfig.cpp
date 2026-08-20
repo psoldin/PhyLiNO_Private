@@ -233,6 +233,16 @@ namespace io::ic {
       }
 
       if (const auto unbinned = node.get_child_optional("Unbinned")) {
+        auto parse_transform = [&sample](const std::string& text, const std::string& key) {
+          if (text == "none") return SigmaTransform::None;
+          if (text == "exp") return SigmaTransform::Exp;
+          if (text == "pow10") return SigmaTransform::Pow10;
+          if (text == "linear_to_dex") return SigmaTransform::LinearToDex;
+          if (text == "deg2rad") return SigmaTransform::DegToRad;
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' has Unbinned." + key + " '" +
+                                   text + "' (expected none, exp, pow10, linear_to_dex or deg2rad)");
+        };
+
         UnbinnedConfig& u   = sample.unbinned;
         u.enabled           = unbinned->get<bool>("enabled", true);
         u.energy_sigma_branch = unbinned->get<std::string>("EnergySigmaBranch", u.energy_sigma_branch);
@@ -241,6 +251,10 @@ namespace io::ic {
         u.log_e_hi          = unbinned->get<double>("Log10EnergyHi", u.log_e_hi);
         u.zenith_lo         = unbinned->get<double>("ZenithLo", u.zenith_lo);
         u.zenith_hi         = unbinned->get<double>("ZenithHi", u.zenith_hi);
+        u.energy_sigma_transform =
+            parse_transform(unbinned->get<std::string>("EnergySigmaTransform", "exp"), "EnergySigmaTransform");
+        u.zenith_sigma_transform =
+            parse_transform(unbinned->get<std::string>("ZenithSigmaTransform", "deg2rad"), "ZenithSigmaTransform");
         u.truncation        = unbinned->get<double>("Truncation", u.truncation);
         u.thinning          = unbinned->get<int>("Thinning", u.thinning);
 

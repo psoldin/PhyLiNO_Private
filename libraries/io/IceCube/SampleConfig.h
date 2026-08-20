@@ -57,10 +57,32 @@ namespace io::ic {
    * up scoring different observables. Only the two per-event uncertainty
    * columns are named here, since nothing but this path reads them.
    */
+  /**
+   * How a per-event uncertainty column is turned into a kernel bandwidth. The
+   * conventions differ per column and are not self-describing, so they are
+   * config rather than folklore:
+   *
+   *   None        the column already is the bandwidth in the KDE's own units
+   *   Exp         exp(x): a network that emits log(sigma) to keep it positive,
+   *               which is what ELEFANTS does (its sigma column is negative for
+   *               99.99% of rows, so it cannot be a width)
+   *   Pow10       10^x, for a column carrying log10(sigma)
+   *   LinearToDex x / (E_reco * ln10): a sigma in linear GeV, converted to the
+   *               log10 energy axis by the delta method
+   *   DegToRad    x * pi/180, for an angular sigma in degrees
+   */
+  enum class SigmaTransform { None, Exp, Pow10, LinearToDex, DegToRad };
+
   struct UnbinnedConfig {
     bool        enabled             = false;
-    std::string energy_sigma_branch = "ELEFANTS_tg_sigma";     // linear GeV
-    std::string zenith_sigma_branch = "L5_sigma_paraboloid";   // radians
+    std::string energy_sigma_branch = "ELEFANTS_tg_sigma_log10";  // log(sigma / dex)
+    std::string zenith_sigma_branch = "L5_sigma_paraboloid";      // degrees
+
+    // ELEFANTS is trained on log10(E) with a Gaussian head that emits log(sigma),
+    // and the paraboloid sigma is in degrees (median 0.61, i.e. 0.61 deg; as
+    // radians it would be 35 deg, wider than any real MPEFit error).
+    SigmaTransform energy_sigma_transform = SigmaTransform::Exp;
+    SigmaTransform zenith_sigma_transform = SigmaTransform::DegToRad;
 
     // KDE domain in KDE coordinates: log10(E_reco / GeV) and zenith in radians.
     // Events outside are dropped at load, as out-of-binning events already are.

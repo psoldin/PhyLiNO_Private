@@ -23,21 +23,22 @@ namespace ana::dc {
    * @param bkg A span of expected background values.
    * @return The calculated Poisson likelihood.
    */
-  inline double calculate_poisson_likelihood(std::span<const double> data, std::span<const double> signal, std::span<const double> bkg) noexcept {
+  inline double calculate_poisson_likelihood(std::span<const double> data, std::span<const double> prediction) noexcept {
     double return_value = 0.0;
-    for (size_t i = 0; i < data.size(); ++i) {
-      const double model_i = signal[i] + bkg[i];
-      return_value += data[i] * std::log(model_i) - model_i;
+    for (size_t i = 0, n = data.size(); i < n; ++i) {
+      return_value += data[i] * std::log(prediction[i]) - prediction[i] - std::lgamma(data[i] + 1.0);
     }
-
     return -2.0 * return_value;
+  }
+
+  inline double calculate_saturated_poisson_likelihood(std::span<const double> data, std::span<const double> prediction) noexcept {
+    return calculate_poisson_likelihood(data, prediction) - calculate_poisson_likelihood(data, data);
   }
 
   bool DCLikelihood::recalculate_spectra(const ParameterWrapper& parameter) noexcept {
     bool recalculate = false;
 
-    std::array<SpectrumBase*, 5> components = {&m_Accidental, &m_Lithium, &m_FastN, &m_DNC, &m_Reactor};
-    for (auto* component : components) {
+    for (std::array<SpectrumBase*, 5> components = {&m_Accidental, &m_Lithium, &m_FastN, &m_DNC, &m_Reactor}; auto* component : components) {
       recalculate |= component->check_and_recalculate(parameter);
     }
 
@@ -409,12 +410,12 @@ namespace ana::dc {
       likelihood = calculate_default_likelihood(m_Parameter);
     }
 
-    if (m_FirstCall && std::isfinite(likelihood)) {
-      m_LikelihoodBase = likelihood;
-      m_FirstCall      = false;
-    }
-
-    likelihood -= m_LikelihoodBase;
+    // if (m_FirstCall && std::isfinite(likelihood)) {
+    //   m_LikelihoodBase = likelihood;
+    //   m_FirstCall      = false;
+    // }
+    //
+    // likelihood -= m_LikelihoodBase;
 
     return likelihood;
   }
@@ -472,8 +473,10 @@ namespace ana::dc {
     constexpr int nBins = 44;
 
     for (const auto detector : {ND, FDI, FDII}) {
-      using map_t   = Eigen::Map<const Eigen::Array<double, nBins, 1>>;
+      // using map_t   = Eigen::Map<const Eigen::Array<double, nBins, 1>>;
       using array_t = Eigen::Array<double, nBins, 1>;
+      using map_t   = Eigen::Map<const array_t>;
+
 
       // Get all spectrum components as Eigen::Map
       map_t acc(m_Accidental.get_spectrum(detector).data(), nBins);
@@ -492,10 +495,12 @@ namespace ana::dc {
       const double mcNorm = calculate_mcNorm(parameter, detector);
 
       // Calculate the full spectrum prediction
-      array_t prediction = (bkg + (mcNorm * reactor));
+      const array_t prediction = (bkg + (mcNorm * reactor));
 
       // Calculate Poisson Likelihood
-      likelihood += -2.0 * (data * prediction.log() - prediction).sum();
+      // likelihood += -2.0 * (data * prediction.log() - prediction).sum();
+      likelihood += calculate_saturated_poisson_likelihood({data.data(), static_cast<std::span<const double>::size_type>(data.size())},
+                                                 {prediction.data(), static_cast<std::span<const double>::size_type>(prediction.size())});
 
       // Calculate the off-off component of the likelihood.
       // Only ND and FD-II have reactor-off data taking periods.

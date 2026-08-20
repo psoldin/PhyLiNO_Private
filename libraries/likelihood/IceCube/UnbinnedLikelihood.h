@@ -16,6 +16,15 @@ namespace ana::ic {
 
   inline constexpr double kInvSqrt2Pi = 0.39894228040143267794;
 
+  namespace {
+
+    template <typename T>
+    [[nodiscard]] inline auto square(T&& t) noexcept {
+        return t * t;
+    }
+
+  }
+
   /**
    * Gaussian kernel of width h centred at c, reflected at both ends of [a, b].
    *
@@ -30,8 +39,7 @@ namespace ana::ic {
                                               const double b) noexcept {
     const double inv = 1.0 / h;
     auto         g   = [inv](const double d) noexcept {
-      const double z = d * inv;
-      return std::exp(-0.5 * z * z);
+      return std::exp(-0.5 * square(d * inv));
     };
     return kInvSqrt2Pi * inv * (g(u - c) + g(u + c - 2.0 * a) + g(u - 2.0 * b + c));
   }

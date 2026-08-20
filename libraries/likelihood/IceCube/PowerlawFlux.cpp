@@ -330,8 +330,7 @@ namespace ana::ic {
     return m_PerTypeNorm ? norm : 0.5 * norm;
   }
 
-  void PowerlawFlux::apply_norm(const ParameterWrapper& parameter) noexcept {
-    const double eff_norm = effective_norm(parameter);
+  void PowerlawFlux::apply_norm(const double eff_norm) noexcept {
     for (std::size_t bin = 0, n = m_Histogram.size(); bin < n; ++bin)
       m_Histogram[bin] = eff_norm * m_ShapeHistogram[bin];
   }
@@ -376,7 +375,7 @@ namespace ana::ic {
         return;
     }
 
-    apply_norm(parameter);
+    apply_norm(eff_norm);
   }
 
   void PowerlawFlux::recalculate_gpu(const ParameterWrapper& parameter) noexcept {
@@ -419,6 +418,8 @@ namespace ana::ic {
       p.broken     = broken ? 1 : 0;
     };
 
+    const double eff_norm = effective_norm(parameter);
+
     // Metal-only df64 path for the single-power-law model: same math as the
     // plain-FP32 dispatch below, but through the double-float kernel (see
     // Df64.h / kKernelMetalBodySplDf64) that keeps baseline and logE at close
@@ -438,7 +439,7 @@ namespace ana::ic {
                       m_Reduce->n_chunks());
       m_Reduce->gather(m_hHist);
       read_back_hist<float>(*m_Gpu, m_hHist, m_ShapeHistogram);
-      apply_norm(parameter);
+      apply_norm(eff_norm);
       return;
     }
 
@@ -455,7 +456,7 @@ namespace ana::ic {
       dispatch_and_gather_hist<PowerlawParamsT<float>>(*m_Gpu, "powerlaw_hist", inputs, 4, fill, *m_Reduce,
                                                         m_hPerEvent, m_hHist, m_ShapeHistogram);
     // Per-event weights stay GPU-resident (read by the say_ssq kernel).
-    apply_norm(parameter);
+    apply_norm(eff_norm);
   }
 
   void PowerlawFlux::recalculate(const ParameterWrapper& parameter) noexcept {
@@ -480,18 +481,31 @@ namespace ana::ic {
            || parameter.check_parameter_changed(AstroEBreak);
   }
 
+  inline bool check_norm_parameter(const ParameterWrapper& parameter) noexcept {
+    using namespace params::ic;
+    return parameter.check_parameter_changed(AstroNorm); 
+  }
+
+  inline bool check_shape_parameter(const ParameterWrapper& parameter, const io::ic::AstroModel model) noexcept {
+    using namespace params::ic;
+    switch (model) {
+      case io::ic::AstroModel::Powerlaw:
+        return check_SPL_shape_parameter(parameter);
+      case io::ic::AstroModel::BrokenPowerlaw:
+        return check_BPL_shape_parameter(parameter);
+      default:
+        return false;
+    }
+  }
+
   bool PowerlawFlux::check_and_recalculate(const ParameterWrapper& parameter) {
     using namespace params::ic;
     // Watch exactly the parameters the active model reads: SpectralIndex is
     // unused in broken-power-law mode, and the three AstroBPL parameters are
     // unused in single-power-law mode.
 
-    using enum io::ic::AstroModel;
-
-    const bool shape_changed = (m_Model == BrokenPowerlaw)
-                                   ? check_BPL_shape_parameter(parameter)
-                                   : check_SPL_shape_parameter(parameter);
-    const bool norm_changed  = parameter.check_parameter_changed(AstroNorm);
+    const bool shape_changed = check_shape_parameter(parameter, m_Model);
+    const bool norm_changed  = check_norm_parameter(parameter);
 
     if (!m_Seeded) {
       recalculate(parameter);
@@ -513,7 +527,7 @@ namespace ana::ic {
     // and they carry the norm, so a sample that needs them has to re-run the
     // event loop even for a norm-only step.
     if (!shape_changed && !m_NeedPerEvent) {
-      apply_norm(parameter);
+      apply_norm(effective_norm(parameter));
       return true;
     }
 

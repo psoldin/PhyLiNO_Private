@@ -50,11 +50,6 @@ namespace ana::ic {
       }
     }
 
-    template <typename T>
-    T square(T&& t) noexcept {
-      return t * t;
-    }
-
     // SAY ssq reduction on the GPU: sums (astro_i + atmo_i)^2 per analysis bin
     // over the per-event weight buffers the flux kernels already produced, so
     // the weights never leave the GPU. Same one-group-per-chunk / 256-thread
