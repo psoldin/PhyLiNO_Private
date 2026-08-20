@@ -25,6 +25,31 @@ namespace io::ic {
 
   }  // namespace
 
+  KdeKernelConstants build_kde_kernel_constants(const std::span<const double> h_e,
+                                                const std::span<const double> h_z,
+                                                const double                  n_sigma) {
+    // 1 / sqrt(2 pi), the Gaussian's normalisation; squared into the product
+    // prefactor of the two axes so the density's inner loop multiplies once.
+    constexpr double kInvSqrt2Pi = 0.39894228040143267794;
+
+    const std::size_t  n = h_e.size();
+    KdeKernelConstants constants;
+    constants.inv_h_e.resize(n);
+    constants.inv_h_z.resize(n);
+    constants.prefactor.resize(n);
+    constants.reach_e.resize(n);
+    constants.reach_z.resize(n);
+
+    for (std::size_t i = 0; i < n; ++i) {
+      constants.inv_h_e[i]   = 1.0 / h_e[i];
+      constants.inv_h_z[i]   = 1.0 / h_z[i];
+      constants.prefactor[i] = kInvSqrt2Pi * kInvSqrt2Pi * constants.inv_h_e[i] * constants.inv_h_z[i];
+      constants.reach_e[i]   = n_sigma * h_e[i];
+      constants.reach_z[i]   = n_sigma * h_z[i];
+    }
+    return constants;
+  }
+
   KdeIndex build_kde_index(const std::span<const double> x_e,
                            const std::span<const double> x_z,
                            const std::span<const double> h_e,

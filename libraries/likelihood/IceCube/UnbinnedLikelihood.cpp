@@ -7,26 +7,6 @@
 
 namespace ana::ic {
 
-  KdeScratch KdeScratch::build(const std::span<const double> h_e, const std::span<const double> h_z,
-                               const double n_sigma) {
-    const std::size_t n = h_e.size();
-    KdeScratch        scratch;
-    scratch.inv_h_e.resize(n);
-    scratch.inv_h_z.resize(n);
-    scratch.prefactor.resize(n);
-    scratch.reach_e.resize(n);
-    scratch.reach_z.resize(n);
-
-    for (std::size_t i = 0; i < n; ++i) {
-      scratch.inv_h_e[i]   = 1.0 / h_e[i];
-      scratch.inv_h_z[i]   = 1.0 / h_z[i];
-      scratch.prefactor[i] = kInvSqrt2Pi * scratch.inv_h_e[i] * kInvSqrt2Pi * scratch.inv_h_z[i];
-      scratch.reach_e[i]   = n_sigma * h_e[i];
-      scratch.reach_z[i]   = n_sigma * h_z[i];
-    }
-    return scratch;
-  }
-
   double KdeDensity::evaluate(const double qe, const double qz, const std::span<const double> w) const noexcept {
     double acc = 0.0;
     io::ic::for_each_neighbour(index, qe, qz, [&](const int i) {
@@ -66,22 +46,18 @@ namespace ana::ic {
           "UnbinnedLikelihood: sample carries no KDE columns or no neighbour index; its config needs an "
           "\"Unbinned\" block so ICDataBase reads the reco coordinates and bandwidths");
 
-    m_Scratch = KdeScratch::build(sample.kde_h_e, sample.kde_h_z, cfg.truncation);
     m_Weight.assign(sample.size(), 0.0);
-
-    const std::size_t stride = static_cast<std::size_t>(m_Config.thinning);
-    for (std::size_t i = 0; i < sample.size(); i += stride) m_Queries.push_back(static_cast<int>(i));
-    m_AsimovWeight.assign(m_Queries.size(), 0.0);
+    m_AsimovWeight.assign(sample.kde_queries.size(), 0.0);
   }
 
   KdeDensity UnbinnedLikelihood::density() const noexcept {
     return KdeDensity{.x_e       = m_Sample.kde_log_e,
                       .x_z       = m_Sample.kde_zenith,
-                      .inv_h_e   = m_Scratch.inv_h_e,
-                      .inv_h_z   = m_Scratch.inv_h_z,
-                      .prefactor = m_Scratch.prefactor,
-                      .reach_e   = m_Scratch.reach_e,
-                      .reach_z   = m_Scratch.reach_z,
+                      .inv_h_e   = m_Sample.kde_kernel.inv_h_e,
+                      .inv_h_z   = m_Sample.kde_kernel.inv_h_z,
+                      .prefactor = m_Sample.kde_kernel.prefactor,
+                      .reach_e   = m_Sample.kde_kernel.reach_e,
+                      .reach_z   = m_Sample.kde_kernel.reach_z,
                       .index     = m_Sample.kde_index,
                       .lo        = {m_Config.log_e_lo, m_Config.zenith_lo},
                       .hi        = {m_Config.log_e_hi, m_Config.zenith_hi}};
@@ -108,8 +84,8 @@ namespace ana::ic {
     // ones dropped; the total stays nu(theta_A) whatever the stride.
     const double scale = static_cast<double>(m_Config.thinning);
     m_AsimovTotal      = 0.0;
-    for (std::size_t q = 0; q < m_Queries.size(); ++q) {
-      m_AsimovWeight[q] = scale * m_Weight[static_cast<std::size_t>(m_Queries[q])];
+    for (std::size_t q = 0; q < m_Sample.kde_queries.size(); ++q) {
+      m_AsimovWeight[q] = scale * m_Weight[static_cast<std::size_t>(m_Sample.kde_queries[q])];
       m_AsimovTotal += m_AsimovWeight[q];
     }
   }
@@ -131,17 +107,17 @@ namespace ana::ic {
     // while the floor stops a tiny sample from paying for the fan-out.
     constexpr std::size_t kTargetChunks = 512;
     const std::size_t     kQueriesPerChunk =
-        std::clamp<std::size_t>((m_Queries.size() + kTargetChunks - 1) / kTargetChunks, 64, 4096);
-    const int n_chunks = static_cast<int>((m_Queries.size() + kQueriesPerChunk - 1) / kQueriesPerChunk);
+        std::clamp<std::size_t>((m_Sample.kde_queries.size() + kTargetChunks - 1) / kTargetChunks, 64, 4096);
+    const int n_chunks = static_cast<int>((m_Sample.kde_queries.size() + kQueriesPerChunk - 1) / kQueriesPerChunk);
     m_Partial.assign(static_cast<std::size_t>(std::max(n_chunks, 1)), 0.0);
 
     #pragma omp parallel for schedule(guided) if (m_UseMultiThreading)
     for (int c = 0; c < n_chunks; ++c) {
       const std::size_t begin = static_cast<std::size_t>(c) * kQueriesPerChunk;
-      const std::size_t end   = std::min(m_Queries.size(), begin + kQueriesPerChunk);
+      const std::size_t end   = std::min(m_Sample.kde_queries.size(), begin + kQueriesPerChunk);
       double            acc   = 0.0;
       for (std::size_t q = begin; q < end; ++q) {
-        const std::size_t j      = static_cast<std::size_t>(m_Queries[q]);
+        const std::size_t j      = static_cast<std::size_t>(m_Sample.kde_queries[q]);
         const double      lambda = kde.evaluate_loo(j, m_Weight);
         // A query point can end up with no support at all -- an isolated event
         // whose only neighbour was itself. Clamping to the smallest normal

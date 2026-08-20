@@ -53,6 +53,31 @@ namespace io::ic {
   };
 
   /**
+   * Per-event constants derived from the bandwidths, hoisted out of the density's
+   * innermost loop: reciprocal widths, the product prefactor of the two axes, and
+   * the truncation reach per axis.
+   *
+   * Derived at load rather than per Fit for two reasons: a scan builds one Fit
+   * per grid point and would otherwise rebuild ~30 MB of them each time, and the
+   * GPU column cache is keyed on the host pointer with no invalidation, so a
+   * per-Fit buffer could be recycled onto an address whose device copy still
+   * holds the previous fit's numbers.
+   */
+  struct KdeKernelConstants {
+    std::vector<double> inv_h_e;
+    std::vector<double> inv_h_z;
+    std::vector<double> prefactor;  ///< 1 / (2 pi h_e h_z)
+    std::vector<double> reach_e;    ///< n_sigma * h_e
+    std::vector<double> reach_z;    ///< n_sigma * h_z
+
+    [[nodiscard]] bool empty() const noexcept { return inv_h_e.empty(); }
+  };
+
+  [[nodiscard]] KdeKernelConstants build_kde_kernel_constants(std::span<const double> h_e,
+                                                              std::span<const double> h_z,
+                                                              double                  n_sigma);
+
+  /**
    * Build the index. `x_e`/`x_z` are the KDE coordinates and `h_e`/`h_z` the
    * per-event bandwidths, all in the same (analysis-bin CSR) index space; `lo`
    * and `hi` are the domain corners; `n_sigma` is the truncation radius in units

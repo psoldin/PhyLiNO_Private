@@ -354,6 +354,10 @@ namespace io::ic {
                                       {cfg.unbinned.log_e_lo, cfg.unbinned.zenith_lo},
                                       {cfg.unbinned.log_e_hi, cfg.unbinned.zenith_hi},
                                       cfg.unbinned.truncation);
+      out.kde_kernel = build_kde_kernel_constants(out.kde_h_e, out.kde_h_z, cfg.unbinned.truncation);
+
+      const auto stride = static_cast<std::size_t>(cfg.unbinned.thinning);
+      for (std::size_t i = 0; i < out.size(); i += stride) out.kde_queries.push_back(static_cast<int>(i));
 
       std::cout << "IceCube sample '" << cfg.name << "': unbinned KDE over " << out.size() << " events, "
                 << kde_dropped << " dropped for unusable reco/bandwidth ("

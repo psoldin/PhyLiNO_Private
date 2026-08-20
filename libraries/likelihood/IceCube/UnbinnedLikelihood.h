@@ -70,25 +70,6 @@ namespace ana::ic {
   }
 
   /**
-   * Per-event constants derived from the bandwidths, hoisted out of the innermost
-   * loop: the reciprocal widths, the product prefactor of the two axes, and the
-   * truncation reach on each axis.
-   *
-   * Built once per SampleLikelihood rather than stored on ICSample, because they
-   * depend on the sample's configured truncation as well as on its columns.
-   */
-  struct KdeScratch {
-    std::vector<double> inv_h_e;
-    std::vector<double> inv_h_z;
-    std::vector<double> prefactor;  ///< 1 / (2 pi h_e h_z)
-    std::vector<double> reach_e;    ///< n_sigma * h_e
-    std::vector<double> reach_z;    ///< n_sigma * h_z
-
-    [[nodiscard]] static KdeScratch build(std::span<const double> h_e, std::span<const double> h_z,
-                                          double n_sigma);
-  };
-
-  /**
    * The weighted KDE rate density over the MC events, evaluated exactly (up to
    * the index's truncation) at arbitrary query points.
    *
@@ -149,7 +130,7 @@ namespace ana::ic {
     [[nodiscard]] double asimov_total() const noexcept { return m_AsimovTotal; }
 
     /** Query points actually used (all events, or every thinning-th one). */
-    [[nodiscard]] std::size_t n_queries() const noexcept { return m_Queries.size(); }
+    [[nodiscard]] std::size_t n_queries() const noexcept { return m_Sample.kde_queries.size(); }
 
    private:
     const io::ic::ICSample& m_Sample;
@@ -163,10 +144,8 @@ namespace ana::ic {
     // Frozen Asimov quadrature weights, one per query point, already scaled by
     // the thinning factor.
     std::vector<double> m_AsimovWeight;
-    std::vector<int>    m_Queries;  ///< event indices used as query points
     double              m_AsimovTotal = 0.0;
 
-    KdeScratch          m_Scratch;  ///< per-event kernel constants, built once here
     std::vector<double> m_Partial;  ///< deterministic chunked-sum scratch
 
     std::shared_ptr<GpuSession> m_Gpu;  ///< CUDA only; null on the CPU path

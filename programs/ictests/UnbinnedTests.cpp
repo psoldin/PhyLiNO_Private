@@ -431,7 +431,7 @@ TEST(UnbinnedDensityTest, TruncatedMatchesBruteForce) {
     return acc;
   };
 
-  const ana::ic::KdeScratch scratch = ana::ic::KdeScratch::build(s.h_e, s.h_z, kNSigma);
+  const io::ic::KdeKernelConstants scratch = io::ic::build_kde_kernel_constants(s.h_e, s.h_z, kNSigma);
   const ana::ic::KdeDensity density{.x_e       = s.x_e,
                                     .x_z       = s.x_z,
                                     .inv_h_e   = scratch.inv_h_e,
@@ -459,7 +459,7 @@ TEST(UnbinnedDensityTest, LeaveOneOutRemovesSelfTerm) {
 
   const io::ic::KdeIndex index =
       io::ic::build_kde_index(s.x_e, s.x_z, s.h_e, s.h_z, {lo_e, lo_z}, {hi_e, hi_z}, 8.0);
-  const ana::ic::KdeScratch scratch = ana::ic::KdeScratch::build(s.h_e, s.h_z, 8.0);
+  const io::ic::KdeKernelConstants scratch = io::ic::build_kde_kernel_constants(s.h_e, s.h_z, 8.0);
   const ana::ic::KdeDensity density{.x_e       = s.x_e,
                                     .x_z       = s.x_z,
                                     .inv_h_e   = scratch.inv_h_e,

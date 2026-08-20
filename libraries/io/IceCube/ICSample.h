@@ -96,6 +96,13 @@ namespace io::ic {
     // columns. Empty unless the sample is configured unbinned.
     KdeIndex kde_index;
 
+    // Kernel constants derived from the bandwidths and the configured truncation,
+    // and the quadrature nodes (every event, or every Unbinned.Thinning-th one).
+    // Both are built at load beside the index: they are parameter-independent,
+    // and a scan would otherwise rebuild them once per grid point.
+    KdeKernelConstants kde_kernel;
+    std::vector<int>   kde_queries;
+
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;
