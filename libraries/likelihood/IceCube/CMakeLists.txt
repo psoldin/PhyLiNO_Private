@@ -42,6 +42,8 @@ set(files
     PoissonLikelihood.cpp
     SampleLikelihood.h
     SampleLikelihood.cpp
+    UnbinnedLikelihood.h
+    UnbinnedLikelihood.cpp
     ICLikelihood.h
     ICLikelihood.cpp
     ICModule.h

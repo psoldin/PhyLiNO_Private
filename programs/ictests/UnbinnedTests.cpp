@@ -2,6 +2,7 @@
 #include "IceCube/ICSample.h"
 #include "IceCube/KdeIndex.h"
 #include "IceCube/SampleConfig.h"
+#include "UnbinnedLikelihood.h"
 
 #include <arrow/api.h>
 #include <arrow/io/file.h>
@@ -387,4 +388,78 @@ TEST(UnbinnedLoadTest, BinnedSampleKeepsNoKdeColumns) {
   EXPECT_TRUE(s.kde_index.empty());
 
   std::remove(path.c_str());
+}
+
+// Reflection is what keeps the extended term honest: nu = sum_i w_i is only the
+// integral of the density over the domain if no kernel mass escapes it. This is
+// the worst case, a kernel sitting right on the lower edge.
+TEST(UnbinnedKernelTest, ReflectedKernelIntegratesToOne) {
+  constexpr double a = 1.4836, b = 3.14159265358979;
+  constexpr double c = 1.4936, h = 0.05;
+
+  constexpr int n     = 200000;
+  const double  step  = (b - a) / n;
+  double        total = 0.0;
+  for (int i = 0; i < n; ++i)
+    total += ana::ic::reflected_gauss(a + (i + 0.5) * step, c, h, a, b) * step;
+
+  EXPECT_NEAR(total, 1.0, 1e-6);
+}
+
+// The truncation is an optimisation, not an approximation the result depends on:
+// at a wide enough radius the indexed walk must reproduce the full double sum.
+TEST(UnbinnedDensityTest, TruncatedMatchesBruteForce) {
+  const SyntheticKde s = make_synthetic(3000, 4242);
+  constexpr double   lo_e = 2.0, hi_e = 7.0, lo_z = 1.5, hi_z = 3.1;
+  constexpr double   kNSigma = 8.0;
+
+  const io::ic::KdeIndex index =
+      io::ic::build_kde_index(s.x_e, s.x_z, s.h_e, s.h_z, {lo_e, lo_z}, {hi_e, hi_z}, kNSigma);
+
+  auto brute = [&s](const double qe, const double qz) {
+    double acc = 0.0;
+    for (std::size_t i = 0; i < s.x_e.size(); ++i)
+      acc += s.w[i] * ana::ic::reflected_gauss(qe, s.x_e[i], s.h_e[i], lo_e, hi_e) *
+             ana::ic::reflected_gauss(qz, s.x_z[i], s.h_z[i], lo_z, hi_z);
+    return acc;
+  };
+
+  const ana::ic::KdeDensity density{.x_e   = s.x_e,
+                                    .x_z   = s.x_z,
+                                    .h_e   = s.h_e,
+                                    .h_z   = s.h_z,
+                                    .index = index,
+                                    .lo    = {lo_e, lo_z},
+                                    .hi    = {hi_e, hi_z}};
+
+  for (const auto& [qe, qz] :
+       std::vector<std::pair<double, double>>{{4.0, 2.0}, {2.05, 1.52}, {6.9, 3.05}, {5.5, 2.7}}) {
+    const double exact = brute(qe, qz);
+    EXPECT_NEAR(density.evaluate(qe, qz, s.w), exact, 1e-8 * exact) << "at (" << qe << ", " << qz << ")";
+  }
+}
+
+// Using the MC events as quadrature nodes for a density built from those same
+// events inflates lambda at every node by the node's own kernel; leave-one-out
+// removes exactly that term and nothing else.
+TEST(UnbinnedDensityTest, LeaveOneOutRemovesSelfTerm) {
+  const SyntheticKde s = make_synthetic(400, 8);
+  constexpr double   lo_e = 2.0, hi_e = 7.0, lo_z = 1.5, hi_z = 3.1;
+
+  const io::ic::KdeIndex index =
+      io::ic::build_kde_index(s.x_e, s.x_z, s.h_e, s.h_z, {lo_e, lo_z}, {hi_e, hi_z}, 8.0);
+  const ana::ic::KdeDensity density{.x_e   = s.x_e,
+                                    .x_z   = s.x_z,
+                                    .h_e   = s.h_e,
+                                    .h_z   = s.h_z,
+                                    .index = index,
+                                    .lo    = {lo_e, lo_z},
+                                    .hi    = {hi_e, hi_z}};
+
+  constexpr std::size_t j    = 17;
+  const double          full = density.evaluate(s.x_e[j], s.x_z[j], s.w);
+  const double          self = s.w[j] * ana::ic::reflected_gauss(s.x_e[j], s.x_e[j], s.h_e[j], lo_e, hi_e) *
+                      ana::ic::reflected_gauss(s.x_z[j], s.x_z[j], s.h_z[j], lo_z, hi_z);
+
+  EXPECT_NEAR(density.evaluate_loo(j, s.w), full - self, 1e-9 * full);
 }
