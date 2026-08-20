@@ -80,7 +80,8 @@ namespace ana::ic {
     }
   }
 
-  double UnbinnedLikelihood::llh(const std::span<const double> astro, const std::span<const double> atmo,
+  double UnbinnedLikelihood::llh(const std::span<const double> astro,
+                                 const std::span<const double> atmo,
                                  const double nu) {
     combine_weights(astro, atmo);
     const KdeDensity kde = density();
@@ -88,7 +89,15 @@ namespace ana::ic {
     // Fixed chunking rather than an OpenMP reduction, for the reason the binned
     // loops use it: the accumulation order must not depend on the thread
     // schedule, or two scan points stop being comparable.
-    constexpr std::size_t kQueriesPerChunk = 4096;
+    //
+    // The chunk size is derived from the query count alone -- never from the
+    // thread count, which would make the same fit sum differently on a different
+    // machine. Aiming at ~kTargetChunks pieces keeps a thinned run (a few
+    // thousand queries) spread over the cores instead of landing in one chunk,
+    // while the floor stops a tiny sample from paying for the fan-out.
+    constexpr std::size_t kTargetChunks = 512;
+    const std::size_t     kQueriesPerChunk =
+        std::clamp<std::size_t>((m_Queries.size() + kTargetChunks - 1) / kTargetChunks, 64, 4096);
     const int n_chunks = static_cast<int>((m_Queries.size() + kQueriesPerChunk - 1) / kQueriesPerChunk);
     m_Partial.assign(static_cast<std::size_t>(std::max(n_chunks, 1)), 0.0);
 

@@ -624,3 +624,75 @@ TEST(UnbinnedLoadTest, AppliesConfiguredSigmaTransforms) {
 
   std::remove(path.c_str());
 }
+
+// The likelihood is summed in fixed chunks precisely so that -m cannot change
+// the answer: same value bit for bit, single- and multi-threaded.
+TEST(UnbinnedSampleLikelihoodTest, MultiThreadedMatchesSingleThreadedBitwise) {
+  using ana::ParameterWrapper;
+
+  const std::string path = "ictests_unbinned_threads.parquet";
+  const double      ln10 = std::log(10.0);
+
+  std::vector<double> reco_e, reco_z, e_true, powerlaw, sigma_e, sigma_z;
+  std::mt19937                           rng(11);
+  std::uniform_real_distribution<double> log_e(2.5, 6.5);
+  std::uniform_real_distribution<double> zen(1.6, 3.0);
+  for (int i = 0; i < 3000; ++i) {
+    const double le = log_e(rng);
+    const double e  = std::pow(10.0, le);
+    reco_e.push_back(e);
+    reco_z.push_back(zen(rng));
+    e_true.push_back(e);
+    powerlaw.push_back(1.0e-6 * std::pow(e / 1.0e5, -2.0));
+    sigma_e.push_back(e * 0.1 * ln10);
+    sigma_z.push_back(0.02);
+  }
+  write_double_parquet(path, {{"energy_truncated", reco_e},
+                              {"zenith_MPEFit", reco_z},
+                              {"MCPrimaryEnergy", e_true},
+                              {"powerlaw", powerlaw},
+                              {"ELEFANTS_tg_sigma", sigma_e},
+                              {"L5_sigma_paraboloid", sigma_z}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet                         = path;
+  cfg.components                      = {"astro"};
+  cfg.livetime                        = 1.0e7;
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+  cfg.unbinned.zenith_lo              = 1.5;
+  cfg.unbinned.zenith_hi              = 3.05;
+
+  const io::ic::ICDataBase db({cfg});
+
+  auto llh_with = [&db, &cfg](const bool multi_threaded) {
+    ana::ic::GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                         .astro_reference_index    = 2.0,
+                                         .conv_delta_gamma_e_ref   = 1.0e3,
+                                         .prompt_delta_gamma_e_ref = 3.8e3,
+                                         .astro_per_type_norm      = false,
+                                         .veto_anchor_energy       = 100.0,
+                                         .veto_rescale_energy      = 100.0};
+    settings.use_multi_threading = multi_threaded;
+
+    ana::ic::SampleLikelihood sample(db.sample(0), cfg, settings, /*gpu=*/nullptr, /*use_say=*/false);
+
+    std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+    values[params::ic::AstroNorm]     = 1.0;
+    values[params::ic::SpectralIndex] = 2.5;
+    ParameterWrapper parameter(params::ic::number_of_parameters());
+    parameter.reset_parameter(values.data());
+    sample.generate_asimov(parameter);
+
+    values[params::ic::SpectralIndex] = 2.55;
+    parameter.reset_parameter(values.data());
+    return sample.partial_llh(parameter);
+  };
+
+  EXPECT_EQ(llh_with(true), llh_with(false));
+
+  std::remove(path.c_str());
+}
