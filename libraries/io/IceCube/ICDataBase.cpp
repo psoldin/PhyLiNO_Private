@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -143,6 +144,17 @@ namespace io::ic {
     ARROW_ASSIGN_OR_RAISE(auto e_reco, get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith, get_double_column(*table, b.reco_zenith));
 
+    // Unbinned KDE inputs: the per-event reconstruction uncertainties the kernel
+    // bandwidths come from. Read here rather than in the likelihood because they
+    // are parameter-independent and ICDataBase is what is cached for the whole
+    // process -- a scan builds one Fit per grid point, but loads once.
+    std::vector<double> kde_sigma_e;
+    std::vector<double> kde_sigma_z;
+    if (cfg.unbinned.enabled) {
+      ARROW_ASSIGN_OR_RAISE(kde_sigma_e, get_double_column(*table, cfg.unbinned.energy_sigma_branch));
+      ARROW_ASSIGN_OR_RAISE(kde_sigma_z, get_double_column(*table, cfg.unbinned.zenith_sigma_branch));
+    }
+
     // Per-event fit-time columns. Only the components this sample declares are
     // read: a parquet that carries no atmospheric weights (or no astrophysical
     // baseline) still loads for a sample that does not ask for them.
@@ -258,7 +270,17 @@ namespace io::ic {
       return w;
     };
 
+    // KDE coordinates and bandwidths, filled in the same pass that assigns bins
+    // and reordered by sort_into_bins() with every other per-event column.
+    if (cfg.unbinned.enabled) {
+      out.kde_log_e.assign(N, 0.0);
+      out.kde_zenith.assign(N, 0.0);
+      out.kde_h_e.assign(N, 0.0);
+      out.kde_h_z.assign(N, 0.0);
+    }
+
     std::size_t topology_dropped = 0;
+    std::size_t kde_dropped      = 0;
     for (std::size_t i = 0; i < N; ++i) {
       const std::array<double, 2> reco{e_reco[i], reco_zenith[i]};
       const int                   bin  = cfg.mc_binning.bin_index(reco);
@@ -272,6 +294,32 @@ namespace io::ic {
 
       out.bin_idx[i] = kept ? bin : -1;
       if (!kept) ++topology_dropped;
+
+      // An event with no usable ELEFANTS reconstruction (NaN, from a row the
+      // merge did not match), a degenerate bandwidth, or a coordinate outside
+      // the KDE domain has no kernel the density could use. Mark it out of range
+      // so sort_into_bins() drops it from every column at once -- the same
+      // mechanism the topology cut uses, for the same reason. Dropping it from
+      // the KDE columns alone would leave its weight in nu but not in the
+      // density, which is a bias rather than a missing event.
+      if (cfg.unbinned.enabled && out.bin_idx[i] >= 0) {
+        const double log_e = e_reco[i] > 0.0 ? std::log10(e_reco[i]) : std::numeric_limits<double>::quiet_NaN();
+        const double h_e   = kde_sigma_e[i] / (e_reco[i] * std::log(10.0));
+        const double h_z   = kde_sigma_z[i];
+
+        const bool usable = std::isfinite(log_e) && std::isfinite(h_e) && std::isfinite(h_z) && h_e > 0.0 &&
+                            h_z > 0.0 && log_e >= cfg.unbinned.log_e_lo && log_e < cfg.unbinned.log_e_hi &&
+                            reco_zenith[i] >= cfg.unbinned.zenith_lo && reco_zenith[i] < cfg.unbinned.zenith_hi;
+        if (usable) {
+          out.kde_log_e[i]  = log_e;
+          out.kde_zenith[i] = reco_zenith[i];
+          out.kde_h_e[i]    = h_e;
+          out.kde_h_z[i]    = h_z;
+        } else {
+          out.bin_idx[i] = -1;
+          ++kde_dropped;
+        }
+      }
     }
 
     if (want_fraction) {
@@ -284,6 +332,20 @@ namespace io::ic {
 
     // Compact to in-range events, group by bin, build the CSR index.
     out.sort_into_bins(cfg.mc_binning.total_bins());
+
+    // The KDE neighbour index addresses the sorted columns, so it is built after
+    // the sort and never again: coordinates and bandwidths do not move during a fit.
+    if (cfg.unbinned.enabled) {
+      out.kde_index = build_kde_index(out.kde_log_e, out.kde_zenith, out.kde_h_e, out.kde_h_z,
+                                      {cfg.unbinned.log_e_lo, cfg.unbinned.zenith_lo},
+                                      {cfg.unbinned.log_e_hi, cfg.unbinned.zenith_hi},
+                                      cfg.unbinned.truncation);
+
+      std::cout << "IceCube sample '" << cfg.name << "': unbinned KDE over " << out.size() << " events, "
+                << kde_dropped << " dropped for unusable reco/bandwidth ("
+                << (100.0 * static_cast<double>(kde_dropped) / static_cast<double>(N)) << "%), "
+                << out.kde_index.bands.size() << " bandwidth bands\n";
+    }
 
     if (cfg.filters_topology())
       std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "

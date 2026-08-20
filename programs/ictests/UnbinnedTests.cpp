@@ -1,17 +1,23 @@
+#include "IceCube/ICDataBase.h"
 #include "IceCube/ICSample.h"
 #include "IceCube/KdeIndex.h"
 #include "IceCube/SampleConfig.h"
 
+#include <arrow/api.h>
+#include <arrow/io/file.h>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <gtest/gtest.h>
+#include <parquet/arrow/writer.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -285,4 +291,100 @@ TEST(UnbinnedIndexTest, RejectsUnusableBandwidths) {
     EXPECT_THROW(io::ic::build_kde_index(x_e, x_z, good, bad, {2.0, 1.5}, {7.0, 3.1}, 5.0),
                  std::runtime_error);
   }
+}
+
+namespace {
+
+  void write_double_parquet(const std::string&                                              path,
+                            const std::vector<std::pair<std::string, std::vector<double>>>& columns) {
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : columns) {
+      arrow::DoubleBuilder          builder;
+      std::shared_ptr<arrow::Array> array;
+      EXPECT_TRUE(builder.AppendValues(values).ok());
+      EXPECT_TRUE(builder.Finish(&array).ok());
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(array);
+    }
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink,
+                                           static_cast<int64_t>(table->num_rows()))
+                    .ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  io::ic::Binning tracks_binning_2d() {
+    return io::ic::Binning({io::ic::Axis{io::ic::Axis::Kind::Log10Energy, 2.0, 7.0, 50},
+                            io::ic::Axis{io::ic::Axis::Kind::CosZenith, -1.0, 0.0872, 33}});
+  }
+
+}  // namespace
+
+// The KDE coordinates and bandwidths are derived at load, and the three kinds of
+// event that have no usable kernel -- NaN reco (an unmatched ELEFANTS merge),
+// a degenerate zero bandwidth, and a coordinate outside the KDE domain -- must
+// leave the sample entirely rather than reach the density.
+TEST(UnbinnedLoadTest, DerivesCoordinatesAndDropsUnusableEvents) {
+  const std::string path = "ictests_unbinned_mc.parquet";
+  const double      nan  = std::numeric_limits<double>::quiet_NaN();
+
+  // sigma = ln10 * mu * 0.1 makes every usable event's h_e exactly 0.1 dex.
+  const double ln10 = std::log(10.0);
+  write_double_parquet(path, {{"energy_truncated", {1.0e4, 1.0e5, 1.0e4, 1.0e4, 1.0e4}},
+                              {"zenith_MPEFit", {2.0, 2.5, 2.0, 2.0, 0.2}},
+                              {"MCPrimaryEnergy", {1.0e4, 1.0e5, 1.0e4, 1.0e4, 1.0e4}},
+                              {"powerlaw", {1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8}},
+                              {"ELEFANTS_tg_sigma",
+                               {1.0e4 * 0.1 * ln10, 1.0e5 * 0.1 * ln10, nan, 0.0, 1.0e4 * 0.1 * ln10}},
+                              {"L5_sigma_paraboloid", {0.02, 0.03, 0.02, 0.02, 0.02}}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet            = path;
+  cfg.components         = {"astro"};
+  cfg.unbinned.enabled   = true;
+  cfg.unbinned.zenith_lo = 1.4836;
+  cfg.unbinned.zenith_hi = 3.14159265358979;
+
+  const io::ic::ICDataBase db({cfg});
+  const io::ic::ICSample&  s = db.sample(0);
+
+  ASSERT_EQ(s.size(), 2u);
+  // h_e inverts the delta method: sigma / (mu * ln10) == sigma_log10 == 0.1.
+  EXPECT_NEAR(s.kde_h_e[0], 0.1, 1e-12);
+  EXPECT_NEAR(s.kde_h_e[1], 0.1, 1e-12);
+  EXPECT_NEAR(s.kde_log_e[0], 4.0, 1e-12);
+  EXPECT_NEAR(s.kde_log_e[1], 5.0, 1e-12);
+  EXPECT_NEAR(s.kde_zenith[0], 2.0, 1e-12);
+  EXPECT_NEAR(s.kde_h_z[1], 0.03, 1e-12);
+  EXPECT_FALSE(s.kde_index.empty());
+
+  std::remove(path.c_str());
+}
+
+// A sample without an "Unbinned" block must not pay for any of it: no columns,
+// no index, and no requirement that the sigma branches even exist in the file.
+TEST(UnbinnedLoadTest, BinnedSampleKeepsNoKdeColumns) {
+  const std::string path = "ictests_binned_mc.parquet";
+  write_double_parquet(path, {{"energy_truncated", {1.0e4, 1.0e5}},
+                              {"zenith_MPEFit", {2.0, 2.5}},
+                              {"MCPrimaryEnergy", {1.0e4, 1.0e5}},
+                              {"powerlaw", {1.0e-8, 1.0e-8}}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet    = path;
+  cfg.components = {"astro"};
+
+  const io::ic::ICDataBase db({cfg});
+  const io::ic::ICSample&  s = db.sample(0);
+
+  ASSERT_EQ(s.size(), 2u);
+  EXPECT_TRUE(s.kde_log_e.empty());
+  EXPECT_TRUE(s.kde_h_e.empty());
+  EXPECT_TRUE(s.kde_index.empty());
+
+  std::remove(path.c_str());
 }
