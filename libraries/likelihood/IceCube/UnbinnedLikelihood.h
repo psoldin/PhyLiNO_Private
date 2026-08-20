@@ -120,11 +120,22 @@ namespace ana::ic {
     UnbinnedLikelihood(const io::ic::ICSample& sample, const io::ic::UnbinnedConfig& cfg,
                        std::shared_ptr<GpuSession> gpu, bool use_multi_threading);
 
-    /** Freeze the Asimov quadrature weights from the nominal per-event weights. */
-    void freeze_asimov(std::span<const double> astro, std::span<const double> atmo);
+    /** Freeze the Asimov quadrature weights from the nominal per-event weights.
+        Takes the GPU buffer handles for the same reason llh() does: on CUDA the
+        weights never leave the device, so they are gathered there once. */
+    void freeze_asimov(std::span<const double> astro, std::span<const double> atmo, int astro_handle = -1,
+                       int atmo_handle = -1);
 
-    /** -2 lnL for the current per-event weights. `nu` is sum_i w_i(theta). */
-    [[nodiscard]] double llh(std::span<const double> astro, std::span<const double> atmo, double nu);
+    /**
+     * -2 lnL for the current per-event weights. `nu` is sum_i w_i(theta).
+     *
+     * On the CPU path the weights arrive as spans. On CUDA they never leave the
+     * device -- the flux kernels wrote them there -- so the caller passes the
+     * buffer handles instead and the spans are empty, exactly as the SAY ssq
+     * reduction takes them.
+     */
+    [[nodiscard]] double llh(std::span<const double> astro, std::span<const double> atmo, double nu,
+                             int astro_handle = -1, int atmo_handle = -1);
 
     /** Sum of the frozen Asimov weights; equals the binned Asimov total. */
     [[nodiscard]] double asimov_total() const noexcept { return m_AsimovTotal; }
@@ -148,10 +159,43 @@ namespace ana::ic {
 
     std::vector<double> m_Partial;  ///< deterministic chunked-sum scratch
 
-    std::shared_ptr<GpuSession> m_Gpu;  ///< CUDA only; null on the CPU path
+    // CUDA only; null on the CPU path (Metal is rejected in the constructor).
+    // Every buffer below holds parameter-independent data owned by ICSample, so
+    // the backend's pointer-keyed column cache can dedupe them safely; the
+    // per-event weights are the flux kernels' own device buffers and are bound
+    // per dispatch instead.
+    std::shared_ptr<GpuSession> m_Gpu;
+    int                         m_hXe        = -1;
+    int                         m_hXz        = -1;
+    int                         m_hInvHe     = -1;
+    int                         m_hInvHz     = -1;
+    int                         m_hPrefactor = -1;
+    int                         m_hReachE    = -1;
+    int                         m_hReachZ    = -1;
+    int                         m_hQueries   = -1;
+    int                         m_hBands     = -1;
+    int                         m_hCellEvent = -1;
+    int                         m_hCellOff   = -1;
+    int                         m_hLogLambda = -1;  ///< kernel output, one ln(lambda) per query
+    int                         m_hAsimov    = -1;  ///< frozen quadrature weights, gathered once
+
+    // Index data widened to double for upload_column(), which is the only
+    // host-to-device entry point the facade offers. Members rather than locals
+    // because the column cache keys on the source pointer, so it must stay alive
+    // and stable for as long as the session might reuse the upload.
+    std::vector<double> m_BandsHost;
+    std::vector<double> m_CellEventsHost;
+    std::vector<double> m_QueriesHost;
 
     void                     combine_weights(std::span<const double> astro, std::span<const double> atmo);
     [[nodiscard]] KdeDensity density() const noexcept;
+
+    /** Set up the CUDA kernel and upload every static column. */
+    void setup_gpu(const io::ic::ICSample& sample);
+
+    /** sum_j w_j^A ln lambda_j on the device; the reduction itself stays on the
+        host so it keeps the CPU path's chunk order. */
+    [[nodiscard]] double gpu_log_sum(int astro_handle, int atmo_handle);
   };
 
 }  // namespace ana::ic

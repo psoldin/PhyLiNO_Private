@@ -681,7 +681,9 @@ namespace ana::ic {
     // quadrature nodes, carrying the nominal weights as fractional data counts.
     if (m_Unbinned) {
       m_Unbinned->freeze_asimov(m_Astro ? m_Astro->per_event_weight() : std::span<const double>{},
-                                m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{});
+                                m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{},
+                                m_Astro ? m_Astro->per_event_handle() : -1,
+                                m_Atmo ? m_Atmo->per_event_handle() : -1);
 
       // Both numbers are sum_i w_i(theta_A). Printing them side by side turns
       // "does the unbinned sum carry N_MC events or nu events?" into something
@@ -705,8 +707,13 @@ namespace ana::ic {
       double nu = 0.0;
       for (const double v : m_McTotal) nu += v;
 
+      // On a GPU backend the per-event weights stay in the flux kernels' device
+      // buffers, so the handles are what the KDE kernel binds; the spans are
+      // empty there, exactly as they are for the SAY ssq reduction.
       return m_Unbinned->llh(m_Astro ? m_Astro->per_event_weight() : std::span<const double>{},
-                             m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{}, nu);
+                             m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{}, nu,
+                             m_Astro ? m_Astro->per_event_handle() : -1,
+                             m_Atmo ? m_Atmo->per_event_handle() : -1);
     }
 
     if (m_UseSAY) {
