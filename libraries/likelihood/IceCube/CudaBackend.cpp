@@ -128,17 +128,20 @@ namespace ana::ic {
 
   }  // namespace
 
-  CudaBackend::CudaBackend(bool fp64) : m_Fp64(fp64) {
+  CudaBackend::CudaBackend(bool fp64, int device) : m_Fp64(fp64) {
     cu_check(cuInit(0), "cuInit");
     int count = 0;
     cu_check(cuDeviceGetCount(&count), "cuDeviceGetCount");
     if (count == 0)
       throw std::runtime_error("CudaBackend: no CUDA device available");
+    if (device < 0 || device >= count)
+      throw std::runtime_error("CudaBackend: device ordinal " + std::to_string(device) +
+                               " out of range (" + std::to_string(count) + " visible)");
 
     auto* s  = new CudaState;
     s->fp64  = fp64;
     try {
-      cu_check(cuDeviceGet(&s->dev, 0), "cuDeviceGet");
+      cu_check(cuDeviceGet(&s->dev, device), "cuDeviceGet");
       // The device's primary context, not a fresh one: a context created with
       // cuCtxCreate is current only on the creating thread, and this backend is
       // shared across the scan workers that build sessions and dispatch on

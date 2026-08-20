@@ -8,6 +8,7 @@
 #include "IceCube/ICInputOptions.h"
 #include "IceCube/ICParameter.h"
 
+#include <map>
 #include <mutex>
 
 namespace ana::ic {
@@ -32,7 +33,7 @@ namespace ana::ic {
 
     [[nodiscard]] int number_of_parameters() const override { return params::ic::number_of_parameters(); }
 
-    [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options) override;
+    [[nodiscard]] std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options, int worker_index) override;
 
     void write_results(Fit& fit, std::string_view name) override;
 
@@ -44,12 +45,14 @@ namespace ana::ic {
     // The likelihood itself belongs to the Fit that created it, so several Fits
     // can run concurrently on one module.
     std::shared_ptr<const io::ic::ICDataBase> m_DataBase;
-    // Cached GPU backend (null on the CPU path), so the device context, the
-    // compiled kernels and the uploaded MC columns are paid for once rather than
-    // once per scan point. Declared after m_DataBase so it is destroyed first:
-    // its column cache is keyed on the raw ICSample column pointers.
-    std::shared_ptr<GpuBackend>               m_GpuBackend;
-    std::mutex                                m_CacheMutex;
+    // Cached GPU backend(s) (empty on the CPU path), one per CUDA device
+    // ordinal in use, so each device's context, compiled kernels and uploaded
+    // MC columns are paid for once rather than once per scan point. Keyed by
+    // 0 for the CPU/Metal paths, which only ever run one device. Declared
+    // after m_DataBase so it is destroyed first: its column cache is keyed on
+    // the raw ICSample column pointers.
+    std::map<int, std::shared_ptr<GpuBackend>> m_GpuBackends;
+    std::mutex                                 m_CacheMutex;
   };
 
 }  // namespace ana::ic

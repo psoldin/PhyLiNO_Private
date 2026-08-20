@@ -29,7 +29,8 @@
           "Branch": "osc_survival"
         },
         "Gradients": {
-          "File": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO_Finish/shuyang/gradients_tracks_fullE_numu.txt"
+          "File": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO_Finish/shuyang/gradients_tracks_fullE_numu.txt",
+          "ScaleToTopology": true
         }
       }
     }

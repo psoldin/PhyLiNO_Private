@@ -18,7 +18,7 @@
 
 namespace ana {
 
-  Fit::Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module)
+  Fit::Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module, int worker_index)
     : m_Options(std::move(options))
     , m_Module(std::move(module))
     , m_FitDuration(0)
@@ -43,7 +43,7 @@ namespace ana {
     // Initialize the likelihood of the selected experiment. Each Fit builds its
     // own, so this is safe to run concurrently across scan workers -- unlike
     // the factory call in setup_minimizer(), it touches no shared ROOT state.
-    m_Likelihood = m_Module->create_likelihood(m_Options);
+    m_Likelihood = m_Module->create_likelihood(m_Options, worker_index);
 
     // Initialize the functor object
     m_Functor = std::make_shared<ROOT::Math::Functor>(m_Likelihood.get(),

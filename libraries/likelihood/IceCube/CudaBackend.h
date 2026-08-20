@@ -39,7 +39,11 @@ namespace ana::ic {
   class CudaBackend final : public GpuBackend {
    public:
     // fp64 selects the double-precision compute path (see class comment).
-    explicit CudaBackend(bool fp64 = false);  // throws if no CUDA device is present
+    // device is the CUDA ordinal to open (see cuDeviceGet); each distinct
+    // ordinal gets its own context, modules and MC column uploads, which is
+    // how one process spreads scan workers across more than one GPU -- see
+    // InputOptions::gpu_device_for_worker().
+    explicit CudaBackend(bool fp64 = false, int device = 0);  // throws if no CUDA device is present
     ~CudaBackend() override;
 
     CudaBackend(const CudaBackend&)            = delete;

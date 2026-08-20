@@ -32,8 +32,16 @@ namespace ana {
     /** Number of fit parameters this experiment expects. */
     [[nodiscard]] virtual int number_of_parameters() const = 0;
 
-    /** Create the likelihood. This is where experiment data is loaded. */
-    [[nodiscard]] virtual std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options) = 0;
+    /**
+     * Create the likelihood. This is where experiment data is loaded.
+     *
+     * worker_index identifies the scan worker thread doing the building (0
+     * for --fitOnly and the first scan worker); GPU-backed modules that
+     * support --gpuDevices use it to pick which device this worker's Fit
+     * runs on (see InputOptions::gpu_device_for_worker()). Modules that don't
+     * support multiple devices simply ignore it.
+     */
+    [[nodiscard]] virtual std::shared_ptr<Likelihood> create_likelihood(std::shared_ptr<io::Options> options, int worker_index = 0) = 0;
 
     /**
      * Keep parameter i free even if the config marks it as fixed. Default: never.

@@ -8,7 +8,7 @@
 
 namespace ana::dc {
 
-  std::shared_ptr<Likelihood> DCExperimentModule::create_likelihood(std::shared_ptr<io::Options> options) {
+  std::shared_ptr<Likelihood> DCExperimentModule::create_likelihood(std::shared_ptr<io::Options> options, int /*worker_index*/) {
     auto dc_options = std::make_shared<const io::dc::DCOptions>(options->inputOptions(), *m_InputOptions);
 
     return std::make_shared<DCLikelihood>(std::move(options),
