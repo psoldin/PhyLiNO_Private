@@ -431,13 +431,17 @@ TEST(UnbinnedDensityTest, TruncatedMatchesBruteForce) {
     return acc;
   };
 
-  const ana::ic::KdeDensity density{.x_e   = s.x_e,
-                                    .x_z   = s.x_z,
-                                    .h_e   = s.h_e,
-                                    .h_z   = s.h_z,
-                                    .index = index,
-                                    .lo    = {lo_e, lo_z},
-                                    .hi    = {hi_e, hi_z}};
+  const ana::ic::KdeScratch scratch = ana::ic::KdeScratch::build(s.h_e, s.h_z, kNSigma);
+  const ana::ic::KdeDensity density{.x_e       = s.x_e,
+                                    .x_z       = s.x_z,
+                                    .inv_h_e   = scratch.inv_h_e,
+                                    .inv_h_z   = scratch.inv_h_z,
+                                    .prefactor = scratch.prefactor,
+                                    .reach_e   = scratch.reach_e,
+                                    .reach_z   = scratch.reach_z,
+                                    .index     = index,
+                                    .lo        = {lo_e, lo_z},
+                                    .hi        = {hi_e, hi_z}};
 
   for (const auto& [qe, qz] :
        std::vector<std::pair<double, double>>{{4.0, 2.0}, {2.05, 1.52}, {6.9, 3.05}, {5.5, 2.7}}) {
@@ -455,13 +459,17 @@ TEST(UnbinnedDensityTest, LeaveOneOutRemovesSelfTerm) {
 
   const io::ic::KdeIndex index =
       io::ic::build_kde_index(s.x_e, s.x_z, s.h_e, s.h_z, {lo_e, lo_z}, {hi_e, hi_z}, 8.0);
-  const ana::ic::KdeDensity density{.x_e   = s.x_e,
-                                    .x_z   = s.x_z,
-                                    .h_e   = s.h_e,
-                                    .h_z   = s.h_z,
-                                    .index = index,
-                                    .lo    = {lo_e, lo_z},
-                                    .hi    = {hi_e, hi_z}};
+  const ana::ic::KdeScratch scratch = ana::ic::KdeScratch::build(s.h_e, s.h_z, 8.0);
+  const ana::ic::KdeDensity density{.x_e       = s.x_e,
+                                    .x_z       = s.x_z,
+                                    .inv_h_e   = scratch.inv_h_e,
+                                    .inv_h_z   = scratch.inv_h_z,
+                                    .prefactor = scratch.prefactor,
+                                    .reach_e   = scratch.reach_e,
+                                    .reach_z   = scratch.reach_z,
+                                    .index     = index,
+                                    .lo        = {lo_e, lo_z},
+                                    .hi        = {hi_e, hi_z}};
 
   constexpr std::size_t j    = 17;
   const double          full = density.evaluate(s.x_e[j], s.x_z[j], s.w);
