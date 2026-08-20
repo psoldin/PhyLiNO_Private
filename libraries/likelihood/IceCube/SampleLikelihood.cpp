@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -195,6 +196,10 @@ namespace ana::ic {
     , m_Config(cfg)
     , m_UseSAY(use_say)
     , m_UseMultiThreading(settings.use_multi_threading) {
+    // The per-event weights the SAY ssq reduction needs are the same ones the
+    // unbinned density sums, so the unbinned path turns them on under Poisson too.
+    const bool need_per_event = use_say || cfg.unbinned.enabled;
+
     if (cfg.wants_astro())
       m_Astro.emplace(sample,
                       cfg.mc_binning,
@@ -202,7 +207,7 @@ namespace ana::ic {
                       settings.astro_reference_index,
                       settings.astro_per_type_norm,
                       gpu,
-                      use_say,
+                      need_per_event,
                       settings.astro_model,
                       settings.use_multi_threading);
 
@@ -212,7 +217,7 @@ namespace ana::ic {
                      settings.conv_delta_gamma_e_ref,
                      settings.prompt_delta_gamma_e_ref,
                      gpu,
-                     use_say,
+                     need_per_event,
                      cfg.wants_veto(),
                      settings.veto_anchor_energy,
                      settings.veto_rescale_energy,
@@ -232,6 +237,23 @@ namespace ana::ic {
     for (const io::ic::GalacticTemplateConfig& galactic : cfg.galactic) {
       require_zero_fluctuation_column(galactic.file);
       m_Galactic.emplace_back(cfg.binning, galactic.file, galactic.norm_index, cfg.livetime);
+    }
+
+    if (cfg.unbinned.enabled) {
+      // parse_samples rejects these combinations too, but a SampleConfig built
+      // in code bypasses it -- and a KDE density that silently ignored a muon
+      // template would fit a different model than the config describes.
+      if (m_Template || m_Systematics || !m_Galactic.empty())
+        throw std::runtime_error("SampleLikelihood: sample '" + cfg.name +
+                                 "' is unbinned but declares a per-bin component (muon template, SnowStorm "
+                                 "gradients or galactic template); none has a per-event representation the "
+                                 "KDE could sum");
+      if (m_UseSAY)
+        throw std::runtime_error("SampleLikelihood: sample '" + cfg.name +
+                                 "' combines Unbinned with the SAY likelihood; the finite-MC term is not "
+                                 "implemented for the unbinned density (set IceCube.Likelihood to Poisson)");
+
+      m_Unbinned.emplace(sample, cfg.unbinned, gpu, settings.use_multi_threading);
     }
 
     const int total_bins = cfg.binning.total_bins();
@@ -659,10 +681,38 @@ namespace ana::ic {
     // (silently degenerating to plain Poisson).
     if (m_UseSAY)
       assemble_fluctuation();
+
+    // The unbinned analogue of the copy above: the MC events become the
+    // quadrature nodes, carrying the nominal weights as fractional data counts.
+    if (m_Unbinned) {
+      m_Unbinned->freeze_asimov(m_Astro ? m_Astro->per_event_weight() : std::span<const double>{},
+                                m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{});
+
+      // Both numbers are sum_i w_i(theta_A). Printing them side by side turns
+      // "does the unbinned sum carry N_MC events or nu events?" into something
+      // the log answers on every run.
+      double binned_total = 0.0;
+      for (const double v : m_Data) binned_total += v;
+      std::cout << "IceCube sample '" << m_Config.name << "': unbinned Asimov over "
+                << m_Unbinned->n_queries() << " quadrature nodes, total weight "
+                << m_Unbinned->asimov_total() << " (binned Asimov total " << binned_total << ")\n";
+    }
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {
     const PredictionChange change = assemble_prediction(parameter);
+
+    if (m_Unbinned) {
+      // nu is the prediction sum assemble_prediction() has just refreshed. With
+      // only per-event components in the sample -- which the constructor
+      // enforces -- it is exactly sum_i w_i(theta), the quantity the reflected
+      // density integrates to.
+      double nu = 0.0;
+      for (const double v : m_McTotal) nu += v;
+
+      return m_Unbinned->llh(m_Astro ? m_Astro->per_event_weight() : std::span<const double>{},
+                             m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{}, nu);
+    }
 
     if (m_UseSAY) {
       if (change.ssq)

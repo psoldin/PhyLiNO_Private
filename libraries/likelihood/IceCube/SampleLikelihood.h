@@ -9,6 +9,7 @@
 #include "GpuBinReduce.h"
 #include "PowerlawFlux.h"
 #include "TemplateFlux.h"
+#include "UnbinnedLikelihood.h"
 
 #include <memory>
 #include <optional>
@@ -114,6 +115,13 @@ namespace ana::ic {
     /** Replace the Asimov expectation with measured counts (UseData). */
     void set_data(std::span<const double> counts);
 
+    /** Sum of the frozen unbinned Asimov quadrature weights; 0 on the binned
+        path. It is the same nu as the binned Asimov total, which is what makes
+        the unbinned sum carry the expected event count rather than N_MC. */
+    [[nodiscard]] double unbinned_asimov_total() const noexcept {
+      return m_Unbinned ? m_Unbinned->asimov_total() : 0.0;
+    }
+
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
@@ -126,6 +134,14 @@ namespace ana::ic {
     std::optional<AtmosphericFlux>      m_Atmo;
     std::optional<TemplateFlux>         m_Template;
     std::optional<DetectorSystematics>  m_Systematics;
+
+    // Extended unbinned KDE likelihood, when the sample's config asks for it.
+    // Mutually exclusive with the binned Poisson/SAY term: partial_llh() returns
+    // this instead, and generate_asimov() freezes its quadrature weights instead
+    // of only filling m_Data. The binned histograms are still maintained -- the
+    // prediction does not depend on how it is scored -- so the results writers
+    // keep working unchanged.
+    std::optional<UnbinnedLikelihood>   m_Unbinned;
 
     // Galactic-plane templates (NNMFit GalacticTemplate). Structurally identical to
     // the muon TemplateFlux -- a per-bin rate times a norm times the livetime -- but

@@ -2,6 +2,9 @@
 #include "IceCube/ICSample.h"
 #include "IceCube/KdeIndex.h"
 #include "IceCube/SampleConfig.h"
+#include "IceCube/ICParameter.h"
+#include "ParameterWrapper.h"
+#include "SampleLikelihood.h"
 #include "UnbinnedLikelihood.h"
 
 #include <arrow/api.h>
@@ -462,4 +465,114 @@ TEST(UnbinnedDensityTest, LeaveOneOutRemovesSelfTerm) {
                       ana::ic::reflected_gauss(s.x_z[j], s.x_z[j], s.h_z[j], lo_z, hi_z);
 
   EXPECT_NEAR(density.evaluate_loo(j, s.w), full - self, 1e-9 * full);
+}
+
+// The two invariants that say the wiring is right: the frozen quadrature weight
+// is the same nu as the binned Asimov total (not N_MC), and -2lnL sits at a
+// minimum where the Asimov weights were frozen.
+TEST(UnbinnedSampleLikelihoodTest, AsimovTotalMatchesBinnedAndMinimisesAtTruth) {
+  using ana::ParameterWrapper;
+
+  const std::string path = "ictests_unbinned_fit.parquet";
+  const double      ln10 = std::log(10.0);
+
+  std::vector<double> reco_e, reco_z, e_true, powerlaw, sigma_e, sigma_z;
+  std::mt19937                           rng(2026);
+  std::uniform_real_distribution<double> log_e(2.5, 6.5);
+  std::uniform_real_distribution<double> zen(1.6, 3.0);
+  for (int i = 0; i < 2000; ++i) {
+    const double le = log_e(rng);
+    const double e  = std::pow(10.0, le);
+    reco_e.push_back(e);
+    reco_z.push_back(zen(rng));
+    e_true.push_back(e);
+    powerlaw.push_back(1.0e-6 * std::pow(e / 1.0e5, -2.0));
+    sigma_e.push_back(e * 0.1 * ln10);  // 0.1 dex
+    sigma_z.push_back(0.02);
+  }
+  write_double_parquet(path, {{"energy_truncated", reco_e},
+                              {"zenith_MPEFit", reco_z},
+                              {"MCPrimaryEnergy", e_true},
+                              {"powerlaw", powerlaw},
+                              {"ELEFANTS_tg_sigma", sigma_e},
+                              {"L5_sigma_paraboloid", sigma_z}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet            = path;
+  cfg.components         = {"astro"};
+  cfg.livetime           = 1.0e7;
+  cfg.unbinned.enabled   = true;
+  cfg.unbinned.zenith_lo = 1.5;
+  cfg.unbinned.zenith_hi = 3.05;
+
+  const io::ic::ICDataBase db({cfg});
+
+  const ana::ic::GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                             .astro_reference_index    = 2.0,
+                                             .conv_delta_gamma_e_ref   = 1.0e3,
+                                             .prompt_delta_gamma_e_ref = 3.8e3,
+                                             .astro_per_type_norm      = false,
+                                             .veto_anchor_energy       = 100.0,
+                                             .veto_rescale_energy      = 100.0};
+  ana::ic::SampleLikelihood         sample(db.sample(0), cfg, settings, /*gpu=*/nullptr, /*use_say=*/false);
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]     = 1.0;
+  values[params::ic::SpectralIndex] = 2.5;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+  sample.generate_asimov(parameter);
+
+  const double at_truth = sample.partial_llh(parameter);
+
+  double binned_total = 0.0;
+  for (const double v : sample.data()) binned_total += v;
+  EXPECT_NEAR(sample.unbinned_asimov_total(), binned_total, 1e-6 * binned_total);
+
+  for (const double gamma : {2.4, 2.6}) {
+    values[params::ic::SpectralIndex] = gamma;
+    parameter.reset_parameter(values.data());
+    EXPECT_GT(sample.partial_llh(parameter), at_truth) << "at gamma = " << gamma;
+  }
+
+  std::remove(path.c_str());
+}
+
+// The per-bin inputs have no per-event representation, so a config that pairs
+// them with the unbinned path must fail loudly rather than silently fit a
+// different model. parse_samples catches this too, but a SampleConfig built in
+// code (as here, and as in every test) bypasses it.
+TEST(UnbinnedSampleLikelihoodTest, RejectsSayLikelihood) {
+  const std::string path = "ictests_unbinned_say.parquet";
+  const double      ln10 = std::log(10.0);
+  write_double_parquet(path, {{"energy_truncated", {1.0e4, 1.0e5}},
+                              {"zenith_MPEFit", {2.0, 2.5}},
+                              {"MCPrimaryEnergy", {1.0e4, 1.0e5}},
+                              {"powerlaw", {1.0e-8, 1.0e-8}},
+                              {"ELEFANTS_tg_sigma", {1.0e4 * 0.1 * ln10, 1.0e5 * 0.1 * ln10}},
+                              {"L5_sigma_paraboloid", {0.02, 0.03}}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet            = path;
+  cfg.components         = {"astro"};
+  cfg.unbinned.enabled   = true;
+  cfg.unbinned.zenith_lo = 1.5;
+  cfg.unbinned.zenith_hi = 3.05;
+
+  const io::ic::ICDataBase          db({cfg});
+  const ana::ic::GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                             .astro_reference_index    = 2.0,
+                                             .conv_delta_gamma_e_ref   = 1.0e3,
+                                             .prompt_delta_gamma_e_ref = 3.8e3,
+                                             .astro_per_type_norm      = false,
+                                             .veto_anchor_energy       = 100.0,
+                                             .veto_rescale_energy      = 100.0};
+
+  EXPECT_THROW(
+      ana::ic::SampleLikelihood(db.sample(0), cfg, settings, /*gpu=*/nullptr, /*use_say=*/true),
+      std::runtime_error);
+
+  std::remove(path.c_str());
 }
