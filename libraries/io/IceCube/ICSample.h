@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ICParameter.h"  // params::ic::nBarrParams
+#include "KdeIndex.h"
 
 #include <algorithm>
 #include <array>
@@ -89,6 +90,11 @@ namespace io::ic {
     std::vector<double> kde_zenith;
     std::vector<double> kde_h_e;
     std::vector<double> kde_h_z;
+
+    // Neighbour index over the KDE columns above, built once at load by
+    // ICDataBase after sort_into_bins() so its event indices address the sorted
+    // columns. Empty unless the sample is configured unbinned.
+    KdeIndex kde_index;
 
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.

@@ -22,6 +22,8 @@ set(files
     ../../io/IceCube/ICInputOptions.cpp
     ../../io/IceCube/ICDataBase.h
     ../../io/IceCube/ICDataBase.cpp
+    ../../io/IceCube/KdeIndex.h
+    ../../io/IceCube/KdeIndex.cpp
     ../../results/IceCube/ICWriteResults.h
     ../../results/IceCube/ICWriteResultsProto.h
     ../../results/IceCube/ICWriteResultsProto.cpp
