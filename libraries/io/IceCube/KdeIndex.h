@@ -53,6 +53,31 @@ namespace io::ic {
   };
 
   /**
+   * One axis of the product kernel, without the 1/(h sqrt(2pi)) prefactor, which
+   * the caller carries per event instead of recomputing it per pair.
+   *
+   * Each reflection image is skipped when its own exponent is already past 8
+   * sigma (a factor 1e-14). An image's argument is ((u - a) + (c - a)) / h --
+   * the query's distance to the wall plus the event's -- so it always exceeds
+   * the direct term's |u - c| / h: images matter only when query and event are
+   * BOTH near the same boundary, a small minority of pairs. Two compares replace
+   * four exponentials in the common case.
+   */
+  [[nodiscard]] inline double reflected_kernel(const double u, const double c, const double inv_h,
+                                               const double a, const double b) noexcept {
+    constexpr double kImageCutoff = 8.0;
+    auto             sq           = [](const double x) noexcept { return x * x; };
+
+    double       sum     = std::exp(-0.5 * sq((u - c) * inv_h));
+    const double low_arg = (u + c - 2.0 * a) * inv_h;
+    if (low_arg < kImageCutoff) sum += std::exp(-0.5 * sq(low_arg));
+    const double high_arg = (2.0 * b - u - c) * inv_h;
+    if (high_arg < kImageCutoff) sum += std::exp(-0.5 * sq(high_arg));
+
+    return sum;
+  }
+
+  /**
    * Per-event constants derived from the bandwidths, hoisted out of the density's
    * innermost loop: reciprocal widths, the product prefactor of the two axes, and
    * the truncation reach per axis.
@@ -95,6 +120,57 @@ namespace io::ic {
                                          std::array<double, 2>   lo,
                                          std::array<double, 2>   hi,
                                          double                  n_sigma);
+
+  /**
+   * The kernel matrix K_ji, precomputed once and reduced to a sparse
+   * matrix-vector product per likelihood evaluation.
+   *
+   * The whole point is that K depends only on geometry: coordinates, bandwidths
+   * and the truncation never move during a fit, only the weights do. So
+   *
+   *     lambda = K * w(theta)
+   *
+   * turns an evaluation from ~70k kernel evaluations per query point into a
+   * memory-bound multiply-accumulate with no transcendentals at all. Measured on
+   * the tracks sample, that is worth roughly 50x on the CPU.
+   *
+   * The cost is memory: nnz is (query points) x (~70k neighbours), which is
+   * 466 GB at Unbinned.Thinning = 1 and 4.7 GB at 100. build_kde_matrix()
+   * therefore refuses rather than thrashes, and the caller falls back to walking
+   * the index. See THINNING_PRECISION.txt for what choosing a stride costs.
+   *
+   * Values are fp32: they are multiplied by a weight and summed in double, so
+   * the 1e-7 relative error per entry is orders of magnitude below the Monte
+   * Carlo error of the quadrature the same run accepts, and it halves the
+   * footprint that decides whether the matrix is possible at all.
+   *
+   * Row j corresponds to kde_queries[j]; the diagonal (the query's own kernel)
+   * is deliberately absent, which is the leave-one-out subtraction.
+   */
+  struct KdeMatrix {
+    std::vector<std::size_t> row_offsets;  ///< size n_rows + 1
+    std::vector<int>         columns;      ///< event index per entry
+    std::vector<float>       values;       ///< prefactor * K_e * K_z per entry
+
+    [[nodiscard]] bool        empty() const noexcept { return values.empty(); }
+    [[nodiscard]] std::size_t nnz() const noexcept { return values.size(); }
+    [[nodiscard]] std::size_t bytes() const noexcept {
+      return values.size() * (sizeof(float) + sizeof(int)) + row_offsets.size() * sizeof(std::size_t);
+    }
+  };
+
+  /**
+   * Build the kernel matrix for `queries` against every indexed event, or return
+   * an empty matrix when it would exceed `budget_bytes`.
+   *
+   * `counted_nnz` reports the measured entry count either way, so a caller that
+   * was refused can say by how much and what stride would fit.
+   */
+  [[nodiscard]] KdeMatrix build_kde_matrix(const KdeIndex& index, std::span<const int> queries,
+                                           std::span<const double> x_e, std::span<const double> x_z,
+                                           const KdeKernelConstants& kernel, std::array<double, 2> lo,
+                                           std::array<double, 2> hi, std::size_t budget_bytes,
+                                           std::size_t& counted_nnz);
 
   /**
    * Call `visit(event_index)` for every event that can reach (qe, qz): the 3x3

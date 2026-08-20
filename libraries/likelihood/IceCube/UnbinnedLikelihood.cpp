@@ -408,6 +408,24 @@ namespace ana::ic {
     if (m_Gpu) return 2.0 * (nu - gpu_log_sum(astro_handle, atmo_handle));
 
     combine_weights(astro, atmo);
+
+    // Precomputed kernel matrix: the whole evaluation is one sparse
+    // matrix-vector product, no transcendentals. The diagonal was left out at
+    // build time, so what comes out is already the leave-one-out density.
+    if (!m_Sample.kde_matrix.empty()) {
+      const io::ic::KdeMatrix& m = m_Sample.kde_matrix;
+
+      const double matrix_log_sum = chunked_sum(
+          m_Sample.kde_queries.size(), m_UseMultiThreading, m_Partial, [this, &m](const std::size_t q) {
+            double lambda = 0.0;
+            for (std::size_t k = m.row_offsets[q]; k < m.row_offsets[q + 1]; ++k)
+              lambda += static_cast<double>(m.values[k]) * m_Weight[static_cast<std::size_t>(m.columns[k])];
+            return m_AsimovWeight[q] * std::log(std::max(lambda, std::numeric_limits<double>::min()));
+          });
+
+      return 2.0 * (nu - matrix_log_sum);
+    }
+
     const KdeDensity kde = density();
 
     const double log_sum =

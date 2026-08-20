@@ -143,4 +143,72 @@ namespace io::ic {
     return index;
   }
 
+  KdeMatrix build_kde_matrix(const KdeIndex& index, const std::span<const int> queries,
+                             const std::span<const double> x_e, const std::span<const double> x_z,
+                             const KdeKernelConstants& kernel, const std::array<double, 2> lo,
+                             const std::array<double, 2> hi, const std::size_t budget_bytes,
+                             std::size_t& counted_nnz) {
+    const std::size_t n_rows = queries.size();
+
+    // Pass 1 counts, so the allocation is exact and the budget is checked against
+    // a measured number rather than an estimate. The walk is the same one the
+    // on-the-fly path does, minus the exponentials.
+    std::vector<std::size_t> counts(n_rows, 0);
+    #pragma omp parallel for schedule(guided)
+    for (long r = 0; r < static_cast<long>(n_rows); ++r) {
+      const auto   j  = static_cast<std::size_t>(queries[static_cast<std::size_t>(r)]);
+      const double qe = x_e[j];
+      const double qz = x_z[j];
+
+      std::size_t n = 0;
+      for_each_neighbour(index, qe, qz, [&](const int i) {
+        const auto e = static_cast<std::size_t>(i);
+        if (e == j) return;  // the diagonal is the leave-one-out term
+        if (std::abs(qe - x_e[e]) > kernel.reach_e[e]) return;
+        if (std::abs(qz - x_z[e]) > kernel.reach_z[e]) return;
+        ++n;
+      });
+      counts[static_cast<std::size_t>(r)] = n;
+    }
+
+    KdeMatrix matrix;
+    matrix.row_offsets.assign(n_rows + 1, 0);
+    for (std::size_t r = 0; r < n_rows; ++r) matrix.row_offsets[r + 1] = matrix.row_offsets[r] + counts[r];
+    counted_nnz = matrix.row_offsets.back();
+
+    const std::size_t needed =
+        counted_nnz * (sizeof(float) + sizeof(int)) + matrix.row_offsets.size() * sizeof(std::size_t);
+    if (needed > budget_bytes) {
+      matrix.row_offsets.clear();
+      return matrix;  // caller falls back to walking the index
+    }
+
+    matrix.columns.resize(counted_nnz);
+    matrix.values.resize(counted_nnz);
+
+    #pragma omp parallel for schedule(guided)
+    for (long r = 0; r < static_cast<long>(n_rows); ++r) {
+      const auto   row = static_cast<std::size_t>(r);
+      const auto   j   = static_cast<std::size_t>(queries[row]);
+      const double qe  = x_e[j];
+      const double qz  = x_z[j];
+
+      std::size_t at = matrix.row_offsets[row];
+      for_each_neighbour(index, qe, qz, [&](const int i) {
+        const auto e = static_cast<std::size_t>(i);
+        if (e == j) return;
+        if (std::abs(qe - x_e[e]) > kernel.reach_e[e]) return;
+        if (std::abs(qz - x_z[e]) > kernel.reach_z[e]) return;
+
+        matrix.columns[at] = i;
+        matrix.values[at]  = static_cast<float>(kernel.prefactor[e] *
+                                                reflected_kernel(qe, x_e[e], kernel.inv_h_e[e], lo[0], hi[0]) *
+                                                reflected_kernel(qz, x_z[e], kernel.inv_h_z[e], lo[1], hi[1]));
+        ++at;
+      });
+    }
+
+    return matrix;
+  }
+
 }  // namespace io::ic

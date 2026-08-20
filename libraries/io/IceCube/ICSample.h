@@ -103,6 +103,11 @@ namespace io::ic {
     KdeKernelConstants kde_kernel;
     std::vector<int>   kde_queries;
 
+    // Precomputed kernel matrix (Unbinned.Matrix). Empty when the mode is off or
+    // when the matrix did not fit its budget, in which case the likelihood walks
+    // the index per evaluation instead.
+    KdeMatrix kde_matrix;
+
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;

@@ -257,6 +257,12 @@ namespace io::ic {
             parse_transform(unbinned->get<std::string>("ZenithSigmaTransform", "deg2rad"), "ZenithSigmaTransform");
         u.truncation        = unbinned->get<double>("Truncation", u.truncation);
         u.thinning          = unbinned->get<int>("Thinning", u.thinning);
+        u.matrix            = unbinned->get<bool>("Matrix", u.matrix);
+        u.matrix_budget_gb  = unbinned->get<double>("MatrixBudgetGB", u.matrix_budget_gb);
+
+        if (u.matrix_budget_gb <= 0.0)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has Unbinned.MatrixBudgetGB <= 0; the kernel matrix would never fit");
 
         if (u.truncation <= 0.0)
           throw std::runtime_error("parse_samples: sample '" + sample.name +

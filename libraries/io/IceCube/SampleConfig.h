@@ -95,6 +95,13 @@ namespace io::ic {
     // double sum (at the corresponding cost) and are how the truncation is validated.
     double truncation = 5.0;
 
+    // Precompute the kernel matrix at load and reduce each evaluation to a
+    // sparse matrix-vector product (see KdeMatrix). Worth ~50x on the CPU, at
+    // the price of holding nnz entries in RAM -- which only fits once the
+    // quadrature is thinned, so the two knobs are chosen together.
+    bool   matrix           = false;
+    double matrix_budget_gb = 8.0;
+
     // Use every thinning-th MC event as a quadrature node, with its weight
     // scaled by thinning. Cuts runtime linearly, adds MC-integration noise,
     // leaves the statistical content unchanged. 1 = every event.

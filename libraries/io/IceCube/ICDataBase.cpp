@@ -359,6 +359,26 @@ namespace io::ic {
       const auto stride = static_cast<std::size_t>(cfg.unbinned.thinning);
       for (std::size_t i = 0; i < out.size(); i += stride) out.kde_queries.push_back(static_cast<int>(i));
 
+      if (cfg.unbinned.matrix) {
+        const auto  budget = static_cast<std::size_t>(cfg.unbinned.matrix_budget_gb * 1e9);
+        std::size_t nnz    = 0;
+        out.kde_matrix     = build_kde_matrix(out.kde_index, out.kde_queries, out.kde_log_e, out.kde_zenith,
+                                              out.kde_kernel, {cfg.unbinned.log_e_lo, cfg.unbinned.zenith_lo},
+                                              {cfg.unbinned.log_e_hi, cfg.unbinned.zenith_hi}, budget, nnz);
+
+        std::cout << "IceCube sample '" << cfg.name << "': kernel matrix " << nnz << " entries over "
+                  << out.kde_queries.size() << " quadrature nodes ("
+                  << (static_cast<double>(nnz) / static_cast<double>(std::max<std::size_t>(1, out.kde_queries.size())))
+                  << " per node), "
+                  << (static_cast<double>(nnz) * (sizeof(float) + sizeof(int)) / 1e9) << " GB";
+        if (out.kde_matrix.empty())
+          std::cout << " -- OVER the " << cfg.unbinned.matrix_budget_gb
+                    << " GB budget, falling back to walking the index; raise Unbinned.Thinning or "
+                       "Unbinned.MatrixBudgetGB\n";
+        else
+          std::cout << ", built\n";
+      }
+
       std::cout << "IceCube sample '" << cfg.name << "': unbinned KDE over " << out.size() << " events, "
                 << kde_dropped << " dropped for unusable reco/bandwidth ("
                 << (100.0 * static_cast<double>(kde_dropped) / static_cast<double>(N)) << "%), "

@@ -44,30 +44,7 @@ namespace ana::ic {
     return kInvSqrt2Pi * inv * (g(u - c) + g(u + c - 2.0 * a) + g(u - 2.0 * b + c));
   }
 
-  /**
-   * One axis of the product kernel, without the 1/(h sqrt(2pi)) prefactor, which
-   * the caller carries per event instead of recomputing it per pair.
-   *
-   * Same value as reflected_gauss() up to that prefactor, but each image term is
-   * skipped when its own exponent is already past 8 sigma (a factor 1e-14). An
-   * image's argument is ((u - a) + (c - a)) / h, i.e. the query's distance to the
-   * wall plus the event's, so it exceeds the direct term's |u - c| / h always:
-   * the images matter only when query and event are BOTH near the same
-   * boundary, which is a small minority of pairs. Two compares replace four
-   * exponentials in the common case.
-   */
-  [[nodiscard]] inline double reflected_kernel(const double u, const double c, const double inv_h,
-                                               const double a, const double b) noexcept {
-    constexpr double kImageCutoff = 8.0;
-
-    double       sum     = std::exp(-0.5 * square((u - c) * inv_h));
-    const double low_arg = (u + c - 2.0 * a) * inv_h;
-    if (low_arg < kImageCutoff) sum += std::exp(-0.5 * square(low_arg));
-    const double high_arg = (2.0 * b - u - c) * inv_h;
-    if (high_arg < kImageCutoff) sum += std::exp(-0.5 * square(high_arg));
-
-    return sum;
-  }
+  using io::ic::reflected_kernel;
 
   /**
    * The weighted KDE rate density over the MC events, evaluated exactly (up to

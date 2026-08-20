@@ -704,3 +704,125 @@ TEST(UnbinnedSampleLikelihoodTest, MultiThreadedMatchesSingleThreadedBitwise) {
 
   std::remove(path.c_str());
 }
+
+// The kernel matrix is an optimisation, not an approximation of the model: the
+// same likelihood, precomputed. fp32 entries put the agreement at ~1e-7, which
+// is where the tolerance comes from.
+TEST(UnbinnedSampleLikelihoodTest, MatrixModeMatchesIndexWalk) {
+  using ana::ParameterWrapper;
+
+  const std::string path = "ictests_unbinned_matrix.parquet";
+  const double      ln10 = std::log(10.0);
+
+  std::vector<double> reco_e, reco_z, e_true, powerlaw, sigma_e, sigma_z;
+  std::mt19937                           rng(4242);
+  std::uniform_real_distribution<double> log_e(2.5, 6.5);
+  std::uniform_real_distribution<double> zen(1.6, 3.0);
+  for (int i = 0; i < 3000; ++i) {
+    const double le = log_e(rng);
+    const double e  = std::pow(10.0, le);
+    reco_e.push_back(e);
+    reco_z.push_back(zen(rng));
+    e_true.push_back(e);
+    powerlaw.push_back(1.0e-6 * std::pow(e / 1.0e5, -2.0));
+    sigma_e.push_back(e * 0.1 * ln10);
+    sigma_z.push_back(0.02);
+  }
+  write_double_parquet(path, {{"energy_truncated", reco_e},
+                              {"zenith_MPEFit", reco_z},
+                              {"MCPrimaryEnergy", e_true},
+                              {"powerlaw", powerlaw},
+                              {"ELEFANTS_tg_sigma", sigma_e},
+                              {"L5_sigma_paraboloid", sigma_z}});
+
+  auto llh_with_matrix = [&path](const bool matrix) {
+    io::ic::SampleConfig cfg{
+        .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+    cfg.parquet                         = path;
+    cfg.components                      = {"astro"};
+    cfg.livetime                        = 1.0e7;
+    cfg.unbinned.enabled                = true;
+    cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+    cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+    cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+    cfg.unbinned.zenith_lo              = 1.5;
+    cfg.unbinned.zenith_hi              = 3.05;
+    cfg.unbinned.matrix                 = matrix;
+
+    const io::ic::ICDataBase          db({cfg});
+    const ana::ic::GlobalFluxSettings settings{.e_ref_gev                = 1.0e5,
+                                               .astro_reference_index    = 2.0,
+                                               .conv_delta_gamma_e_ref   = 1.0e3,
+                                               .prompt_delta_gamma_e_ref = 3.8e3,
+                                               .astro_per_type_norm      = false,
+                                               .veto_anchor_energy       = 100.0,
+                                               .veto_rescale_energy      = 100.0};
+    EXPECT_EQ(db.sample(0).kde_matrix.empty(), !matrix);
+
+    ana::ic::SampleLikelihood sample(db.sample(0), cfg, settings, /*gpu=*/nullptr, /*use_say=*/false);
+
+    std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+    values[params::ic::AstroNorm]     = 1.0;
+    values[params::ic::SpectralIndex] = 2.5;
+    ParameterWrapper parameter(params::ic::number_of_parameters());
+    parameter.reset_parameter(values.data());
+    sample.generate_asimov(parameter);
+
+    values[params::ic::SpectralIndex] = 2.6;
+    parameter.reset_parameter(values.data());
+    return sample.partial_llh(parameter);
+  };
+
+  const double walked = llh_with_matrix(false);
+  const double matrix = llh_with_matrix(true);
+  EXPECT_NEAR(matrix, walked, 1e-6 * std::abs(walked));
+
+  std::remove(path.c_str());
+}
+
+// A matrix that does not fit its budget must leave the sample on the index walk
+// rather than allocate anyway or silently score something else.
+TEST(UnbinnedLoadTest, MatrixFallsBackWhenOverBudget) {
+  const std::string path = "ictests_unbinned_budget.parquet";
+  const double      ln10 = std::log(10.0);
+
+  std::vector<double> reco_e, reco_z, e_true, powerlaw, sigma_e, sigma_z;
+  std::mt19937                           rng(5);
+  std::uniform_real_distribution<double> log_e(2.5, 6.5);
+  std::uniform_real_distribution<double> zen(1.6, 3.0);
+  for (int i = 0; i < 2000; ++i) {
+    const double le = log_e(rng);
+    const double e  = std::pow(10.0, le);
+    reco_e.push_back(e);
+    reco_z.push_back(zen(rng));
+    e_true.push_back(e);
+    powerlaw.push_back(1.0e-6);
+    sigma_e.push_back(e * 0.3 * ln10);
+    sigma_z.push_back(0.2);
+  }
+  write_double_parquet(path, {{"energy_truncated", reco_e},
+                              {"zenith_MPEFit", reco_z},
+                              {"MCPrimaryEnergy", e_true},
+                              {"powerlaw", powerlaw},
+                              {"ELEFANTS_tg_sigma", sigma_e},
+                              {"L5_sigma_paraboloid", sigma_z}});
+
+  io::ic::SampleConfig cfg{
+      .name = "tracks", .binning = tracks_binning_2d(), .mc_binning = tracks_binning_2d()};
+  cfg.parquet                         = path;
+  cfg.components                      = {"astro"};
+  cfg.unbinned.enabled                = true;
+  cfg.unbinned.energy_sigma_branch    = "ELEFANTS_tg_sigma";
+  cfg.unbinned.energy_sigma_transform = io::ic::SigmaTransform::LinearToDex;
+  cfg.unbinned.zenith_sigma_transform = io::ic::SigmaTransform::None;
+  cfg.unbinned.zenith_lo              = 1.5;
+  cfg.unbinned.zenith_hi              = 3.05;
+  cfg.unbinned.matrix                 = true;
+  cfg.unbinned.matrix_budget_gb       = 1e-6;  // one kilobyte: nothing fits
+
+  const io::ic::ICDataBase db({cfg});
+  EXPECT_TRUE(db.sample(0).kde_matrix.empty());
+  EXPECT_FALSE(db.sample(0).kde_index.empty());
+
+  std::remove(path.c_str());
+}
