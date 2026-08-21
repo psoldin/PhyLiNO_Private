@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -133,6 +134,99 @@ namespace {
     return info;
   }
 
+  /**
+   * Profiled uncertainty on one parameter: sqrt of the diagonal of the inverted
+   * Fisher matrix, rather than 1/sqrt of its diagonal element.
+   *
+   * With the nuisances fixed, an axis that separates populations looks purely
+   * beneficial. Freeing them is where such gains usually go: the same
+   * separation that distinguishes signal from background often also lets a
+   * nuisance absorb the difference, and only the profiled number says which
+   * happened.
+   *
+   * Gaussian priors enter as 1/width^2 on the diagonal, which is what a
+   * constrained parameter contributes to the second derivative of -2lnL.
+   */
+  struct FisherMatrix {
+    std::size_t         n = 0;
+    std::vector<double> m;  ///< row-major n x n
+
+    double&       at(const std::size_t a, const std::size_t b) { return m[a * n + b]; }
+    const double& at(const std::size_t a, const std::size_t b) const { return m[a * n + b]; }
+  };
+
+  /** Gauss-Jordan with partial pivoting; the matrix is small and symmetric. */
+  std::vector<double> invert(FisherMatrix f) {
+    const std::size_t   n = f.n;
+    std::vector<double> inv(n * n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) inv[i * n + i] = 1.0;
+
+    for (std::size_t col = 0; col < n; ++col) {
+      std::size_t pivot = col;
+      for (std::size_t r = col + 1; r < n; ++r)
+        if (std::abs(f.at(r, col)) > std::abs(f.at(pivot, col))) pivot = r;
+      if (std::abs(f.at(pivot, col)) < 1e-300) return {};  // singular
+
+      if (pivot != col)
+        for (std::size_t c = 0; c < n; ++c) {
+          std::swap(f.at(col, c), f.at(pivot, c));
+          std::swap(inv[col * n + c], inv[pivot * n + c]);
+        }
+
+      const double d = f.at(col, col);
+      for (std::size_t c = 0; c < n; ++c) {
+        f.at(col, c) /= d;
+        inv[col * n + c] /= d;
+      }
+      for (std::size_t r = 0; r < n; ++r) {
+        if (r == col) continue;
+        const double factor = f.at(r, col);
+        if (factor == 0.0) continue;
+        for (std::size_t c = 0; c < n; ++c) {
+          f.at(r, c) -= factor * f.at(col, c);
+          inv[r * n + c] -= factor * inv[col * n + c];
+        }
+      }
+    }
+    return inv;
+  }
+
+  /**
+   * Profiled sigma on parameter `target`, given per-event derivatives for every
+   * free parameter and a bin assignment. `prior_width` is 0 for unconstrained.
+   */
+  double profiled_sigma(const std::vector<int>& bin_of_event, const std::size_t n_bins,
+                        const std::vector<double>& w, const std::vector<std::vector<double>>& dw,
+                        const std::vector<double>& prior_width, const std::size_t target) {
+    const std::size_t n_par = dw.size();
+
+    std::vector<double>              mu(n_bins, 0.0);
+    std::vector<std::vector<double>> dmu(n_par, std::vector<double>(n_bins, 0.0));
+    for (std::size_t i = 0; i < w.size(); ++i) {
+      const auto b = static_cast<std::size_t>(bin_of_event[i]);
+      mu[b] += w[i];
+      for (std::size_t a = 0; a < n_par; ++a) dmu[a][b] += dw[a][i];
+    }
+
+    FisherMatrix f{.n = n_par, .m = std::vector<double>(n_par * n_par, 0.0)};
+    for (std::size_t b = 0; b < n_bins; ++b) {
+      if (!(mu[b] > 0.0)) continue;
+      const double inv_mu = 1.0 / mu[b];
+      for (std::size_t a = 0; a < n_par; ++a) {
+        if (dmu[a][b] == 0.0) continue;
+        for (std::size_t c = a; c < n_par; ++c) f.at(a, c) += dmu[a][b] * dmu[c][b] * inv_mu;
+      }
+    }
+    for (std::size_t a = 0; a < n_par; ++a) {
+      for (std::size_t c = 0; c < a; ++c) f.at(a, c) = f.at(c, a);
+      if (prior_width[a] > 0.0) f.at(a, a) += 1.0 / (prior_width[a] * prior_width[a]);
+    }
+
+    const std::vector<double> inv = invert(f);
+    if (inv.empty()) return std::numeric_limits<double>::quiet_NaN();
+    return std::sqrt(inv[target * n_par + target]);
+  }
+
   /** Equal-occupancy edges, so no resolution category is starved of events. */
   std::vector<double> quantile_edges(std::vector<double> values, const int n) {
     std::ranges::sort(values);
@@ -187,6 +281,24 @@ int main(int argc, char** argv) {
     if (it == parameter_indices().end()) continue;
     values[it->second] = node.get<double>("AsimovValue", node.get<double>("StartValue"));
     if (name == scanned) scanned_index = it->second;
+  }
+
+  // Free parameters, in config order, with their Gaussian prior widths. These
+  // are the ones the profiled error marginalises over. Detector systematics are
+  // absent here by construction: they enter as per-BIN histogram gradients tied
+  // to the sample's own binning, so a category axis leaves them undefined -- see
+  // the note printed below.
+  std::vector<std::size_t> free_index;
+  std::vector<std::string> free_name;
+  std::vector<double>      prior_width;
+  for (const auto& [ignored, node] : tree.get_child("Parameter")) {
+    (void)ignored;
+    const std::string name = node.get<std::string>("Name");
+    const auto        it   = parameter_indices().find(name);
+    if (it == parameter_indices().end() || node.get<bool>("Fixed", true)) continue;
+    free_index.push_back(it->second);
+    free_name.push_back(name);
+    prior_width.push_back(node.get<bool>("Constrained", false) ? node.get<double>("PriorWidth", 0.0) : 0.0);
   }
 
   const auto enabled = io::ic::enabled_sample_indices(samples);
@@ -266,18 +378,26 @@ int main(int argc, char** argv) {
     // "perfect" rows bin on truth itself and are the ceiling: nothing that
     // exploits resolution can beat having measured the quantity exactly.
     if (n_sigma_bins > 1) {
-      std::vector<double> dw(w.size(), 0.0);
-      {
+      // One central difference per free parameter, giving dw_i/dtheta_a for all
+      // of them; the profiled error needs the whole Fisher matrix, not just the
+      // target's diagonal.
+      std::vector<std::vector<double>> dw_all;
+      std::size_t                      target_slot = 0;
+      for (std::size_t a = 0; a < free_index.size(); ++a) {
+        if (free_index[a] == scanned_index) target_slot = a;
         std::vector<double> up = values, down = values;
-        up[scanned_index] += step;
-        down[scanned_index] -= step;
+        up[free_index[a]] += step;
+        down[free_index[a]] -= step;
         parameter.reset_parameter(up.data());
         likelihood.partial_llh(parameter);
         const std::vector<double> w_up = likelihood.per_event_weight();
         parameter.reset_parameter(down.data());
         likelihood.partial_llh(parameter);
         const std::vector<double> w_down = likelihood.per_event_weight();
-        for (std::size_t i = 0; i < dw.size(); ++i) dw[i] = (w_up[i] - w_down[i]) / (2.0 * step);
+
+        std::vector<double> d(w.size(), 0.0);
+        for (std::size_t i = 0; i < d.size(); ++i) d[i] = (w_up[i] - w_down[i]) / (2.0 * step);
+        dw_all.push_back(std::move(d));
       }
 
       const io::ic::Axis& energy_axis = cfg.mc_binning.axes()[0];
@@ -293,8 +413,9 @@ int main(int argc, char** argv) {
       };
 
       // Per-event indices on every axis a candidate might use.
+      std::vector<std::size_t> keep;
       std::vector<int>    ie_reco, iz_reco, ie_true, iz_true, ke, kz;
-      std::vector<double> w_in, dw_in;
+      std::vector<double> w_in;
       for (std::size_t i = 0; i < sample.size(); ++i) {
         // Axis::index() projects with log10 / cos, so it is handed the linear
         // energy and the raw angle rather than the already-projected columns.
@@ -302,6 +423,7 @@ int main(int argc, char** argv) {
         const int z_true = zenith_axis.index(sample.response_truth_zenith[i]);
         if (e_true < 0 || z_true < 0) continue;
 
+        keep.push_back(i);
         ie_reco.push_back(sample.bin_idx[i] / n_zenith);
         iz_reco.push_back(sample.bin_idx[i] % n_zenith);
         ie_true.push_back(e_true);
@@ -309,11 +431,21 @@ int main(int argc, char** argv) {
         ke.push_back(category(edges_e, sample.response_sigma_log_e[i]));
         kz.push_back(category(edges_z, sample.response_sigma_zenith[i]));
         w_in.push_back(w[i]);
-        dw_in.push_back(dw[i]);
       }
 
       const auto n_kept = ie_reco.size();
       const int  N      = n_sigma_bins;
+
+      std::vector<std::vector<double>> dw_in(dw_all.size());
+      for (std::size_t a = 0; a < dw_all.size(); ++a) {
+        dw_in[a].reserve(n_kept);
+        for (const std::size_t i : keep) dw_in[a].push_back(dw_all[a][i]);
+      }
+
+      std::printf("  profiling over %zu free parameters:", free_name.size());
+      for (const std::string& n : free_name) std::printf(" %s", n.c_str());
+      std::printf("\n  (detector systematics are per-bin gradients tied to the 2D binning and cannot\n"
+                  "   follow a category axis; they are absent here, see the report)\n");
 
       // Flatten (energy, zenith, cat_e, cat_z) row-major over whichever axes a
       // candidate uses; unused categories collapse to a single bin.
@@ -336,17 +468,23 @@ int main(int argc, char** argv) {
       for (const double e : edges_z) std::printf(" %.3f", e * 180.0 / 3.14159265358979323846);
       std::printf("\n  %zu of %zu events have both truths in range\n\n", n_kept, sample.size());
 
-      std::printf("  %-40s %8s  %10s  %8s  %11s  %8s\n", "binning", "bins", "sigma_stat", "d%",
-                  "(sMC/sStat)^2", "total d%");
+      std::printf("\n  %-40s %8s  %10s  %8s  %10s  %8s\n", "binning", "bins", "sigma_fixed", "d%",
+                  "sigma_prof", "d%");
 
       BinnedInfo baseline;
+      double     baseline_prof = 0.0;
       auto       row = [&](const char* label, const std::vector<int>& flat, const std::size_t nb,
                      const bool is_baseline) {
-        const BinnedInfo info = score_binning(flat, nb, w_in, dw_in);
-        if (is_baseline) baseline = info;
-        std::printf("  %-40s %8zu  %10.5f  %+7.2f%%  %11.4f  %+7.2f%%\n", label, nb, info.sigma_stat(),
-                    100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0), info.mc_ratio(),
-                    100.0 * (info.sigma_total() / baseline.sigma_total() - 1.0));
+        const BinnedInfo info = score_binning(flat, nb, w_in, dw_in[target_slot]);
+        const double     prof =
+            profiled_sigma(flat, nb, w_in, dw_in, prior_width, target_slot);
+        if (is_baseline) {
+          baseline      = info;
+          baseline_prof = prof;
+        }
+        std::printf("  %-40s %8zu  %10.5f  %+7.2f%%  %10.5f  %+7.2f%%\n", label, nb, info.sigma_stat(),
+                    100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0), prof,
+                    100.0 * (prof / baseline_prof - 1.0));
       };
 
       std::size_t nb = 0;
