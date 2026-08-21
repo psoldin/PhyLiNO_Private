@@ -242,11 +242,14 @@ int main(int argc, char** argv) {
   std::string config;
   std::string scanned      = "SpectralIndex";
   int         n_sigma_bins = 0;
+  std::string dump_pair, dump_file;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "-c" && i + 1 < argc) config = argv[++i];
     else if (arg == "-p" && i + 1 < argc) scanned = argv[++i];
     else if (arg == "--sigma-bins" && i + 1 < argc) n_sigma_bins = std::stoi(argv[++i]);
+    else if (arg == "--dump-pair" && i + 1 < argc) dump_pair = argv[++i];
+    else if (arg == "--dump-file" && i + 1 < argc) dump_file = argv[++i];
   }
   if (config.empty()) {
     std::puts("usage: McVariance -c config.json [-p ParameterName]");
@@ -540,6 +543,66 @@ int main(int argc, char** argv) {
           row(("2D x " + sample.category_names[c] + " x " + sample.category_names[d]).c_str(), flat, bins,
               false);
         }
+
+      // Dump one candidate binning for the external SnowStorm gradient producer:
+      // the predicted histogram, its derivative with respect to every free flux
+      // parameter, and the exact category edges, so the ensemble can be
+      // histogrammed into the identical bins.
+      if (!dump_file.empty() && !dump_pair.empty()) {
+        const auto comma = dump_pair.find(',');
+        const std::string name_a = dump_pair.substr(0, comma);
+        const std::string name_b = comma == std::string::npos ? std::string{} : dump_pair.substr(comma + 1);
+
+        std::size_t ia = sample.category_names.size(), ib = sample.category_names.size();
+        for (std::size_t c = 0; c < sample.category_names.size(); ++c) {
+          if (sample.category_names[c] == name_a) ia = c;
+          if (sample.category_names[c] == name_b) ib = c;
+        }
+        if (ia == sample.category_names.size())
+          throw std::runtime_error("--dump-pair: column '" + name_a + "' is not in the sample's Categories");
+        const bool have_b = ib < sample.category_names.size();
+
+        const int         nb_cat = have_b ? N : 1;
+        const std::size_t n_dump =
+            static_cast<std::size_t>(energy_axis.n_bins) * n_zenith * N * nb_cat;
+        std::vector<int> flat(n_kept);
+        for (std::size_t i = 0; i < n_kept; ++i)
+          flat[i] = ((ie_reco[i] * n_zenith + iz_reco[i]) * N + extra_category[ia][i]) * nb_cat +
+                    (have_b ? extra_category[ib][i] : 0);
+
+        std::vector<double>              mu_d(n_dump, 0.0);
+        std::vector<std::vector<double>> dmu_d(dw_in.size(), std::vector<double>(n_dump, 0.0));
+        for (std::size_t i = 0; i < n_kept; ++i) {
+          const auto b2 = static_cast<std::size_t>(flat[i]);
+          mu_d[b2] += w_in[i];
+          for (std::size_t a2 = 0; a2 < dw_in.size(); ++a2) dmu_d[a2][b2] += dw_in[a2][i];
+        }
+
+        std::FILE* f = std::fopen(dump_file.c_str(), "w");
+        if (!f) throw std::runtime_error("--dump-file: cannot open " + dump_file);
+        std::fprintf(f, "# energy %.10g %.10g %d\n", energy_axis.lo, energy_axis.hi, energy_axis.n_bins);
+        std::fprintf(f, "# zenith %.10g %.10g %d\n", zenith_axis.lo, zenith_axis.hi, n_zenith);
+        auto write_edges = [f, N](const char* name, const std::vector<double>& e) {
+          std::fprintf(f, "# category %s %d", name, N);
+          for (const double v : e) std::fprintf(f, " %.10g", v);
+          std::fprintf(f, "\n");
+        };
+        write_edges(name_a.c_str(), quantile_edges(
+            [&] { std::vector<double> v; for (const std::size_t i : keep) v.push_back(sample.categories[ia][i]); return v; }(), N));
+        if (have_b)
+          write_edges(name_b.c_str(), quantile_edges(
+              [&] { std::vector<double> v; for (const std::size_t i : keep) v.push_back(sample.categories[ib][i]); return v; }(), N));
+        std::fprintf(f, "# params %zu", dw_in.size());
+        for (const std::string& n : free_name) std::fprintf(f, " %s", n.c_str());
+        std::fprintf(f, "\n# bins %zu\n# per bin: mu then d(mu)/d(param) for each param above\n", n_dump);
+        for (std::size_t b2 = 0; b2 < n_dump; ++b2) {
+          std::fprintf(f, "%.10g", mu_d[b2]);
+          for (std::size_t a2 = 0; a2 < dw_in.size(); ++a2) std::fprintf(f, " %.10g", dmu_d[a2][b2]);
+          std::fprintf(f, "\n");
+        }
+        std::fclose(f);
+        std::printf("\n  dumped %zu bins x %zu parameters to %s\n", n_dump, dw_in.size(), dump_file.c_str());
+      }
 
       const std::vector<int> perfect_e = compose(ie_true, iz_reco, false, false, nb);
       row("perfect E      (ceiling)", perfect_e, nb, false);
