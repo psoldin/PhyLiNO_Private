@@ -268,12 +268,15 @@ int main(int argc, char** argv) {
   std::string config;
   std::string scanned      = "SpectralIndex";
   int         n_sigma_bins = 0;
-  std::string dump_pair, dump_file;
+  std::string dump_pair, dump_file, breakdown;
+  double      mc_fraction = 1.0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "-c" && i + 1 < argc) config = argv[++i];
     else if (arg == "-p" && i + 1 < argc) scanned = argv[++i];
     else if (arg == "--sigma-bins" && i + 1 < argc) n_sigma_bins = std::stoi(argv[++i]);
+    else if (arg == "--mc-fraction" && i + 1 < argc) mc_fraction = std::stod(argv[++i]);
+    else if (arg == "--breakdown" && i + 1 < argc) breakdown = argv[++i];
     else if (arg == "--dump-pair" && i + 1 < argc) dump_pair = argv[++i];
     else if (arg == "--dump-file" && i + 1 < argc) dump_file = argv[++i];
   }
@@ -452,6 +455,13 @@ int main(int argc, char** argv) {
         const int z_true = zenith_axis.index(sample.response_truth_zenith[i]);
         if (e_true < 0 || z_true < 0) continue;
 
+        // Deterministic MC subsample. A real information gain is a property of
+        // the flux and the binning, so it survives being measured with less MC;
+        // a gain that is really shot noise in sparse bins GROWS as the MC
+        // shrinks, because the bins get sparser. That difference is the test.
+        if (mc_fraction < 1.0 &&
+            (i % 1000) >= static_cast<std::size_t>(mc_fraction * 1000.0)) continue;
+
         keep.push_back(i);
         ie_reco.push_back(sample.bin_idx[i] / n_zenith);
         iz_reco.push_back(sample.bin_idx[i] % n_zenith);
@@ -459,7 +469,7 @@ int main(int argc, char** argv) {
         iz_true.push_back(z_true);
         ke.push_back(category(edges_e, sample.response_sigma_log_e[i]));
         kz.push_back(category(edges_z, sample.response_sigma_zenith[i]));
-        w_in.push_back(w[i]);
+        w_in.push_back(w[i] / mc_fraction);
       }
 
       const auto n_kept = ie_reco.size();
@@ -468,8 +478,10 @@ int main(int argc, char** argv) {
       std::vector<std::vector<double>> dw_in(dw_all.size());
       for (std::size_t a = 0; a < dw_all.size(); ++a) {
         dw_in[a].reserve(n_kept);
-        for (const std::size_t i : keep) dw_in[a].push_back(dw_all[a][i]);
+        for (const std::size_t i : keep) dw_in[a].push_back(dw_all[a][i] / mc_fraction);
       }
+      if (mc_fraction < 1.0)
+        std::printf("  MC subsampled to %.0f%%: %zu events\n", 100.0 * mc_fraction, n_kept);
 
       std::printf("  profiling over %zu free parameters:", free_name.size());
       for (const std::string& n : free_name) std::printf(" %s", n.c_str());
@@ -629,6 +641,58 @@ int main(int argc, char** argv) {
         }
         std::fclose(f);
         std::printf("\n  dumped %zu bins x %zu parameters to %s\n", n_dump, dw_in.size(), dump_file.c_str());
+      }
+
+      // Which categories of one axis actually carry the information, and how
+      // much MC is behind each. A gain concentrated in the last category, on the
+      // thinnest MC, is the signature of a high-purity tail that the simulation
+      // cannot support.
+      if (!breakdown.empty()) {
+        std::size_t ic = sample.category_names.size();
+        for (std::size_t c = 0; c < sample.category_names.size(); ++c)
+          if (sample.category_names[c] == breakdown) ic = c;
+        if (ic == sample.category_names.size())
+          throw std::runtime_error("--breakdown: '" + breakdown + "' is not in the sample's Categories");
+
+        const std::size_t nb_cat = static_cast<std::size_t>(energy_axis.n_bins) * n_zenith * N;
+        std::vector<int>  flat(n_kept);
+        for (std::size_t i = 0; i < n_kept; ++i)
+          flat[i] = (ie_reco[i] * n_zenith + iz_reco[i]) * N + extra_category[ic][i];
+
+        std::vector<double> mu_b(nb_cat, 0.0), dmu_b(nb_cat, 0.0), ssq_b(nb_cat, 0.0);
+        for (std::size_t i = 0; i < n_kept; ++i) {
+          const auto b2 = static_cast<std::size_t>(flat[i]);
+          mu_b[b2] += w_in[i];
+          dmu_b[b2] += dw_in[target_slot][i];
+          ssq_b[b2] += w_in[i] * w_in[i];
+        }
+
+        std::vector<double> fisher_of(N, 0.0), weight_of(N, 0.0);
+        std::vector<std::vector<double>> neff_of(N);
+        double total_fisher = 0.0;
+        for (std::size_t b2 = 0; b2 < nb_cat; ++b2) {
+          if (!(mu_b[b2] > 0.0)) continue;
+          const std::size_t k = b2 % static_cast<std::size_t>(N);
+          const double      f = dmu_b[b2] * dmu_b[b2] / mu_b[b2];
+          fisher_of[k] += f;
+          weight_of[k] += mu_b[b2];
+          total_fisher += f;
+          if (ssq_b[b2] > 0.0) neff_of[k].push_back(mu_b[b2] * mu_b[b2] / ssq_b[b2]);
+        }
+
+        std::printf("\n  Fisher information by %s category (2D x %s, %d categories)\n",
+                    breakdown.c_str(), breakdown.c_str(), N);
+        std::printf("  %-6s %12s %10s %12s %10s\n", "cat", "events", "Fisher %", "cumul %", "Neff med");
+        double cumul = 0.0;
+        for (int k = 0; k < N; ++k) {
+          std::ranges::sort(neff_of[static_cast<std::size_t>(k)]);
+          const auto& v = neff_of[static_cast<std::size_t>(k)];
+          const double share = 100.0 * fisher_of[static_cast<std::size_t>(k)] / total_fisher;
+          cumul += share;
+          std::printf("  %-6d %12.0f %9.1f%% %11.1f%% %10.1f\n", k,
+                      weight_of[static_cast<std::size_t>(k)], share, cumul,
+                      v.empty() ? 0.0 : v[v.size() / 2]);
+        }
       }
 
       const std::vector<int> perfect_e = compose(ie_true, iz_reco, false, false, nb);
