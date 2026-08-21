@@ -254,11 +254,17 @@ int main(int argc, char** argv) {
       v_unfolded += w[i] * w[i] * g_own * g_own;
     }
 
-    // A resolution axis: the same events, the same reco coordinates, split by the
-    // per-event energy uncertainty. Nothing is smeared -- sigma is used as an
-    // observable, not as a width -- so this asks a different question from the
-    // fold above: does knowing HOW WELL an event was measured tell you anything
-    // the reconstructed value alone does not?
+    // Candidate binnings, all scored on the SAME events so the comparison is
+    // like for like: an event whose truth falls outside the analysis range
+    // cannot be binned on truth, and letting the baseline keep it while the
+    // ceiling drops it would flatter the baseline.
+    //
+    // Two distinct uses of the per-event uncertainties appear here. A resolution
+    // AXIS does not smear anything: it partitions the sample, so
+    // p(reco, sigma | theta) replaces p(reco | theta) and carries strictly more
+    // information whenever sigma says how sharply reco tracks truth. The
+    // "perfect" rows bin on truth itself and are the ceiling: nothing that
+    // exploits resolution can beat having measured the quantity exactly.
     if (n_sigma_bins > 1) {
       std::vector<double> dw(w.size(), 0.0);
       {
@@ -274,68 +280,96 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < dw.size(); ++i) dw[i] = (w_up[i] - w_down[i]) / (2.0 * step);
       }
 
-      const std::vector<double> edges =
-          quantile_edges(sample.response_sigma_log_e, n_sigma_bins);
+      const io::ic::Axis& energy_axis = cfg.mc_binning.axes()[0];
+      const io::ic::Axis& zenith_axis = cfg.mc_binning.axes()[1];
+      const int           n_zenith    = zenith_axis.n_bins;
 
-      std::vector<int> flat_2d(sample.size()), flat_3d(sample.size());
+      const std::vector<double> edges_e = quantile_edges(sample.response_sigma_log_e, n_sigma_bins);
+      const std::vector<double> edges_z = quantile_edges(sample.response_sigma_zenith, n_sigma_bins);
+      auto category = [](const std::vector<double>& edges, const double x) {
+        int k = 0;
+        while (k < static_cast<int>(edges.size()) && x >= edges[static_cast<std::size_t>(k)]) ++k;
+        return k;
+      };
+
+      // Per-event indices on every axis a candidate might use.
+      std::vector<int>    ie_reco, iz_reco, ie_true, iz_true, ke, kz;
+      std::vector<double> w_in, dw_in;
       for (std::size_t i = 0; i < sample.size(); ++i) {
-        const double s_i = sample.response_sigma_log_e[i];
-        int          k   = 0;
-        while (k < static_cast<int>(edges.size()) && s_i >= edges[static_cast<std::size_t>(k)]) ++k;
-        flat_2d[i] = sample.bin_idx[i];
-        flat_3d[i] = sample.bin_idx[i] * n_sigma_bins + k;
+        // Axis::index() projects with log10 / cos, so it is handed the linear
+        // energy and the raw angle rather than the already-projected columns.
+        const int e_true = energy_axis.index(std::pow(10.0, sample.response_truth_log_e[i]));
+        const int z_true = zenith_axis.index(sample.response_truth_zenith[i]);
+        if (e_true < 0 || z_true < 0) continue;
+
+        ie_reco.push_back(sample.bin_idx[i] / n_zenith);
+        iz_reco.push_back(sample.bin_idx[i] % n_zenith);
+        ie_true.push_back(e_true);
+        iz_true.push_back(z_true);
+        ke.push_back(category(edges_e, sample.response_sigma_log_e[i]));
+        kz.push_back(category(edges_z, sample.response_sigma_zenith[i]));
+        w_in.push_back(w[i]);
+        dw_in.push_back(dw[i]);
       }
 
-      const BinnedInfo flat  = score_binning(flat_2d, n_bins, w, dw);
-      const BinnedInfo split = score_binning(flat_3d, n_bins * static_cast<std::size_t>(n_sigma_bins), w, dw);
+      const auto n_kept = ie_reco.size();
+      const int  N      = n_sigma_bins;
 
-      std::printf("\nsample '%s', parameter %s -- resolution as a third axis (%d quantile bins)\n",
-                  cfg.name.c_str(), scanned.c_str(), n_sigma_bins);
-      std::printf("  sigma_E quantile edges [dex]:");
-      for (const double e : edges) std::printf(" %.3f", e);
-      std::printf("\n");
-      std::printf("                     bins    sigma_stat   (sigMC/sigStat)^2   sigma_total\n");
-      std::printf("  2D                %6zu      %.5f          %.4f          %.5f\n", n_bins,
-                  flat.sigma_stat(), flat.mc_ratio(), flat.sigma_total());
-      std::printf("  2D x sigma_E      %6zu      %.5f          %.4f          %.5f\n",
-                  n_bins * static_cast<std::size_t>(n_sigma_bins), split.sigma_stat(), split.mc_ratio(),
-                  split.sigma_total());
-      std::printf("  change                            %+.2f%%                        %+.2f%%\n",
-                  100.0 * (split.sigma_stat() / flat.sigma_stat() - 1.0),
-                  100.0 * (split.sigma_total() / flat.sigma_total() - 1.0));
+      // Flatten (energy, zenith, cat_e, cat_z) row-major over whichever axes a
+      // candidate uses; unused categories collapse to a single bin.
+      auto compose = [&](const std::vector<int>& ie, const std::vector<int>& iz, const bool use_e,
+                         const bool use_z, std::size_t& n_bins_out) {
+        const int ne = use_e ? N : 1;
+        const int nz = use_z ? N : 1;
+        n_bins_out   = static_cast<std::size_t>(energy_axis.n_bins) * n_zenith * ne * nz;
+        std::vector<int> flat(n_kept);
+        for (std::size_t i = 0; i < n_kept; ++i)
+          flat[i] = ((ie[i] * n_zenith + iz[i]) * ne + (use_e ? ke[i] : 0)) * nz + (use_z ? kz[i] : 0);
+        return flat;
+      };
 
-      // The ceiling on every method that tries to exploit resolution: bin on the
-      // TRUE energy instead of the reconstructed one, i.e. a perfect energy
-      // measurement. No unbinned kernel, no fold and no resolution axis can beat
-      // this, because none of them recovers information the reconstruction did
-      // not keep. If the ceiling is low, the whole line of attack is bounded and
-      // the question stops being which method to use.
-      {
-        const io::ic::Axis& energy   = cfg.mc_binning.axes()[0];
-        const int           n_zenith = cfg.mc_binning.axes()[1].n_bins;
+      std::printf("\nsample '%s', parameter %s -- candidate binnings (%d quantile categories each)\n",
+                  cfg.name.c_str(), scanned.c_str(), N);
+      std::printf("  sigma_E   edges [dex]:");
+      for (const double e : edges_e) std::printf(" %.3f", e);
+      std::printf("\n  sigma_dir edges [deg]:");
+      for (const double e : edges_z) std::printf(" %.3f", e * 180.0 / 3.14159265358979323846);
+      std::printf("\n  %zu of %zu events have both truths in range\n\n", n_kept, sample.size());
 
-        std::vector<int>    truth_bin;
-        std::vector<double> w_in, dw_in;
-        truth_bin.reserve(sample.size());
-        for (std::size_t i = 0; i < sample.size(); ++i) {
-          // Axis::index() projects with log10, and the truth column is already
-          // in log10; hand it the linear energy so the axis does its own mapping.
-          const int ie = energy.index(std::pow(10.0, sample.response_truth_log_e[i]));
-          if (ie < 0) continue;  // true energy outside the analysis range
-          truth_bin.push_back(ie * n_zenith + sample.bin_idx[i] % n_zenith);
-          w_in.push_back(w[i]);
-          dw_in.push_back(dw[i]);
-        }
+      std::printf("  %-28s %8s  %10s  %8s  %11s  %8s\n", "binning", "bins", "sigma_stat", "d%",
+                  "(sMC/sStat)^2", "total d%");
 
-        const BinnedInfo perfect = score_binning(truth_bin, n_bins, w_in, dw_in);
-        std::printf("  perfect E         %6zu      %.5f          %.4f          %.5f\n", n_bins,
-                    perfect.sigma_stat(), perfect.mc_ratio(), perfect.sigma_total());
-        std::printf("  ceiling                           %+.2f%%                        %+.2f%%   "
-                    "(%zu of %zu events kept)\n",
-                    100.0 * (perfect.sigma_stat() / flat.sigma_stat() - 1.0),
-                    100.0 * (perfect.sigma_total() / flat.sigma_total() - 1.0), w_in.size(),
-                    sample.size());
-      }
+      BinnedInfo baseline;
+      auto       row = [&](const char* label, const std::vector<int>& flat, const std::size_t nb,
+                     const bool is_baseline) {
+        const BinnedInfo info = score_binning(flat, nb, w_in, dw_in);
+        if (is_baseline) baseline = info;
+        std::printf("  %-28s %8zu  %10.5f  %+7.2f%%  %11.4f  %+7.2f%%\n", label, nb, info.sigma_stat(),
+                    100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0), info.mc_ratio(),
+                    100.0 * (info.sigma_total() / baseline.sigma_total() - 1.0));
+      };
+
+      std::size_t nb = 0;
+      const std::vector<int> flat_2d = compose(ie_reco, iz_reco, false, false, nb);
+      row("2D (baseline)", flat_2d, nb, true);
+
+      const std::vector<int> flat_e = compose(ie_reco, iz_reco, true, false, nb);
+      row("2D x sigma_E", flat_e, nb, false);
+
+      const std::vector<int> flat_z = compose(ie_reco, iz_reco, false, true, nb);
+      row("2D x sigma_dir", flat_z, nb, false);
+
+      const std::vector<int> flat_ez = compose(ie_reco, iz_reco, true, true, nb);
+      row("2D x sigma_E x sigma_dir", flat_ez, nb, false);
+
+      const std::vector<int> perfect_e = compose(ie_true, iz_reco, false, false, nb);
+      row("perfect E      (ceiling)", perfect_e, nb, false);
+
+      const std::vector<int> perfect_z = compose(ie_reco, iz_true, false, false, nb);
+      row("perfect dir    (ceiling)", perfect_z, nb, false);
+
+      const std::vector<int> perfect_both = compose(ie_true, iz_true, false, false, nb);
+      row("perfect E+dir  (ceiling)", perfect_both, nb, false);
 
       parameter.reset_parameter(values.data());
       likelihood.partial_llh(parameter);
