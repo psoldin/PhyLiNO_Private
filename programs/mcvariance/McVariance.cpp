@@ -105,6 +105,14 @@ namespace {
   struct BinnedInfo {
     double fisher = 0.0;
     double v_mc   = 0.0;
+    // Effective MC statistics per bin, (sum w)^2 / sum w^2. A high-purity bin
+    // built from a handful of heavy events reports enormous sensitivity that no
+    // amount of real data can deliver, and the Fisher number alone cannot tell
+    // that apart from a genuinely well-measured bin.
+    double n_eff_median = 0.0;
+    double n_eff_p01    = 0.0;
+    double frac_thin    = 0.0;  ///< fraction of filled bins with N_eff < 10
+    std::size_t filled  = 0;
 
     [[nodiscard]] double sigma_stat() const { return 1.0 / std::sqrt(fisher); }
     [[nodiscard]] double mc_ratio() const { return v_mc / fisher; }
@@ -130,6 +138,24 @@ namespace {
     for (std::size_t i = 0; i < w.size(); ++i) {
       const double gb = g[static_cast<std::size_t>(bin_of_event[i])];
       info.v_mc += w[i] * w[i] * gb * gb;
+    }
+
+    std::vector<double> ssq(n_bins, 0.0);
+    for (std::size_t i = 0; i < w.size(); ++i)
+      ssq[static_cast<std::size_t>(bin_of_event[i])] += w[i] * w[i];
+
+    std::vector<double> n_eff;
+    n_eff.reserve(n_bins);
+    for (std::size_t b = 0; b < n_bins; ++b)
+      if (mu[b] > 0.0 && ssq[b] > 0.0) n_eff.push_back(mu[b] * mu[b] / ssq[b]);
+    std::ranges::sort(n_eff);
+    info.filled = n_eff.size();
+    if (!n_eff.empty()) {
+      info.n_eff_median = n_eff[n_eff.size() / 2];
+      info.n_eff_p01    = n_eff[static_cast<std::size_t>(0.01 * (n_eff.size() - 1))];
+      info.frac_thin    = static_cast<double>(std::ranges::count_if(
+                              n_eff, [](const double v) { return v < 10.0; })) /
+                          static_cast<double>(n_eff.size());
     }
     return info;
   }
@@ -471,8 +497,8 @@ int main(int argc, char** argv) {
       for (const double e : edges_z) std::printf(" %.3f", e * 180.0 / 3.14159265358979323846);
       std::printf("\n  %zu of %zu events have both truths in range\n\n", n_kept, sample.size());
 
-      std::printf("\n  %-40s %8s  %10s  %8s  %10s  %8s\n", "binning", "bins", "sigma_fixed", "d%",
-                  "sigma_prof", "d%");
+      std::printf("\n  %-40s %8s  %10s  %8s  %10s  %8s  %7s %7s %6s\n", "binning", "bins",
+                  "sigma_fixed", "d%", "sigma_prof", "d%", "Neff~", "Neff01", "<10");
 
       BinnedInfo baseline;
       double     baseline_prof = 0.0;
@@ -485,9 +511,10 @@ int main(int argc, char** argv) {
           baseline      = info;
           baseline_prof = prof;
         }
-        std::printf("  %-40s %8zu  %10.5f  %+7.2f%%  %10.5f  %+7.2f%%\n", label, nb, info.sigma_stat(),
-                    100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0), prof,
-                    100.0 * (prof / baseline_prof - 1.0));
+        std::printf("  %-40s %8zu  %10.5f  %+7.2f%%  %10.5f  %+7.2f%%  %7.0f %7.1f %5.0f%%\n", label,
+                    nb, info.sigma_stat(), 100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0),
+                    prof, 100.0 * (prof / baseline_prof - 1.0), info.n_eff_median, info.n_eff_p01,
+                    100.0 * info.frac_thin);
       };
 
       std::size_t nb = 0;
