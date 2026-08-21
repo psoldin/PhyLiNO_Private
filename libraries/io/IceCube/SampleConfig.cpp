@@ -320,6 +320,34 @@ namespace io::ic {
 
       SampleConfig& sample = samples.back();
       parse_component_files(sample_node, sample);
+      // Category axes refine the histogram beyond the binning every per-bin input
+      // was produced in. SnowStorm gradients, muon templates and galactic maps are
+      // all delivered as histograms in the 2D analysis binning, so they cannot
+      // follow; re-deriving them in the finer binning is a production step, not a
+      // config change. Refusing here is what makes "categories without gradients"
+      // a checked precondition instead of a silent mismatch.
+      if (!category_axes(sample.binning).empty()) {
+        if (!sample.gradient_file.empty())
+          throw std::runtime_error(
+              "parse_samples: sample '" + sample.name +
+              "' bins on a Category axis and configures Gradients. SnowStorm gradients are per-bin "
+              "histograms in the 2D binning and cannot be projected onto a finer one; regenerate them "
+              "for this binning first (see tools/snowstorm_gradients.py)");
+        if (sample.wants_template())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' bins on a Category axis and configures a muon Template, which is a "
+                                   "per-bin histogram in the 2D binning");
+        if (!sample.galactic.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' bins on a Category axis and configures Galactic templates, which are "
+                                   "per-bin histograms in the 2D binning");
+        if (has_ra_axis(sample.binning))
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines a Category axis with an Ra axis. The RA spread bins MC in 2D "
+                                   "and repeats it over RA, which assumes the MC binning is exactly the "
+                                   "analysis binning without RA");
+      }
+
       validate_components(sample);
     }
     return samples;

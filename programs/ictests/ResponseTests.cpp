@@ -280,3 +280,79 @@ TEST(ResponseConfigTest, RejectsBadTransformAndTruncation) {
       "Response": { "enabled": true, "TruthZenithBranch": "" } } })")),
                std::runtime_error);
 }
+
+// --- Category axes -------------------------------------------------------
+
+// The axis carries its own branch name, since unlike every other kind there is
+// no fixed set of columns it could read.
+TEST(CategoryAxisTest, ParsesBranchAndEdges) {
+  const io::ic::Axis axis = io::ic::parse_axis("Category:bdt_score", "[0.9, 0.99, 1.0]");
+  EXPECT_EQ(axis.kind, io::ic::Axis::Kind::Category);
+  EXPECT_EQ(axis.branch, "bdt_score");
+  EXPECT_EQ(axis.n_bins, 2);
+  EXPECT_FALSE(axis.uniform());
+  // Identity projection: a classifier score is not a derived kinematic quantity.
+  EXPECT_DOUBLE_EQ(axis.project(0.95), 0.95);
+  EXPECT_EQ(axis.index(0.93), 0);
+  EXPECT_EQ(axis.index(0.995), 1);
+  EXPECT_EQ(axis.index(0.5), -1);
+  EXPECT_EQ(axis.index(1.5), -1);
+}
+
+TEST(CategoryAxisTest, RejectsAnEmptyBranchName) {
+  EXPECT_THROW(io::ic::parse_axis("Category:", "[0.0, 1.0]"), std::runtime_error);
+}
+
+// A category axis multiplies the bin count, and the flux components index on
+// (energy, zenith) being the first two axes.
+TEST(CategoryAxisTest, MultipliesTheBinCountAndIsListed) {
+  const io::ic::Binning binning({io::ic::Axis{io::ic::Axis::Kind::Log10Energy, 2.0, 7.0, 50},
+                                 io::ic::Axis{io::ic::Axis::Kind::CosZenith, -1.0, 0.0872, 33},
+                                 io::ic::parse_axis("Category:bdt_score", "[0.9, 0.99, 1.0]"),
+                                 io::ic::parse_axis("Category:L5_ldir_c", "[0, 700, 1600]")});
+  EXPECT_EQ(binning.total_bins(), 50 * 33 * 2 * 2);
+
+  const std::vector<io::ic::Axis> cats = io::ic::category_axes(binning);
+  ASSERT_EQ(cats.size(), 2u);
+  EXPECT_EQ(cats[0].branch, "bdt_score");
+  EXPECT_EQ(cats[1].branch, "L5_ldir_c");
+
+  // Row-major: the category indices are innermost, so an event in the last
+  // category of both sits at the end of its (energy, zenith) block.
+  const std::vector<double> reco{std::pow(10.0, 2.05), std::acos(-0.99), 0.995, 1000.0};
+  const int                 bin = binning.bin_index(reco);
+  ASSERT_GE(bin, 0);
+  EXPECT_EQ(bin % 4, 3);
+}
+
+TEST(CategoryAxisTest, AnOrdinaryBinningHasNoCategoryAxes) {
+  EXPECT_TRUE(io::ic::category_axes(test_binning()).empty());
+}
+
+// Every per-bin input -- gradients, muon template, galactic maps -- is delivered
+// as a histogram in the 2D binning and cannot follow a finer one. Refusing at
+// parse time is what makes "categories without gradients" a checked precondition
+// rather than a silent binning mismatch.
+TEST(CategoryAxisTest, RejectsPerBinInputsAlongsideACategoryAxis) {
+  auto tree_with = [](const std::string& extra) {
+    std::ostringstream json;
+    json << R"JSON({"IceCube": {"Binnings": {"cat": {)JSON"
+         << R"JSON("axes": "Log10Energy, CosZenith, Category:bdt_score",)JSON"
+         << R"JSON("Log10Energy": "(2.0, 7.0, 50)", "CosZenith": "(-1.0, 0.0, 4)",)JSON"
+         << R"JSON("Category:bdt_score": "[0.9, 0.99, 1.0]"}},)JSON"
+         << R"JSON("Samples": {"tracks": {"binning": "cat", "parquet": "mc.parquet",)JSON"
+         << R"JSON("components": "astro")JSON" << extra << "}}}}";
+    std::istringstream          in(json.str());
+    boost::property_tree::ptree tree;
+    boost::property_tree::read_json(in, tree);
+    return tree.get_child("IceCube");
+  };
+
+  // Without any per-bin input the same binning parses fine.
+  EXPECT_NO_THROW(io::ic::parse_samples(tree_with("")));
+
+  EXPECT_THROW(io::ic::parse_samples(tree_with(R"JSON(, "Gradients": {"File": "g.txt"})JSON")),
+               std::runtime_error);
+  EXPECT_THROW(io::ic::parse_samples(tree_with(R"JSON(, "Template": {"File": "t.txt", "Norm": "MuonNorm"})JSON")),
+               std::runtime_error);
+}
