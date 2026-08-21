@@ -150,6 +150,11 @@ namespace io::ic {
 
     ResponseConfig response;
 
+    // Extra per-event reco columns read at load and carried on the sample, for
+    // scoring candidate category axes (programs/mcvariance). They take part in
+    // no fit; naming one costs a column read and nothing else.
+    std::vector<std::string> category_branches;
+
     // Per-event nu_mu survival factor (NNMFit OscillationsHook), exported by
     // tools/export_oscillation_factors.py. Row-aligned with `parquet`; applied to
     // the atmospheric baselines at load time. "" = no oscillation reweight.

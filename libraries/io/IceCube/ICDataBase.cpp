@@ -66,6 +66,43 @@ namespace io::ic {
       return out;
     }
 
+    // Same, but tolerant of the numeric type: the diagnostic category columns are
+    // whatever the file happens to carry (bdt_score is float where the weight
+    // branches are double), and reading one as garbage would be worse than a
+    // slower branch here. Never used for anything the fit reads.
+    arrow::Result<std::vector<double>> get_numeric_column(const arrow::Table& table,
+                                                          const std::string&  name) {
+      auto col = table.GetColumnByName(name);
+      if (!col)
+        return arrow::Status::Invalid("ICDataBase: missing category column '" + name + "'");
+
+      const auto          chunk = col->chunk(0);
+      std::vector<double> out;
+      out.reserve(chunk->length());
+
+      if (chunk->type_id() == arrow::Type::DOUBLE) {
+        const auto array = std::static_pointer_cast<arrow::DoubleArray>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : array->Value(i));
+      } else if (chunk->type_id() == arrow::Type::FLOAT) {
+        const auto array = std::static_pointer_cast<arrow::FloatArray>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else if (chunk->type_id() == arrow::Type::INT64) {
+        const auto array = std::static_pointer_cast<arrow::Int64Array>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else if (chunk->type_id() == arrow::Type::INT32) {
+        const auto array = std::static_pointer_cast<arrow::Int32Array>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else {
+        return arrow::Status::Invalid("ICDataBase: category column '" + name + "' has type " +
+                                      chunk->type()->ToString() + ", expected a numeric type");
+      }
+      return out;
+    }
+
     // The sample's configured topology cut, as a dense keep-mask over the table's
     // rows: an event is kept if its topology column equals one of the configured
     // class labels, or (Topology.Exclude) kept unless it does. Returns an empty
@@ -142,6 +179,12 @@ namespace io::ic {
     // Reconstructed variables: only needed to assign analysis bins.
     ARROW_ASSIGN_OR_RAISE(auto e_reco, get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith, get_double_column(*table, b.reco_zenith));
+
+    for (const std::string& branch : cfg.category_branches) {
+      ARROW_ASSIGN_OR_RAISE(auto column, get_numeric_column(*table, branch));
+      out.category_names.push_back(branch);
+      out.categories.push_back(std::move(column));
+    }
 
     // Forward-folding inputs: the response centres and the per-event widths.
     // Read here rather than in the likelihood because they are

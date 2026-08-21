@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
       for (const double e : edges_z) std::printf(" %.3f", e * 180.0 / 3.14159265358979323846);
       std::printf("\n  %zu of %zu events have both truths in range\n\n", n_kept, sample.size());
 
-      std::printf("  %-28s %8s  %10s  %8s  %11s  %8s\n", "binning", "bins", "sigma_stat", "d%",
+      std::printf("  %-40s %8s  %10s  %8s  %11s  %8s\n", "binning", "bins", "sigma_stat", "d%",
                   "(sMC/sStat)^2", "total d%");
 
       BinnedInfo baseline;
@@ -344,7 +344,7 @@ int main(int argc, char** argv) {
                      const bool is_baseline) {
         const BinnedInfo info = score_binning(flat, nb, w_in, dw_in);
         if (is_baseline) baseline = info;
-        std::printf("  %-28s %8zu  %10.5f  %+7.2f%%  %11.4f  %+7.2f%%\n", label, nb, info.sigma_stat(),
+        std::printf("  %-40s %8zu  %10.5f  %+7.2f%%  %11.4f  %+7.2f%%\n", label, nb, info.sigma_stat(),
                     100.0 * (info.sigma_stat() / baseline.sigma_stat() - 1.0), info.mc_ratio(),
                     100.0 * (info.sigma_total() / baseline.sigma_total() - 1.0));
       };
@@ -361,6 +361,47 @@ int main(int argc, char** argv) {
 
       const std::vector<int> flat_ez = compose(ie_reco, iz_reco, true, true, nb);
       row("2D x sigma_E x sigma_dir", flat_ez, nb, false);
+
+      // Any other per-event reco column the config named, on the same footing.
+      // The two sigmas above are only special in having a physical story; what
+      // an axis actually has to do is separate populations the fit is sensitive
+      // to, and nothing says a reported uncertainty is best at that.
+      std::vector<std::vector<int>> extra_category;
+      for (std::size_t c = 0; c < sample.categories.size(); ++c) {
+        std::vector<double> values_in;
+        values_in.reserve(n_kept);
+        for (std::size_t i = 0, k = 0; i < sample.size(); ++i) {
+          const int e_true = energy_axis.index(std::pow(10.0, sample.response_truth_log_e[i]));
+          const int z_true = zenith_axis.index(sample.response_truth_zenith[i]);
+          if (e_true < 0 || z_true < 0) continue;
+          values_in.push_back(sample.categories[c][i]);
+          ++k;
+        }
+
+        const std::vector<double> edges = quantile_edges(values_in, N);
+        std::vector<int>          cat(n_kept);
+        for (std::size_t i = 0; i < n_kept; ++i) cat[i] = category(edges, values_in[i]);
+        extra_category.push_back(cat);
+
+        std::vector<int>  flat(n_kept);
+        const std::size_t bins = static_cast<std::size_t>(energy_axis.n_bins) * n_zenith * N;
+        for (std::size_t i = 0; i < n_kept; ++i)
+          flat[i] = (ie_reco[i] * n_zenith + iz_reco[i]) * N + cat[i];
+        row(("2D x " + sample.category_names[c]).c_str(), flat, bins, false);
+      }
+
+      // Pairs, since the two sigmas were markedly super-additive.
+      for (std::size_t c = 0; c < extra_category.size(); ++c)
+        for (std::size_t d = c + 1; d < extra_category.size(); ++d) {
+          std::vector<int>  flat(n_kept);
+          const std::size_t bins =
+              static_cast<std::size_t>(energy_axis.n_bins) * n_zenith * N * N;
+          for (std::size_t i = 0; i < n_kept; ++i)
+            flat[i] = ((ie_reco[i] * n_zenith + iz_reco[i]) * N + extra_category[c][i]) * N +
+                      extra_category[d][i];
+          row(("2D x " + sample.category_names[c] + " x " + sample.category_names[d]).c_str(), flat, bins,
+              false);
+        }
 
       const std::vector<int> perfect_e = compose(ie_true, iz_reco, false, false, nb);
       row("perfect E      (ceiling)", perfect_e, nb, false);

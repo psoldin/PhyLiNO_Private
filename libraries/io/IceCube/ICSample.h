@@ -86,6 +86,12 @@ namespace io::ic {
     std::vector<double> response_sigma_log_e;
     std::vector<double> response_sigma_zenith;
 
+    // Extra reco columns named by the sample's "Categories" list, in that order,
+    // reordered with every other per-event column. Diagnostic only: nothing in
+    // the fit reads them.
+    std::vector<std::string>         category_names;
+    std::vector<std::vector<double>> categories;
+
     // Per-event detector response projected onto the MC binning, built at load
     // after sort_into_bins(). With it present the flux histograms are the fold
     // sum_i w_i f_ib rather than the scatter into bin_idx; see
@@ -169,6 +175,7 @@ namespace io::ic {
       for (auto& grad : barr_conv) reorder(grad);
       for (auto& coefficient : veto_conv) reorder(coefficient);
       for (auto& coefficient : veto_prompt) reorder(coefficient);
+      for (auto& column : categories) reorder(column);
       reorder(response_truth_log_e);
       reorder(response_truth_zenith);
       reorder(response_sigma_log_e);

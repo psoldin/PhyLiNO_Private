@@ -314,6 +314,7 @@ namespace io::ic {
           .data_counts_path = sample_node.get<std::string>("DataCounts", ""),
           .livetime         = sample_node.get<double>("livetime", 1.0),
           .components       = split_trim(sample_node.get<std::string>("components", ""), ','),
+          .category_branches = split_trim(sample_node.get<std::string>("Categories", ""), ','),
           .branches         = parse_branches(sample_node),
       });
 
