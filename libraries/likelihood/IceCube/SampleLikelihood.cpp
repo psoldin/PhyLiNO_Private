@@ -307,6 +307,18 @@ namespace ana::ic {
     }
   }
 
+  std::vector<double> SampleLikelihood::per_event_weight() const {
+    const std::span<const double> astro = m_Astro ? m_Astro->per_event_weight() : std::span<const double>{};
+    const std::span<const double> atmo  = m_Atmo ? m_Atmo->per_event_weight() : std::span<const double>{};
+
+    std::vector<double> w(m_Sample.size(), 0.0);
+    for (std::size_t i = 0; i < w.size(); ++i) {
+      if (!astro.empty()) w[i] += astro[i];
+      if (!atmo.empty()) w[i] += atmo[i];
+    }
+    return w;
+  }
+
   SampleLikelihood::PredictionChange SampleLikelihood::assemble_prediction(const ParameterWrapper& parameter) {
     // Components stay sequential within a sample: a Migrad step varies one
     // parameter, so at most one component is stale per call and running the

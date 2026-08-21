@@ -78,6 +78,11 @@ namespace ana::ic {
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
 
+    /** Combined per-event weight of the flux components, for the MC-variance
+        diagnostic. Empty unless the components were asked to keep them, which
+        SAY and forward folding both do. */
+    [[nodiscard]] std::vector<double> per_event_weight() const;
+
     /** Per-bin prediction of one named part of this sample, for the results writer. */
     [[nodiscard]] std::span<const double> astro_histogram() const noexcept {
       return m_Astro ? m_Astro->histogram() : std::span<const double>{};
