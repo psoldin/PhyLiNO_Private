@@ -195,6 +195,16 @@ namespace ana::ic {
     , m_Config(cfg)
     , m_UseSAY(use_say)
     , m_UseMultiThreading(settings.use_multi_threading) {
+    // Folding reads the per-event weights, which the components only keep when
+    // asked; SAY is the other reason to ask.
+    const bool folded         = !sample.response.empty();
+    const bool need_per_event = use_say || folded;
+
+    if (folded && gpu)
+      throw std::runtime_error(
+          "SampleLikelihood: forward folding runs on the CPU backend only. The fold is a sparse "
+          "matrix-vector product over the response matrix and has no GPU kernel yet");
+
     if (cfg.wants_astro())
       m_Astro.emplace(sample,
                       cfg.mc_binning,
@@ -202,7 +212,7 @@ namespace ana::ic {
                       settings.astro_reference_index,
                       settings.astro_per_type_norm,
                       gpu,
-                      use_say,
+                      need_per_event,
                       settings.astro_model,
                       settings.use_multi_threading);
 
@@ -212,7 +222,7 @@ namespace ana::ic {
                      settings.conv_delta_gamma_e_ref,
                      settings.prompt_delta_gamma_e_ref,
                      gpu,
-                     use_say,
+                     need_per_event,
                      cfg.wants_veto(),
                      settings.veto_anchor_energy,
                      settings.veto_rescale_energy,
@@ -244,6 +254,17 @@ namespace ana::ic {
     m_PoissonSaturated.assign(total_bins, 0.0);
     m_Ssq.assign(total_bins, 0.0);
     m_GalacticTotal.assign(total_bins, 0.0);
+    // Forward folding needs the per-event weights the components would otherwise
+    // only keep for SAY, and its own histogram buffers.
+    if (!sample.response.empty()) {
+      if (sample.response.bin_offsets.size() != static_cast<std::size_t>(mc_bins) + 1)
+        throw std::runtime_error(
+            "SampleLikelihood: the sample's response matrix was built over a different binning than the "
+            "sample's MC binning");
+      if (m_Astro) m_FoldedAstro.assign(mc_bins, 0.0);
+      if (m_Atmo) m_FoldedAtmo.assign(mc_bins, 0.0);
+    }
+
     m_McTotal.assign(mc_bins, 0.0);
     m_McSsq.assign(mc_bins, 0.0);
     m_McSsqEvent.assign(mc_bins, 0.0);
@@ -268,6 +289,21 @@ namespace ana::ic {
       m_Gpu->ensure_kernel("say_ssq", src.c_str());
       m_SsqReduce.emplace(m_Gpu, sample, static_cast<std::size_t>(mc_bins));
       m_hSsq = m_Gpu->alloc_output(mc_bins);
+    }
+  }
+
+  void SampleLikelihood::fold(const std::span<const double> per_event, std::vector<double>& out) const noexcept {
+    const io::ic::ResponseMatrix& response = m_Sample.response;
+    const auto                    n_bins   = static_cast<int>(out.size());
+
+    #pragma omp parallel for schedule(guided) if (m_UseMultiThreading)
+    for (int b = 0; b < n_bins; ++b) {
+      double acc = 0.0;
+      for (std::size_t k = response.bin_offsets[static_cast<std::size_t>(b)];
+           k < response.bin_offsets[static_cast<std::size_t>(b) + 1]; ++k)
+        acc += static_cast<double>(response.fractions[k]) *
+               per_event[static_cast<std::size_t>(response.events[k])];
+      out[static_cast<std::size_t>(b)] = acc;
     }
   }
 
@@ -307,8 +343,21 @@ namespace ana::ic {
       galactic_changed   = galactic_changed || changed;
     }
 
-    const std::span<const double> astro     = m_Astro ? m_Astro->histogram() : std::span<const double>{};
-    const std::span<const double> atmo      = m_Atmo ? m_Atmo->histogram() : std::span<const double>{};
+    // Forward folding: the flux components' own histograms are the scatter of
+    // each event's weight into the single bin its reco fell in. With a response
+    // matrix the same weights are spread over bins by the event's measured
+    // response instead, so the histograms are recomputed here rather than read.
+    if (!m_Sample.response.empty()) {
+      if (m_Astro) fold(m_Astro->per_event_weight(), m_FoldedAstro);
+      if (m_Atmo) fold(m_Atmo->per_event_weight(), m_FoldedAtmo);
+    }
+
+    const std::span<const double> astro =
+        !m_Sample.response.empty() ? (m_Astro ? std::span<const double>{m_FoldedAstro} : std::span<const double>{})
+                                   : (m_Astro ? m_Astro->histogram() : std::span<const double>{});
+    const std::span<const double> atmo =
+        !m_Sample.response.empty() ? (m_Atmo ? std::span<const double>{m_FoldedAtmo} : std::span<const double>{})
+                                   : (m_Atmo ? m_Atmo->histogram() : std::span<const double>{});
     const std::span<const double> tmpl      = m_Template ? m_Template->histogram() : std::span<const double>{};
     const std::span<const double> mu_delta  = m_Systematics ? m_Systematics->mu_delta() : std::span<const double>{};
 
@@ -425,13 +474,28 @@ namespace ana::ic {
 
       // The component test is hoisted out of the per-event loop: which components
       // exist is fixed at construction, so each case gets its own tight loop.
+      //
+      // Under forward folding an event contributes w_i * f_ib to bin b rather
+      // than w_i to one bin, so it is that product that gets squared. Note this
+      // keeps SAY's assumption that bins are independent, which folding
+      // weakens -- one event now touches many bins, so their MC uncertainties
+      // are correlated and the diagonal treatment understates the covariance.
+      const io::ic::ResponseMatrix& response = m_Sample.response;
+      const bool                    folded   = !response.empty();
+
       auto accumulate = [&](auto event_weight) {
         #pragma omp parallel for schedule(guided) if(m_UseMultiThreading)
         for (int b = 0; b < n_bins; ++b) {
           double acc = 0.0;
-          #pragma omp simd reduction(+ : acc)
-          for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
-            acc += square(event_weight(i));
+          if (folded) {
+            for (std::size_t k = response.bin_offsets[b]; k < response.bin_offsets[b + 1]; ++k)
+              acc += square(static_cast<double>(response.fractions[k]) *
+                            event_weight(static_cast<std::size_t>(response.events[k])));
+          } else {
+            #pragma omp simd reduction(+ : acc)
+            for (std::size_t i = off[b]; i < off[b + 1]; ++i) {
+              acc += square(event_weight(i));
+            }
           }
           m_McSsq[b] = acc;
         }

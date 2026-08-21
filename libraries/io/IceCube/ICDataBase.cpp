@@ -143,6 +143,35 @@ namespace io::ic {
     ARROW_ASSIGN_OR_RAISE(auto e_reco, get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith, get_double_column(*table, b.reco_zenith));
 
+    // Forward-folding inputs: the response centres and the per-event widths.
+    // Read here rather than in the likelihood because they are
+    // parameter-independent and ICDataBase is what is cached for the process.
+    if (cfg.response.enabled) {
+      ARROW_ASSIGN_OR_RAISE(out.response_truth_log_e,
+                            get_double_column(*table, cfg.response.truth_energy_branch));
+      ARROW_ASSIGN_OR_RAISE(out.response_truth_zenith,
+                            get_double_column(*table, cfg.response.truth_zenith_branch));
+      ARROW_ASSIGN_OR_RAISE(auto sigma_e, get_double_column(*table, cfg.response.energy_sigma_branch));
+      ARROW_ASSIGN_OR_RAISE(auto sigma_z, get_double_column(*table, cfg.response.zenith_sigma_branch));
+
+      auto apply = [](const double x, const SigmaTransform transform) noexcept {
+        constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+        switch (transform) {
+          case SigmaTransform::None: return x;
+          case SigmaTransform::Exp: return std::exp(x);
+          case SigmaTransform::Pow10: return std::pow(10.0, x);
+          case SigmaTransform::DegToRad: return x * kDegToRad;
+        }
+        return x;
+      };
+      out.response_sigma_log_e.resize(sigma_e.size());
+      out.response_sigma_zenith.resize(sigma_z.size());
+      for (std::size_t i = 0; i < sigma_e.size(); ++i)
+        out.response_sigma_log_e[i] = apply(sigma_e[i], cfg.response.energy_sigma_transform);
+      for (std::size_t i = 0; i < sigma_z.size(); ++i)
+        out.response_sigma_zenith[i] = apply(sigma_z[i], cfg.response.zenith_sigma_transform);
+    }
+
     // Per-event fit-time columns. Only the components this sample declares are
     // read: a parquet that carries no atmospheric weights (or no astrophysical
     // baseline) still loads for a sample that does not ask for them.
@@ -284,6 +313,26 @@ namespace io::ic {
 
     // Compact to in-range events, group by bin, build the CSR index.
     out.sort_into_bins(cfg.mc_binning.total_bins());
+
+    // The response matrix indexes the sorted events, so it is built after the
+    // sort and never again: truth, widths and bin edges do not move during a fit.
+    if (cfg.response.enabled) {
+      std::size_t unusable = 0;
+      out.response = build_response_matrix(cfg.mc_binning, out.bin_idx, out.response_truth_log_e,
+                                           out.response_truth_zenith, out.response_sigma_log_e,
+                                           out.response_sigma_zenith, cfg.response.truncation,
+                                           cfg.response.min_fraction, unusable);
+
+      const double per_event = out.size() > 0 ? static_cast<double>(out.response.nnz()) /
+                                                    static_cast<double>(out.size())
+                                              : 0.0;
+      std::cout << "IceCube sample '" << cfg.name << "': response matrix " << out.response.nnz()
+                << " entries over " << out.size() << " events (" << per_event << " bins per event), "
+                << (static_cast<double>(out.response.bytes()) / 1e9) << " GB";
+      if (unusable > 0)
+        std::cout << "; " << unusable << " events had no usable response and kept their unfolded bin";
+      std::cout << '\n';
+    }
 
     if (cfg.filters_topology())
       std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "

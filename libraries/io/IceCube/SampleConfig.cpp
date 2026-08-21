@@ -3,6 +3,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -212,6 +213,45 @@ namespace io::ic {
                                      "' is not an integer class label or \"NaN\"");
           sample.topology_values.push_back(parsed);
         }
+      }
+
+      if (const auto response = node.get_child_optional("Response")) {
+        auto parse_transform = [&sample](const std::string& text, const char* key) {
+          if (text == "none") return SigmaTransform::None;
+          if (text == "exp") return SigmaTransform::Exp;
+          if (text == "pow10") return SigmaTransform::Pow10;
+          if (text == "deg2rad") return SigmaTransform::DegToRad;
+          throw std::runtime_error("parse_samples: sample '" + sample.name + "' has Response." + key + " '" +
+                                   text + "' (expected none, exp, pow10 or deg2rad)");
+        };
+
+        ResponseConfig& r     = sample.response;
+        r.enabled             = response->get<bool>("enabled", true);
+        r.truth_energy_branch = response->get<std::string>("TruthEnergyBranch", r.truth_energy_branch);
+        r.truth_zenith_branch = response->get<std::string>("TruthZenithBranch", r.truth_zenith_branch);
+        r.energy_sigma_branch = response->get<std::string>("EnergySigmaBranch", r.energy_sigma_branch);
+        r.zenith_sigma_branch = response->get<std::string>("ZenithSigmaBranch", r.zenith_sigma_branch);
+        r.energy_sigma_transform =
+            parse_transform(response->get<std::string>("EnergySigmaTransform", "none"), "EnergySigmaTransform");
+        r.zenith_sigma_transform =
+            parse_transform(response->get<std::string>("ZenithSigmaTransform", "deg2rad"), "ZenithSigmaTransform");
+        r.truncation   = response->get<double>("Truncation", r.truncation);
+        r.min_fraction = response->get<double>("MinFraction", r.min_fraction);
+
+        if (r.truncation <= 0.0)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has Response.Truncation <= 0; no bin would receive any weight");
+        if (r.min_fraction < 0.0 || r.min_fraction >= 1.0)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has Response.MinFraction outside [0, 1)");
+        for (const auto& [branch, key] :
+             {std::pair{std::cref(r.truth_energy_branch), "TruthEnergyBranch"},
+              std::pair{std::cref(r.truth_zenith_branch), "TruthZenithBranch"},
+              std::pair{std::cref(r.energy_sigma_branch), "EnergySigmaBranch"},
+              std::pair{std::cref(r.zenith_sigma_branch), "ZenithSigmaBranch"}})
+          if (branch.get().empty())
+            throw std::runtime_error("parse_samples: sample '" + sample.name + "' has an empty Response." +
+                                     std::string(key));
       }
 
       if (const auto galactic = node.get_child_optional("Galactic")) {

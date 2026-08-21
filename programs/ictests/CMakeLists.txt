@@ -1,4 +1,4 @@
-add_executable(ICTests ICTests.cpp Df64Test.cpp InputOptionsTests.cpp)
+add_executable(ICTests ICTests.cpp Df64Test.cpp InputOptionsTests.cpp ResponseTests.cpp)
 # Arrow/Parquet are PRIVATE to `icecube`; ICTests links them itself to write the
 # small parquet fixtures the ICDataBase read tests load.
 target_link_libraries(ICTests PRIVATE io icecube GTest::gtest_main
