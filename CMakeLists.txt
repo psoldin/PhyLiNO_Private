@@ -5,6 +5,9 @@ include(CTest)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Every executable lands here, so one directory goes on PATH.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 set(CMAKE_CXX_STANDARD 23)
 
 include(cmake/mpi.cmake)
