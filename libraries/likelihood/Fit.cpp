@@ -75,6 +75,15 @@ namespace ana {
     if (!m_Minimizer)
       throw std::runtime_error("Fit: ROOT has no Minuit2 minimizer called '" + input_options.minimizer_algo() + "'");
 
+    // Set here rather than in minimize(): a restart builds a *fresh* minimizer,
+    // and one left at the default level 0 makes Minuit2Minimizer::Minimize()
+    // call TurnOffPrintInfoLevel(), which raises the process-wide
+    // gErrorIgnoreLevel to 1001 for the whole call. Minuit2 prints through
+    // ::Info(), so that silences every *other* scan worker's Minuit output
+    // until the restart finishes -- and with two restarts overlapping, the
+    // save/restore of that global races and can leave it muted for good.
+    m_Minimizer->SetPrintLevel(silent ? 0 : 2);
+
     m_Minimizer->SetFunction(*m_Functor);
     m_Minimizer->SetTolerance(input_options.tolerance());
     m_Minimizer->SetStrategy(input_options.minuit_strategy());
@@ -198,8 +207,6 @@ namespace ana {
 
   bool Fit::minimize() {
     using namespace std::chrono;
-
-    m_Minimizer->SetPrintLevel(m_Options->inputOptions().silent() ? 0 : 2);
 
     const auto begin = high_resolution_clock::now();
     m_Converged      = m_Minimizer->Minimize();
