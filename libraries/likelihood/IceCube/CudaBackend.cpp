@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -81,7 +82,15 @@ namespace ana::ic {
       // run on several threads at once. The hot path (dispatch) takes no lock:
       // it only reads funcs, which is stable once every kernel is compiled, and
       // its own session's rows.
-      std::mutex mutex;
+      //
+      // shared_mutex, not mutex: a scan builds one Fit per grid point, so
+      // ensure_kernel/upload_column/upload_offsets are each called thousands of
+      // times but *populate* these containers only on the first. Every later
+      // call is a pure cache hit, and taking the exclusive lock for it
+      // serialised the whole warmup across every scan worker. Lookups take the
+      // shared lock; only the population path (and the NVRTC compile it holds
+      // across) takes the exclusive one.
+      std::shared_mutex mutex;
 
       // deque, not vector: dispatch reads device pointers out of a session's
       // alias rows while another thread may still be appending columns, and a
@@ -235,13 +244,23 @@ namespace ana::ic {
 
   void CudaSession::ensure_kernel(const char* name, const char* source) {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
-    // Held across the NVRTC compile: concurrent sessions asking for the same
-    // kernel must not each compile it. Only the first pays; the compile happens
-    // once per process for each of the three kernels.
+    const std::string key(name);
+
+    // Already compiled: a shared lock and nothing else. Every Fit's components
+    // re-request their kernels, so all but the first of thousands of calls end
+    // here.
+    {
+      const std::shared_lock lock(b->mutex);
+      if (b->funcs.count(key)) return;
+    }
+
+    // Exclusive, and held across the NVRTC compile: concurrent sessions asking
+    // for the same kernel must not each compile it. Only the first pays; the
+    // compile happens once per process for each of the four kernels.
     const std::scoped_lock lock(b->mutex);
     cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
 
-    const std::string key(name);
+    // Re-check: another worker may have compiled it between the two locks.
     if (b->funcs.count(key)) return;
 
     // Compile to PTX for the device's compute capability; the driver JITs it to
@@ -289,9 +308,20 @@ namespace ana::ic {
     auto* b = static_cast<CudaState*>(m_Backend->m_State);
     auto* s = static_cast<CudaSessionState*>(m_State);
 
+    // Cache hit under a shared lock and with no CUDA call at all: registering
+    // the alias only touches this session's own rows, and cuCtxSetCurrent is
+    // needed for the allocation below, not for the lookup.
+    {
+      const std::shared_lock lock(b->mutex);
+      if (auto it = b->colCache.find(data); it != b->colCache.end())
+        return alias_row(s, b->columns[it->second], b->scalar_bytes());
+    }
+
     const std::scoped_lock lock(b->mutex);
     cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
 
+    // Re-check: another worker may have uploaded this column while we were
+    // between the two locks.
     if (auto it = b->colCache.find(data); it != b->colCache.end())
       return alias_row(s, b->columns[it->second], b->scalar_bytes());
 
@@ -319,6 +349,13 @@ namespace ana::ic {
 
     // offsets stay uint32 in both precisions
     constexpr std::size_t kOffsetBytes = sizeof(std::uint32_t);
+
+    // Shared-lock cache hit, exclusive only to upload -- see upload_column.
+    {
+      const std::shared_lock lock(b->mutex);
+      if (auto it = b->colCache.find(data); it != b->colCache.end())
+        return alias_row(s, b->columns[it->second], kOffsetBytes);
+    }
 
     const std::scoped_lock lock(b->mutex);
     cu_check(cuCtxSetCurrent(b->ctx), "cuCtxSetCurrent");
