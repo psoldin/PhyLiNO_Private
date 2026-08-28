@@ -11,3 +11,17 @@ target_include_directories(explorermodel PUBLIC ${CMAKE_SOURCE_DIR}/libraries/re
 # What one evaluation costs, which decides the GUI's threading design.
 add_executable(PhyLiNOExplorerBench Bench.cpp)
 target_link_libraries(PhyLiNOExplorerBench PRIVATE explorermodel)
+
+# The GUI is optional. Qt is a desktop-only dependency and the cluster has none,
+# so its absence skips this target and leaves LLHFit and the model layer above
+# untouched. Homebrew's Qt5 is keg-only, so a local build needs
+#   cmake -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt@5 ..
+find_package(Qt5 COMPONENTS Widgets Charts QUIET)
+if(Qt5_FOUND)
+  set(CMAKE_AUTOMOC ON)
+  add_executable(PhyLiNOExplorer main.cpp MainWindow.cpp)
+  target_link_libraries(PhyLiNOExplorer PRIVATE explorermodel Qt5::Widgets Qt5::Charts)
+  message(STATUS "Qt5 ${Qt5_VERSION} found -- building PhyLiNOExplorer")
+else()
+  message(STATUS "Qt5 (Widgets, Charts) not found -- skipping PhyLiNOExplorer")
+endif()

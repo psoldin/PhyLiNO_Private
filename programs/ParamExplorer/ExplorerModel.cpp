@@ -116,12 +116,13 @@ namespace explorer {
       const double lo = lower ? *lower : std::min(0.0, start - std::max(1.0, std::abs(start)));
       const double hi = upper ? *upper : std::max(2.0 * start, lo + 1.0);
 
-      m_Info.push_back(ParamInfo{.name  = input.name(i),
-                                 .index = i,
-                                 .value = start,
-                                 .lo    = lo,
-                                 .hi    = hi,
-                                 .fixed = input.fixed(i)});
+      m_Info.push_back(ParamInfo{.name   = input.name(i),
+                                 .index  = i,
+                                 .value  = start,
+                                 .asimov = input.parameters()[i].asimov_value(),
+                                 .lo     = lo,
+                                 .hi     = hi,
+                                 .fixed  = input.fixed(i)});
     }
 
     m_Reference = evaluate();

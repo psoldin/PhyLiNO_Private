@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -33,6 +34,43 @@ int main(int argc, char** argv) {
               << "samples: " << model.sample_names().size()
               << ", parameters: " << model.parameters().size()
               << ", -2lnL: " << model.reference_likelihood() << "\n";
+
+    // With UseData: false the data IS the Asimov expectation, so at the point it
+    // was generated at the stack has to reproduce it bin for bin. This is the
+    // check the design doc describes as reading off the plot -- the data points
+    // sitting on top of the stack -- done as arithmetic instead, so it can
+    // actually be run.
+    //
+    // At the ASIMOV point, not the start point: a config may seed the fit off
+    // truth, and config_icecube_combined.json does (SpectralIndex starts at 2.4
+    // with the data generated at 2.44), which leaves a residual of ~14% in the
+    // highest bins and is not a bug.
+    for (const auto& info : model.parameters())
+      model.set(info.index, info.asimov);
+
+    for (std::size_t sample = 0; sample < model.sample_names().size(); ++sample) {
+      const auto marginalized = model.marginalize(sample, 0);
+
+      double worst = 0.0;
+      for (std::size_t b = 0; b < marginalized.data.size(); ++b) {
+        double stacked = 0.0;
+        for (const auto& component : marginalized.components)
+          stacked += component.values[b];
+
+        // systematicsDelta is not in the stack, so the residual is only zero at
+        // the nominal detector parameters -- which is where the start point is.
+        const double scale = std::max(std::abs(marginalized.data[b]), 1.0);
+        worst = std::max(worst, std::abs(stacked - marginalized.data[b]) / scale);
+      }
+
+      std::cout << "asimov check, sample " << model.sample_names()[sample]
+                << ": worst relative stack-vs-data residual " << worst << '\n';
+    }
+
+    std::cout << "-2lnL at the asimov point: " << model.evaluate() << '\n';
+
+    for (const auto& info : model.parameters())
+      model.set(info.index, info.value);
 
     // Per parameter, not just one: a norm only rescales a cached histogram
     // while a spectral index forces every event to be reweighted, and the

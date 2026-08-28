@@ -151,10 +151,14 @@ linear/log toolbar toggle.
 - `ctest -R ICTests` passes.
 - `LLHFit` still configures and builds with Qt absent from `CMAKE_PREFIX_PATH`
   — the actual cluster condition, not an assumption about it.
-- Launch on `configs/config_icecube_combined.json`; at the config start point
-  with `UseData: false`, the data points sit on the stack. That is the spec's
-  built-in correctness check and it is a visual one, so it belongs here rather
-  than in the test suite.
+- The stack reproduces the Asimov data. Not left as a visual check in the end:
+  `PhyLiNOExplorerBench` drives every parameter to its `AsimovValue` and diffs
+  the marginalized stack against the marginalized data per bin. Worst residual
+  4e-16 across all three samples of the combined config, with -2lnL exactly 0
+  there — which also exercises the single-bin `cscd_muon` sample.
+- Launch the GUI on the same config and drive the sliders. Only a person can do
+  this part; the window builds and the event loop survives the first refresh
+  under `QT_QPA_PLATFORM=offscreen`, which is as far as automation reaches.
 
 ## Order
 

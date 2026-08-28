@@ -15,6 +15,11 @@ namespace explorer {
     std::string name;
     int         index = 0;
     double      value = 0.0;
+    // The point the Asimov data was generated at ("AsimovValue", defaulting to
+    // the start value). Not the same as the start value in general: a config can
+    // deliberately seed the fit off truth, and config_icecube_combined.json does
+    // exactly that for SpectralIndex.
+    double      asimov = 0.0;
     // Slider range. Real config bounds where the config gives them, the
     // fallback of the design doc where it does not -- several norms declare a
     // LowerBound only.

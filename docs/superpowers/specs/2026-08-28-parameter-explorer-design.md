@@ -196,12 +196,14 @@ topology parquet fixtures.
 
 1. Marginalizing over each axis of a 2D binning yields the same total as the
    unmarginalized prediction.
-2. The five stacked components sum bin-by-bin to `predicted()` minus
-   `systematicsDelta` at the config start point.
+2. The default stacked components plus `systematicsDelta` sum bin-by-bin to
+   `predicted()`, so a component the stack drops cannot be one the plot needed.
 3. Uniform axis edges match `lo + i * step`; the explicit-edge cascade zenith
    binning matches the config list exactly.
-4. `set()` followed by two `evaluate()` calls at the same value returns an
-   identical likelihood; a changed `AstroNorm` returns a different one.
+4. Two evaluations at one unchanged point return an identical likelihood; a
+   changed `AstroNorm` returns a different one. Worth pinning because the second
+   evaluation takes a different path through the flux components' caching than
+   the first.
 5. Marginalizing a single-bin axis is the identity.
 
 No GUI tests. Driving a `QSlider` through `QTest` would verify that Qt works,
