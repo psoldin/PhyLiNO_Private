@@ -2,6 +2,7 @@
 
 // STL includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -10,139 +11,76 @@
 
 /**
  * @file
- * @brief Binary refinement of a one-dimensional profile likelihood scan.
+ * @brief Outward walk of a one-dimensional profile likelihood scan.
  *
- * The one-dimensional counterpart of AdaptiveGrid.h: a coarse uniform set of
- * points along a single parameter, then repeated halving of only those
- * intervals a confidence level crosses. What matters in a profile is where the
- * curve cuts delta chi2 = 1, 4, 9 and where its minimum sits; the flat outer
- * wings carry no information and stay cheap.
+ * The scan starts at the best fit and steps away from it along the parameter
+ * axis until the profile has risen by a given delta chi2 -- 16 by default, well
+ * past the 3 sigma crossing -- then stops. Nothing about the window is guessed
+ * in advance: how far the walk goes is decided by the likelihood itself, so a
+ * parameter that is tightly constrained gets a short scan and a loose one a long
+ * one without either being configured.
  *
- * As in the two-dimensional case nothing here assumes a shape. An interval is
- * split from the values at its own two ends, so a double minimum, a curve that
- * leaves the window still rising and a plateau are all handled the same way.
+ * Step size is chosen the same way. After every round the local slope of the
+ * profile is measured and the next step is sized to raise the likelihood by
+ * about `gain`, so points come out dense where the curve bends and sparse where
+ * it is flat, with no assumption that the profile is parabolic, symmetric, or
+ * even single-minimum.
+ *
+ * Points sit on integer offsets from the best fit, in units of `unit` (chosen by
+ * the caller, normally a small fraction of the parameter's step width). Integer
+ * keys keep every point exactly representable, give it a stable name across
+ * runs -- which is what makes a scan resumable -- and let two points of
+ * different rounds coincide instead of drifting apart by a rounding error.
+ *
+ * A round proposes several points per direction at once so a worker pool has
+ * something to chew on: the walk is sequential in its decisions but not in its
+ * fits.
  */
 namespace scan1d {
 
-  /// Values of the fit objective, keyed by lattice index at the finest depth.
-  /// Missing entries are points never evaluated.
+  /// Values of the fit objective, keyed by offset from the best fit in lattice
+  /// units. Missing entries are points never evaluated.
   ///
   /// The objective is expected in -2 log L units, which is what the fit
   /// minimises, so a difference of two values is already a delta chi2 and must
   /// not be scaled again. Same convention as scan::Surface.
   using Profile = std::map<int, double>;
 
-  /// An interval of the refinement: left lattice index plus its length in
-  /// lattice units.
-  struct Segment {
-    int origin = 0;
-    int size   = 0;
-  };
-
   struct Settings {
-    /// Intervals of the initial uniform scan. Coarse, but fine enough that no
-    /// plausible minimum hides between two of its points.
-    int coarse_cells = 16;
+    /// Rise above the best fit at which a direction stops. 16 is 4 sigma for a
+    /// one-dimensional profile, so the 1, 2 and 3 sigma crossings all fall
+    /// strictly inside the scanned range instead of on its edge.
+    double target = 16.0;
 
-    /// Refinement depth applied to intervals a level crosses.
-    int max_depth = 4;
+    /// Rise the next step aims for. Sets the point density: the whole walk out
+    /// to `target` costs roughly target/gain points per direction wherever the
+    /// slope estimate holds.
+    double gain = 1.0;
 
-    /// Refinement depth applied to intervals inside the outermost level but not
-    /// crossed by one themselves.
-    ///
-    /// This is where the minimum lives, and the minimum is what every reported
-    /// interval is measured from, so it is refined as hard as the crossings.
-    /// One dimension makes that cheap: full depth over the whole region costs
-    /// coarse_cells * 2^max_depth points at worst, a few hundred fits.
-    int region_depth = 4;
+    /// Step of the first round, in lattice units. Only a starting guess; from
+    /// the second round on the step comes from the measured slope.
+    int start_step = 64;
 
-    /// Levels to resolve, as delta chi2. The largest one bounds the refined
-    /// region.
-    ///
-    /// The first three are the 1, 2 and 3 sigma points of a one-dimensional
-    /// profile, which is what the crossings are read off at. The fourth is not
-    /// reported: it is there so the 3 sigma crossing falls inside the refined
-    /// region instead of sitting on its edge, the same trick AdaptiveGrid uses
-    /// with 11.83.
-    std::vector<double> levels{1.0, 4.0, 9.0, 12.0};
+    /// Smallest and largest step, in lattice units. The lower bound keeps a
+    /// near-vertical profile from stalling on ever smaller steps; the upper one
+    /// keeps a flat one from jumping over the rise.
+    int min_step = 1;
+    int max_step = 1 << 14;
 
-    /// Length of a coarse interval in lattice units.
-    [[nodiscard]] int coarse_step() const { return 1 << max_depth; }
+    /// Points proposed per direction per round. Larger batches keep more
+    /// workers busy at the cost of overshooting the target by up to a batch.
+    int batch = 4;
 
-    /// Number of lattice intervals spanning the scanned range.
-    [[nodiscard]] int lattice() const { return coarse_cells << max_depth; }
+    /// Safety cap on the points of one direction, so a profile that never rises
+    /// (an unconstrained parameter) ends instead of running forever.
+    int max_points = 200;
+
+    /// Hard limits in lattice units, from the parameter's configured bounds.
+    /// A direction that reaches one stops there: outside them the minimiser
+    /// cannot go, so neither can an honest profile.
+    int lower_limit = -(1 << 24);
+    int upper_limit = 1 << 24;
   };
-
-  /**
-   * @brief Decides whether an interval has to be halved.
-   *
-   * @param profile   Values known so far.
-   * @param settings  Refinement settings.
-   * @param segment   Interval under consideration.
-   * @param reference Lowest likelihood seen, which the levels are measured from.
-   * @param depth     Current refinement depth of the interval.
-   */
-  inline bool needs_split(const Profile& profile, const Settings& settings, const Segment& segment, double reference, int depth) {
-    double lowest  = std::numeric_limits<double>::infinity();
-    double highest = -std::numeric_limits<double>::infinity();
-
-    for (const int dx : {0, segment.size}) {
-      const auto end = profile.find(segment.origin + dx);
-      // An end that is missing or unusable leaves the interval undecidable, so
-      // it is refined rather than silently trusted.
-      if (end == profile.end() || !std::isfinite(end->second))
-        return depth < settings.max_depth;
-
-      const double delta = end->second - reference;
-      lowest             = std::min(lowest, delta);
-      highest            = std::max(highest, delta);
-    }
-
-    const bool on_level = std::ranges::any_of(settings.levels, [&](double level) { return lowest <= level && level <= highest; });
-    if (on_level)
-      return depth < settings.max_depth;
-
-    const bool inside = !settings.levels.empty() && lowest <= std::ranges::max(settings.levels);
-    return inside && depth < settings.region_depth;
-  }
-
-  /// Lattice indices of the initial uniform scan.
-  inline std::vector<int> coarse_nodes(const Settings& settings) {
-    const int step = settings.coarse_step();
-
-    std::vector<int> nodes;
-    nodes.reserve(static_cast<std::size_t>(settings.coarse_cells) + 1);
-    for (int i = 0; i <= settings.coarse_cells; ++i)
-      nodes.push_back(i * step);
-
-    return nodes;
-  }
-
-  /// Intervals of the initial uniform scan.
-  inline std::vector<Segment> coarse_segments(const Settings& settings) {
-    const int step = settings.coarse_step();
-
-    std::vector<Segment> segments;
-    segments.reserve(static_cast<std::size_t>(settings.coarse_cells));
-    for (int i = 0; i < settings.coarse_cells; ++i)
-      segments.push_back(Segment{i * step, step});
-
-    return segments;
-  }
-
-  /// The node a split adds: the midpoint. The ends are already there, and
-  /// neighbouring intervals share them.
-  inline void split_nodes(const Segment& segment, std::vector<int>& nodes) {
-    nodes.push_back(segment.origin + segment.size / 2);
-  }
-
-  /// The two intervals a split produces.
-  inline void split_segments(const Segment& segment, std::vector<Segment>& segments) {
-    const int half = segment.size / 2;
-
-    segments.push_back(Segment{segment.origin, half});
-    segments.push_back(Segment{segment.origin + half, half});
-  }
 
   /// Lowest finite value on the profile; infinity if there is none.
   inline double reference_value(const Profile& profile) {
@@ -154,21 +92,164 @@ namespace scan1d {
     return lowest;
   }
 
+  namespace detail {
+
+    /// One direction of the walk.
+    struct Arm {
+      int  direction = 1;
+      int  last      = 0;  ///< Outermost node evaluated so far that is finite and below the target.
+      int  step      = 1;  ///< Step to the next point, in lattice units.
+      int  points    = 0;
+      bool active    = true;
+
+      /// The first point found at or past the target, if there is one. The walk
+      /// does not stop the moment it steps over the target: a step sized for a
+      /// wider profile can clear the whole rise in one jump and leave nothing
+      /// sampled in between. Instead the crossing point becomes a wall and the
+      /// direction keeps filling the gap behind it until the last step is worth
+      /// no more than `gain`, which is what makes the walk independent of how
+      /// well the configured step width happens to match the true width.
+      bool bounded = false;
+      int  wall    = 0;
+    };
+
+    inline double value_at(const Profile& profile, int node) {
+      const auto found = profile.find(node);
+      return found == profile.end() ? std::numeric_limits<double>::quiet_NaN() : found->second;
+    }
+
+    /// The nodes a direction wants fitted next. Stops early at a configured
+    /// bound -- past it there is nothing to profile -- and at its own wall,
+    /// beyond which the profile is already known to be above the target.
+    inline std::vector<int> proposals(const Settings& settings, const Arm& arm) {
+      std::vector<int> nodes;
+      if (!arm.active)
+        return nodes;
+
+      nodes.reserve(static_cast<std::size_t>(std::max(1, settings.batch)));
+
+      for (int i = 1; i <= std::max(1, settings.batch); ++i) {
+        const int raw = arm.last + arm.direction * arm.step * i;
+        if (arm.bounded && (arm.direction > 0 ? raw >= arm.wall : raw <= arm.wall))
+          break;
+
+        const int node = std::clamp(raw, settings.lower_limit, settings.upper_limit);
+        if (node == arm.last)
+          break;
+
+        nodes.push_back(node);
+        if (node != raw)
+          break;
+      }
+
+      return nodes;
+    }
+
+    /// Reads back one direction's round and decides where it goes next.
+    inline void advance(const Settings& settings, Arm& arm, const Profile& profile, double reference, const std::vector<int>& nodes) {
+      int    previous       = arm.last;
+      double previous_delta = value_at(profile, arm.last) - reference;
+      if (!std::isfinite(previous_delta))
+        previous_delta = 0.0;
+
+      bool failed = false;
+
+      for (const int node : nodes) {
+        const double value = value_at(profile, node);
+
+        // A point without a usable likelihood says nothing about the slope, and
+        // stepping past it would extrapolate from the last point that did. The
+        // direction backs off to a smaller step and tries again from where it
+        // still has a value.
+        if (!std::isfinite(value)) {
+          failed = true;
+          break;
+        }
+
+        ++arm.points;
+
+        // A point at or past the target is a wall, not a place to walk on from:
+        // what is still missing lies behind it.
+        if (value - reference >= settings.target) {
+          arm.bounded = true;
+          arm.wall    = node;
+          break;
+        }
+
+        previous       = arm.last;
+        previous_delta = value_at(profile, arm.last) - reference;
+        if (!std::isfinite(previous_delta))
+          previous_delta = 0.0;
+
+        arm.last = node;
+      }
+
+      if (arm.points >= settings.max_points || arm.last == settings.lower_limit || arm.last == settings.upper_limit) {
+        arm.active = false;
+        return;
+      }
+
+      if (failed) {
+        if (arm.step <= settings.min_step)
+          arm.active = false;
+        arm.step = std::max(settings.min_step, arm.step / 2);
+        return;
+      }
+
+      const double last_delta = value_at(profile, arm.last) - reference;
+
+      // Size the next step from the slope the last two points measured, so the
+      // profile rises by about `gain` per step. Behind a wall the slope of the
+      // gap itself is the better estimate: it is the stretch still to be filled.
+      int    span  = std::abs(arm.last - previous);
+      double delta = last_delta - previous_delta;
+      if (arm.bounded) {
+        span  = std::abs(arm.wall - arm.last);
+        delta = (value_at(profile, arm.wall) - reference) - last_delta;
+      }
+
+      const double slope = span > 0 && std::isfinite(delta) ? delta / span : 0.0;
+
+      // Clamped as a double first: a slope of 1e-12 would otherwise ask for a
+      // step no int can hold.
+      const double wanted_step = slope > 0.0 ? std::clamp(settings.gain / slope, 1.0, static_cast<double>(settings.max_step))
+                                             : static_cast<double>(settings.max_step);
+
+      // Growing the step by more than a factor of four in one round would let a
+      // single flat pair of points decide the rest of the walk. Shrinking is not
+      // damped: that is the walk correcting a step that was too big, and the
+      // sooner it does the fewer points it wastes past the target.
+      arm.step = std::clamp(static_cast<int>(std::lround(wanted_step)), settings.min_step, std::min(settings.max_step, arm.step * 4));
+
+      if (arm.bounded) {
+        // The direction is done once the gap behind the wall is worth less than
+        // one step's rise, or is too narrow to put another point in.
+        if (span <= settings.min_step || delta <= settings.gain) {
+          arm.active = false;
+          return;
+        }
+
+        // Whatever the slope suggests, the next point has to land inside the gap.
+        arm.step = std::clamp(arm.step, settings.min_step, std::max(settings.min_step, span / 2));
+      }
+    }
+
+  }  // namespace detail
+
   /**
-   * @brief Runs the coarse scan and all refinement rounds.
+   * @brief Walks outward from the best fit until the profile has risen by `target`.
    *
-   * @param settings  Refinement settings.
-   * @param seed      Likelihood of a free fit, used as the reference until the
-   *                  scan produces a lower one. Pass infinity if there is none.
-   * @param evaluate  Callable `void(const std::vector<int>&, Profile&)` that
-   *                  fills in every node it is handed. It may be called with
-   *                  nodes that already have a value; those are filtered out
-   *                  before the call.
-   * @param report    Callable `void(int round, std::size_t split, std::size_t segments, std::size_t points)`
-   *                  invoked once per round, for progress output.
+   * @param settings Walk settings.
+   * @param seed     Likelihood of the free fit, used as the reference until the
+   *                 walk produces a lower one. Pass infinity if there is none.
+   * @param evaluate Callable `void(const std::vector<int>&, Profile&)` that fills
+   *                 in every node it is handed. It may be called with nodes that
+   *                 already have a value; those are filtered out before the call.
+   * @param report   Callable `void(int round, std::size_t proposed, std::size_t points)`
+   *                 invoked once per round, for progress output.
    */
   template <typename Evaluator, typename Reporter>
-  Profile refine(const Settings& settings, double seed, Evaluator&& evaluate, Reporter&& report) {
+  Profile walk(const Settings& settings, double seed, Evaluator&& evaluate, Reporter&& report) {
     Profile profile;
 
     auto evaluate_missing = [&](std::vector<int> nodes) {
@@ -177,36 +258,76 @@ namespace scan1d {
       nodes.erase(repeated.begin(), repeated.end());
       std::erase_if(nodes, [&](int node) { return profile.contains(node); });
 
-      evaluate(nodes, profile);
+      if (!nodes.empty())
+        evaluate(nodes, profile);
     };
 
-    evaluate_missing(coarse_nodes(settings));
-    report(0, std::size_t{0}, std::size_t{0}, profile.size());
+    // The best fit itself. Every rise is measured from here, and it is the point
+    // the two directions start from.
+    evaluate_missing({0});
+    report(0, std::size_t{1}, profile.size());
 
-    std::vector<Segment> segments = coarse_segments(settings);
+    std::array<detail::Arm, 2> arms{detail::Arm{-1, 0, std::max(1, settings.start_step)},
+                                    detail::Arm{+1, 0, std::max(1, settings.start_step)}};
 
-    for (int depth = 0; depth < settings.max_depth; ++depth) {
-      const double reference = std::min(seed, reference_value(profile));
+    int round = 1;
+    for (; arms[0].active || arms[1].active; ++round) {
+      std::array<std::vector<int>, 2> proposed{detail::proposals(settings, arms[0]), detail::proposals(settings, arms[1])};
 
-      std::vector<Segment> split;
-      for (const Segment& segment : segments)
-        if (needs_split(profile, settings, segment, reference, depth))
-          split.push_back(segment);
+      std::vector<int> nodes;
+      for (const auto& arm_nodes : proposed)
+        nodes.insert(nodes.end(), arm_nodes.begin(), arm_nodes.end());
 
-      report(depth + 1, split.size(), segments.size(), profile.size());
-
-      if (split.empty())
+      // Both directions out of moves at once: nothing left to fit.
+      if (nodes.empty())
         break;
 
-      std::vector<int>     nodes;
-      std::vector<Segment> children;
-      for (const Segment& segment : split) {
-        split_nodes(segment, nodes);
-        split_segments(segment, children);
+      report(round, nodes.size(), profile.size());
+      evaluate_missing(nodes);
+
+      // Taken fresh each round: a scan point may undercut the free fit, and
+      // every rise is measured from the lowest point known.
+      const double reference = std::min(seed, reference_value(profile));
+
+      for (std::size_t i = 0; i < arms.size(); ++i) {
+        if (!arms[i].active || proposed[i].empty())
+          continue;
+        detail::advance(settings, arms[i], profile, reference, proposed[i]);
+      }
+    }
+
+    // The walk only guarantees its density behind the wall it stopped at: a
+    // round whose step was still growing can clear a whole stretch of the
+    // profile in one jump, and on a steep parameter that stretch is wide enough
+    // to hide the 1 sigma crossing entirely. Every neighbouring pair that rises
+    // by more than `gain` is halved until it does not, which gives the finished
+    // curve one density everywhere instead of one near the target and another
+    // in the middle.
+    for (;; ++round) {
+      const double reference = std::min(seed, reference_value(profile));
+
+      std::vector<int> nodes;
+      for (auto point = profile.begin(); point != profile.end() && std::next(point) != profile.end(); ++point) {
+        const auto [left, left_value]   = *point;
+        const auto [right, right_value] = *std::next(point);
+
+        if (!std::isfinite(left_value) || !std::isfinite(right_value))
+          continue;
+
+        // Nothing to gain past the target, and nothing to split when the two
+        // points are already neighbours on the lattice.
+        if (right - left < 2 || std::min(left_value, right_value) - reference >= settings.target)
+          continue;
+
+        if (std::abs(right_value - left_value) > settings.gain)
+          nodes.push_back(left + (right - left) / 2);
       }
 
+      if (nodes.empty())
+        break;
+
+      report(round, nodes.size(), profile.size());
       evaluate_missing(std::move(nodes));
-      segments = std::move(children);
     }
 
     return profile;

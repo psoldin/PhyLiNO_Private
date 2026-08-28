@@ -9,166 +9,212 @@
 
 /**
  * @file
- * @brief Tests for the binary refinement of the one-dimensional profile scan.
+ * @brief Tests for the outward walk of the one-dimensional profile scan.
  *
- * What a profile is read for is the position of its minimum and the points
- * where it cuts delta chi2 = 1, 4 and 9. The profiles used here are awkward on
- * purpose - asymmetric, cut off by the window, double-minimum - and in each
- * case the check is that those crossings land on the finest lattice while the
- * flat wings stay coarse.
+ * What the walk has to get right is where it stops and how densely it samples on
+ * the way there: far enough that the target rise is bracketed on both sides,
+ * never much further, and with points spaced by the curve rather than by a step
+ * fixed in advance. The profiles used here are awkward on purpose -- asymmetric,
+ * far narrower or far wider than the starting step, cut off by a bound, flat --
+ * and none of them is a shape the walk is allowed to assume.
  */
 namespace {
 
-  /// Runs the refinement over an analytic profile, counting evaluations.
+  /// Runs the walk over an analytic profile, counting evaluations.
+  ///
+  /// One lattice unit is 0.001 of the parameter, so a settings.start_step of 64
+  /// is a first step of 0.064 -- deliberately mismatched to most of the curves
+  /// below, which is the case the step adaptation exists for.
   struct Harness {
     scan1d::Settings settings;
     int              evaluations = 0;
+    double           unit        = 0.001;
 
-    /// @param curve Callable mapping x in [0,1] to a likelihood.
+    /// @param curve Callable mapping the parameter value to a likelihood. The
+    ///              walk anchors at 0, so the curves here have their minimum there.
     template <typename Function>
     scan1d::Profile run(Function&& curve) {
-      const double spacing = 1.0 / settings.lattice();
-
       auto evaluate = [&](const std::vector<int>& nodes, scan1d::Profile& values) {
         for (const int node : nodes) {
-          values[node] = curve(node * spacing);
+          values[node] = curve(node * unit);
           ++evaluations;
         }
       };
 
-      return scan1d::refine(settings, std::numeric_limits<double>::infinity(), evaluate, [](int, std::size_t, std::size_t, std::size_t) {});
+      return scan1d::walk(settings, std::numeric_limits<double>::infinity(), evaluate,
+                          [](int, std::size_t, std::size_t) {});
     }
 
-    /// Points a uniform scan of the finest resolution would have needed.
-    [[nodiscard]] int uniform_equivalent() const { return settings.lattice() + 1; }
+    [[nodiscard]] double position(int node) const { return node * unit; }
   };
 
-  /// An asymmetric well: steep on the left, shallow on the right, so the three
-  /// levels are crossed at six clearly separated places.
+  /// An asymmetric well: steep on the left, shallow on the right, so the two
+  /// directions have to stop at very different distances.
   ///
-  /// Returned in -2 log L units, the same convention the fit hands the
-  /// refinement, so the value is the delta chi2 itself rather than half of it.
+  /// Returned in -2 log L units, the same convention the fit hands the walk, so
+  /// the value is the delta chi2 itself rather than half of it.
   double asymmetric(double x) {
-    const double d = (x - 0.4) / (x < 0.4 ? 0.04 : 0.12);
+    const double d = x / (x < 0.0 ? 0.04 : 0.12);
     return d * d;
   }
 
-  /// True if the point of the finest depth nearest x was actually evaluated.
-  bool resolved_at_full_depth(const scan1d::Profile& profile, const scan1d::Settings& settings, double x) {
-    return profile.contains(static_cast<int>(std::lround(x * settings.lattice())));
-  }
-
-  /// Where `curve` first reaches `level`, walking from `from` in `direction`.
-  /// Zero if the window ends first.
-  template <typename Function>
-  double crossing_of(Function&& curve, const scan1d::Settings& settings, double from, int direction, double level) {
-    const double spacing = 1.0 / settings.lattice();
-    for (double x = from; x >= 0.0 && x <= 1.0; x += direction * spacing)
-      if (curve(x) >= level)
-        return x;
-
-    return 0.0;
+  /// Highest value reached on either side of the minimum.
+  std::pair<double, double> reach(const scan1d::Profile& profile) {
+    return {profile.begin()->second, profile.rbegin()->second};
   }
 
 }  // namespace
 
-/// Every level named in the settings must be located at the finest resolution,
-/// on both sides of the minimum, not just the outermost one.
-TEST(AdaptiveScan1D, ResolvesEveryCrossingAtFullDepth) {
+/// The point of the whole change: the walk stops where the likelihood says to,
+/// on both sides, without a window being handed to it.
+TEST(AdaptiveScan1D, ReachesTheTargetOnBothSides) {
   Harness    harness;
   const auto profile = harness.run(asymmetric);
 
-  for (const double level : harness.settings.levels) {
-    for (const int direction : {-1, 1}) {
-      const double crossing = crossing_of(asymmetric, harness.settings, 0.4, direction, level);
-      ASSERT_GT(crossing, 0.0) << "level " << level << " is not crossed inside the window";
-      EXPECT_TRUE(resolved_at_full_depth(profile, harness.settings, crossing))
-          << "level " << level << " at x = " << crossing << " is not sampled at full depth";
-    }
-  }
+  const auto [low, high] = reach(profile);
+  EXPECT_GE(low, harness.settings.target);
+  EXPECT_GE(high, harness.settings.target);
 }
 
-/// The minimum is what every reported interval is measured from, so the region
-/// around it is refined as hard as the crossings themselves.
-TEST(AdaptiveScan1D, ResolvesTheMinimumAtFullDepth) {
+/// Stopping at the target is only useful if it does not run far past it: the
+/// points beyond the last crossing are the ones that buy nothing.
+TEST(AdaptiveScan1D, StopsShortlyPastTheTarget) {
   Harness    harness;
   const auto profile = harness.run(asymmetric);
 
-  EXPECT_TRUE(resolved_at_full_depth(profile, harness.settings, 0.4));
+  // A round proposes a whole batch at once, so the overshoot is bounded by the
+  // batch rather than by a single step.
+  const auto [low, high] = reach(profile);
+  EXPECT_LT(low, 10.0 * harness.settings.target);
+  EXPECT_LT(high, 10.0 * harness.settings.target);
 }
 
-/// The point of the refinement: the same resolution for a fraction of the fits.
-TEST(AdaptiveScan1D, CostsLessThanTheEquivalentUniformScan) {
-  Harness harness;
-  harness.run(asymmetric);
+/// The two sides of an asymmetric profile are three times apart in width, and
+/// the walk has to find that on its own rather than covering both alike.
+TEST(AdaptiveScan1D, FollowsAnAsymmetricProfile) {
+  Harness    harness;
+  const auto profile = harness.run(asymmetric);
 
-  EXPECT_LT(harness.evaluations, harness.uniform_equivalent());
+  const double left  = -harness.position(profile.begin()->first);
+  const double right = harness.position(profile.rbegin()->first);
+
+  EXPECT_GT(right, 1.5 * left) << "the shallow side must be scanned further than the steep one";
 }
 
-/// A profile still falling at the edge of the window must be refined up to that
-/// edge, rather than the refinement stopping where there is no crossing to find.
-TEST(AdaptiveScan1D, ResolvesAProfileOpenAtTheEdgeOfTheWindow) {
+/// A profile far narrower than the starting step: the walk has to shrink its
+/// step instead of jumping straight past the whole interesting region.
+TEST(AdaptiveScan1D, ResolvesAProfileNarrowerThanTheStartingStep) {
   Harness harness;
 
-  // Minimum sits on the left edge; the rise is cut off by the window.
-  auto open_profile = [](double x) {
-    const double d = x / 0.25;
+  auto narrow = [](double x) {
+    const double d = x / 0.002;
     return d * d;
   };
 
-  const auto profile = harness.run(open_profile);
+  const auto profile = harness.run(narrow);
 
-  EXPECT_TRUE(resolved_at_full_depth(profile, harness.settings, 0.0));
+  // Delta chi2 = 1 sits at x = 0.002, i.e. 2 lattice units out. Points inside
+  // the 1 sigma interval are what a profile is read for.
+  int inside = 0;
+  for (const auto& [node, value] : profile)
+    if (value < 1.0)
+      ++inside;
 
-  const double crossing = crossing_of(open_profile, harness.settings, 0.0, 1, harness.settings.levels.back());
-  ASSERT_GT(crossing, 0.0);
-  EXPECT_TRUE(resolved_at_full_depth(profile, harness.settings, crossing));
+  EXPECT_GE(inside, 3) << "the 1 sigma region must be sampled, not stepped over";
 }
 
-/// Two separate minima: the refinement follows both, because the decision to
-/// split is local to an interval and carries no notion of a single region.
-TEST(AdaptiveScan1D, ResolvesDisconnectedMinima) {
+/// The mirror case: a profile far wider than the starting step must not cost
+/// hundreds of points to walk out to the target.
+TEST(AdaptiveScan1D, GrowsItsStepOnAWideProfile) {
   Harness harness;
 
-  auto minima = [](double x) {
-    auto well = [&](double centre) {
-      const double d = (x - centre) / 0.05;
-      return d * d;
-    };
-    return std::min(well(0.25), well(0.75));
+  auto wide = [](double x) {
+    const double d = x / 4.0;
+    return d * d;
   };
 
-  const auto profile = harness.run(minima);
+  const auto profile = harness.run(wide);
 
-  for (const double centre : {0.25, 0.75}) {
-    const double crossing = crossing_of(minima, harness.settings, centre, 1, harness.settings.levels.back());
-    ASSERT_GT(crossing, 0.0);
-    EXPECT_TRUE(resolved_at_full_depth(profile, harness.settings, crossing))
-        << "minimum at " << centre << " is not traced at full depth";
-  }
+  const auto [low, high] = reach(profile);
+  EXPECT_GE(low, harness.settings.target);
+  EXPECT_GE(high, harness.settings.target);
+  EXPECT_LT(static_cast<int>(profile.size()), 100);
 }
 
-/// The saving comes from *not* refining where there is nothing to resolve, so
-/// the far wings must stay at coarse resolution.
-TEST(AdaptiveScan1D, LeavesTheWingsCoarse) {
+/// A configured bound cuts a direction short. The other side is unaffected and
+/// still walks all the way to the target.
+TEST(AdaptiveScan1D, StopsAtAConfiguredBound) {
+  Harness harness;
+  harness.settings.upper_limit = 20;
+
+  const auto profile = harness.run(asymmetric);
+
+  EXPECT_EQ(profile.rbegin()->first, 20);
+  EXPECT_LT(profile.rbegin()->second, harness.settings.target) << "the bound, not the target, is what stopped this side";
+  EXPECT_GE(profile.begin()->second, harness.settings.target);
+}
+
+/// A parameter the data does not constrain never reaches the target. The walk
+/// has to give up on its own rather than run forever.
+TEST(AdaptiveScan1D, GivesUpOnAFlatProfile) {
+  Harness harness;
+  harness.settings.max_points = 20;
+
+  const auto profile = harness.run([](double) { return 0.0; });
+
+  EXPECT_LE(static_cast<int>(profile.size()), 2 * harness.settings.max_points + 1 + 2 * harness.settings.batch);
+  EXPECT_GT(static_cast<int>(profile.size()), 1);
+}
+
+/// A point without a usable likelihood must not be extrapolated through: the
+/// walk backs off to a smaller step and keeps the points it can still fit.
+TEST(AdaptiveScan1D, SurvivesPointsWithoutALikelihood) {
+  Harness harness;
+
+  // Everything past 0.05 fails, which is well before the target is reached.
+  const auto profile = harness.run([](double x) {
+    if (std::abs(x) > 0.05)
+      return std::numeric_limits<double>::quiet_NaN();
+    return asymmetric(x);
+  });
+
+  EXPECT_GT(static_cast<int>(profile.size()), 1);
+  for (const auto& [node, value] : profile)
+    if (std::abs(node * 0.001) <= 0.05)
+      EXPECT_TRUE(std::isfinite(value));
+}
+
+/// The walk grows its step while the profile is flat, which can clear a whole
+/// stretch -- the 1 sigma crossing included -- in one jump. Nothing below the
+/// target may be left coarser than one step's worth of likelihood.
+TEST(AdaptiveScan1D, LeavesNoGapWiderThanOneStepsRise) {
   Harness    harness;
   const auto profile = harness.run(asymmetric);
 
-  const int step = harness.settings.coarse_step();
+  for (auto point = profile.begin(); std::next(point) != profile.end(); ++point) {
+    const auto [left, left_value]   = *point;
+    const auto [right, right_value] = *std::next(point);
 
-  ASSERT_GT(asymmetric(1.0), harness.settings.levels.back());
-  EXPECT_TRUE(profile.contains(harness.settings.lattice())) << "the coarse scan itself must still cover the edge";
+    if (right - left < 2 || std::min(left_value, right_value) >= harness.settings.target)
+      continue;
 
-  int refined_outside = 0;
-  for (const auto& [node, value] : profile) {
-    if (node % step == 0)
-      continue;  // a coarse-scan point, not a refinement
-
-    if (asymmetric(static_cast<double>(node) / harness.settings.lattice()) > 4.0 * harness.settings.levels.back())
-      ++refined_outside;
+    EXPECT_LE(std::abs(right_value - left_value), harness.settings.gain)
+        << "gap between " << harness.position(left) << " and " << harness.position(right) << " is unsampled";
   }
+}
 
-  // Intervals straddling the outermost level are refined and reach a little way
-  // past it, but nothing far out in the wings should have been touched.
-  EXPECT_EQ(refined_outside, 0);
+/// The 1 sigma crossing is what a profile is read for, and on the steep side it
+/// sits well inside the first step the walk takes.
+TEST(AdaptiveScan1D, SamplesAroundTheOneSigmaCrossing) {
+  Harness    harness;
+  const auto profile = harness.run(asymmetric);
+
+  for (const int direction : {-1, 1}) {
+    int nearby = 0;
+    for (const auto& [node, value] : profile)
+      if (node * direction > 0 && value > 0.25 && value < 4.0)
+        ++nearby;
+
+    EXPECT_GE(nearby, 2) << "the 1 sigma crossing is not bracketed on side " << direction;
+  }
 }

@@ -44,6 +44,14 @@ namespace ana {
     return !same;
   }
 
+  inline int parameter_sum(const char* changed, std::size_t n) noexcept {
+    int sum = static_cast<int>(changed[0]);
+    for (std::size_t i = 1; i < n; ++i) {
+      sum += static_cast<int>(changed[i]);
+    }
+    return sum;
+  }
+
   bool ParameterWrapper::check_parameter_changed(const int from, const int to) const {
     if (from < 0 || to >= m_NParameter) {
       throw std::out_of_range("Parameter index out of range");
@@ -53,7 +61,7 @@ namespace ana {
       throw std::invalid_argument("Invalid range");
     }
 
-    const auto same_count = std::accumulate(m_ParameterChanged.begin() + from, m_ParameterChanged.begin() + (to + 1), 0);
+    const auto same_count = parameter_sum(m_ParameterChanged.data() + from, to - from + 1);
     const bool same       = same_count == (to - from + 1);
     return !same;
   }

@@ -160,6 +160,20 @@ namespace {
     }
   }
 
+  /// Parameters an N-1 scan holds fixed on top of the scanned one, as
+  /// (minimizer index, value) pairs.
+  using FixedParameters = std::vector<std::pair<int, double>>;
+
+  void apply_extra_fixed(ROOT::Math::Minimizer& min, const FixedParameters& fixed) {
+    for (const auto& [index, value] : fixed) {
+      min.SetVariableValue(static_cast<unsigned int>(index), value);
+      min.FixVariable(static_cast<unsigned int>(index));
+    }
+  }
+
+  /// The fixer of a scan that holds nothing beyond its own scanned parameter.
+  constexpr auto no_extra_fixed = [](ROOT::Math::Minimizer&) {};
+
   std::string node_name(const scan::Node& node) {
     std::stringstream name;
     name << "Output_" << node.x << '_' << node.y;
@@ -222,6 +236,7 @@ namespace {
   struct SeedFit {
     double              llh        = std::numeric_limits<double>::infinity();
     std::vector<double> parameters;  ///< Fitted X; empty if not run, non-finite, or read back from disk.
+    std::vector<double> errors;      ///< Migrad/Hesse errors; empty unless this run fitted them itself.
     bool                converged  = false;
     bool                from_store = false;  ///< True if read back from best_fit_name instead of freshly fitted.
   };
@@ -234,16 +249,28 @@ namespace {
    * and -- for a converged, finite result -- seeds the warm-start fallback used
    * before any scan point has a fitted neighbour of its own.
    */
-  template <typename Key>
+  template <typename Key, typename ApplyFixed>
   SeedFit bootstrap_seed_fit(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
                               const std::string& best_fit_name, const std::vector<std::string>& names, const std::string& format,
-                              bool warm_start, scanseed::Store<Key>& seeds, std::size_t n_parameters) {
+                              bool warm_start, scanseed::Store<Key>& seeds, std::size_t n_parameters, ApplyFixed&& apply_fixed) {
     if (const auto known = stored_fit(best_fit_name, names, format)) {
       std::cout << "Best fit already stored: " << known->llh << '\n';
-      return {known->llh, {}, false, true};
+
+      // The parameters come back too, unlike the likelihood alone that used to
+      // be read here: the 1D walk anchors its lattice on the best fit's own
+      // position, and a resumed run has to land on exactly the same anchor or
+      // its point names would refer to different physical values.
+      SeedFit result;
+      result.llh        = known->llh;
+      result.parameters = known->parameters;
+      result.from_store = true;
+      if (warm_start && !known->parameters.empty())
+        seeds.set_fallback(known->parameters);
+      return result;
     }
 
     ana::Fit seed_fit(options, module);
+    apply_fixed(*seed_fit.get_minimizer());
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
@@ -254,6 +281,8 @@ namespace {
     if (std::isfinite(seed_min->MinValue())) {
       result.llh = seed_min->MinValue();
       result.parameters.assign(seed_min->X(), seed_min->X() + n_parameters);
+      if (seed_min->Errors() != nullptr)
+        result.errors.assign(seed_min->Errors(), seed_min->Errors() + n_parameters);
 
       result::write_results(seed_fit, best_fit_name);
 
@@ -419,7 +448,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   // may undercut it, and refine() takes the lower of the two. Saved to disk as
   // BestFit so analysis can reference the true unfixed minimum instead of the
   // lowest sampled grid point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFit", names, format, warm_start, seeds, input_parameters.size());
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit", names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: SpectralIndex = " << seed.parameters[static_cast<int>(SpectralIndex)]
               << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
@@ -525,7 +554,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   // perform_2d_scan the free fit's likelihood itself is otherwise unused --
   // it only seeds the very first fits, before any grid point has a value of
   // its own to seed from.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", names, format, warm_start, seeds, input_parameters.size());
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: AstroGamma2 = " << seed.parameters[static_cast<int>(AstroGamma2)]
               << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
@@ -548,22 +577,50 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   std::cout << "Regular grid scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
 
+/// Lattice units per sigma of the best fit. The walk sizes its own steps from
+/// the measured slope, so this only sets how finely a step can be resolved:
+/// fine enough that the whole 4 sigma range has room for the points the walk
+/// wants, coarse enough that node indices stay small and readable in file names.
+constexpr int kUnitsPerStepWidth = 64;
+
+/// Where a walk that already ran in this directory put its lattice.
+struct Lattice {
+  double anchor = 0.0;  ///< Physical value of node 0, the best fit.
+  double unit   = 0.0;  ///< Physical distance between two neighbouring nodes.
+};
+
+/// Lattice of an earlier run. A resumed run reuses it rather than the one it
+/// would derive now: both anchor and unit come from a fit, the two runs agree to
+/// many digits but not exactly, and a lattice that moved would put every node at
+/// a slightly different physical value than the file of the same name holds.
+std::optional<Lattice> stored_lattice(const std::string& path) {
+  if (!std::filesystem::exists(path))
+    return std::nullopt;
+
+  std::ifstream  file(path);
+  nlohmann::json stored = nlohmann::json::parse(file, nullptr, false);
+  if (stored.is_discarded() || !stored.contains("anchor") || !stored.contains("unit"))
+    return std::nullopt;
+
+  return Lattice{stored["anchor"].get<double>(), stored["unit"].get<double>()};
+}
+
 /**
  * @brief Profiles the likelihood along a single configured parameter.
  *
  * The one-dimensional counterpart of perform_2d_scan: the scanned parameter is
  * fixed point by point and every other parameter is minimised over, so what
- * comes out is a profile likelihood rather than a slice. The window is taken
- * from the parameter's own "LowerBound"/"UpperBound" in the config, which is
- * the range the fit is allowed to explore anyway - scanning outside it would
- * profile over a region the minimiser can never reach.
+ * comes out is a profile likelihood rather than a slice.
  *
- * The scan starts uniform and then halves only the intervals a confidence
- * level crosses, so the fits end up around the minimum and the 1/2/3 sigma
- * crossings instead of spread over the flat wings. See AdaptiveScan1D.h.
+ * There is no window. The scan starts at the best fit and walks outward along
+ * the axis until the profile has risen by scan1d::Settings::target (16, i.e. 4
+ * sigma) in each direction, so how far it goes is decided by the likelihood
+ * instead of by a range guessed in advance. Configured LowerBound/UpperBound,
+ * where present, only stop a direction early: outside them the minimiser cannot
+ * go, so neither can an honest profile. See AdaptiveScan1D.h.
  *
- * Points are named by their integer lattice index, so a resumed run picks up
- * every fit an earlier one completed.
+ * Points are named by their integer offset from the best fit, so a resumed run
+ * picks up every fit an earlier one completed.
  *
  * Selected via --scanMode 1d, either for every non-fixed parameter
  * (perform_1d_scan_all) or, with --scanParameter, just this one
@@ -571,14 +628,23 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
  *
  * @param parameter_name Name of the parameter to profile, as it appears in the
  *                       config's parameter list.
+ * @param index          Its position in minimizer order.
+ * @param extra_fixed    Parameters held fixed on top of the scanned one, which
+ *                       is how an N-1 scan is run (perform_nm1_scan). They are
+ *                       fixed for the best fit this walk is anchored on as well,
+ *                       so the profile and its reference describe the same fit.
+ * @param tag            Prefix distinguishing this scan's files from the plain
+ *                       scan of the same parameter. Empty for the plain scan.
  */
-void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
-                             const std::string& parameter_name, int index, double low, double high) {
+void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
+                           const std::string& parameter_name, int index, const FixedParameters& extra_fixed = {},
+                           const std::string& tag = "") {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
+  const auto& parameter        = input_parameters.parameters()[index];
 
-  const scan1d::Settings settings;
+  const std::string label = tag + parameter_name;
 
   const int scan_workers = std::max(1, options->inputOptions().scan_workers());
 
@@ -586,32 +652,77 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
 
   scanseed::Store<int> seeds;
 
-  // Working in integer lattice coordinates keeps every point of every depth
-  // exactly representable and gives each one a stable name.
-  const double spacing = (high - low) / settings.lattice();
+  // The free fit is both the reference the rise is measured from and the point
+  // the walk starts at. Saved to disk as BestFit_<label> so analysis can
+  // reference the true unfixed minimum instead of the lowest sampled point.
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + label, names, format, warm_start, seeds, input_parameters.size(),
+                                        [&](ROOT::Math::Minimizer& min) { apply_extra_fixed(min, extra_fixed); });
 
-  auto position     = [&](int node) { return low + node * spacing; };
-  auto distance      = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
+  const std::string grid_path = "scan_grid_" + label + ".json";
+
+  double anchor = 0.0;
+  double unit   = 0.0;
+
+  if (const auto known = stored_lattice(grid_path)) {
+    anchor = known->anchor;
+    unit   = known->unit;
+  } else if (!seed.parameters.empty()) {
+    anchor = seed.parameters[index];
+
+    // The lattice has to resolve the profile, and the profile's own width is
+    // the only honest statement of that scale. StepWidth is the fallback for a
+    // fit that produced no error: it is the config's guess at the same thing,
+    // and can be off by the factor the walk exists to stop mattering -- so it
+    // decides the spacing only, never how far the walk goes.
+    const double scale = index < static_cast<int>(seed.errors.size()) && seed.errors[index] > 0.0 ? seed.errors[index]
+                                                                                                  : parameter.uncertainty();
+    unit               = scale / kUnitsPerStepWidth;
+  } else {
+    // No fitted position to start from: the walk would otherwise anchor on
+    // whatever the config happens to start at and quietly scan around a point
+    // that is not the best fit.
+    throw std::runtime_error("Best fit of '" + label + "' produced no parameter values; the 1D scan has nothing to start from");
+  }
+
+  if (!(unit > 0.0))
+    throw std::runtime_error("Parameter '" + parameter_name + "' has neither a fitted error nor a positive StepWidth; the 1D scan has no scale to space its points on");
+
+  if (!seed.from_store)
+    std::cout << "Seed fit: " << parameter_name << " = " << anchor << (seed.converged ? "" : " (did not converge)")
+              << ", scanning in steps of " << unit << '\n';
+
+  scan1d::Settings settings;
+  settings.start_step = kUnitsPerStepWidth;
+
+  // One point per worker per direction, so a round keeps the whole pool busy.
+  settings.batch = scan_workers;
+
+  // Configured bounds become hard stops of the walk. A bound the walk never
+  // reaches costs nothing.
+  if (const auto& lower = parameter.lower_bound())
+    settings.lower_limit = std::max(settings.lower_limit, static_cast<int>(std::ceil((*lower - anchor) / unit)));
+  if (const auto& upper = parameter.upper_bound())
+    settings.upper_limit = std::min(settings.upper_limit, static_cast<int>(std::floor((*upper - anchor) / unit)));
+
+  auto position    = [&](int node) { return anchor + node * unit; };
+  auto distance    = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
   auto apply_fixed = [&](ROOT::Math::Minimizer& min, int node) {
     min.SetVariableValue(index, position(node));
     min.FixVariable(index);
+    apply_extra_fixed(min, extra_fixed);
   };
 
   {
     nlohmann::json grid;
-    grid[parameter_name] = {{"low", low}, {"high", high}, {"lattice", settings.lattice()}};
-    grid["levels"]       = settings.levels;
-    write_or_check_grid("scan_grid_" + parameter_name + ".json", grid, "lattice", "Output_" + parameter_name + "_i");
-  }
+    grid["anchor"]       = anchor;
+    grid["unit"]         = unit;
+    grid[parameter_name] = {{"lower_limit", settings.lower_limit}, {"upper_limit", settings.upper_limit}};
+    grid["target"]       = settings.target;
+    for (const auto& [fixed_index, value] : extra_fixed)
+      grid["fixed"][names[fixed_index]] = value;
 
-  // The free fit gives the reference the delta likelihood is measured against
-  // before any scan point exists. It is only a starting value: any scan point
-  // may undercut it, and refine() takes the lower of the two. Saved to disk
-  // as BestFit_<parameter> so analysis can reference the true unfixed
-  // minimum instead of the lowest sampled scan point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + parameter_name, names, format, warm_start, seeds, input_parameters.size());
-  if (!seed.from_store && !seed.parameters.empty())
-    std::cout << "Seed fit: " << parameter_name << " = " << seed.parameters[index] << (seed.converged ? "" : " (did not converge)") << '\n';
+    write_or_check_grid(grid_path, grid, "walk", "Output_" + label + "_i");
+  }
 
   int fits_performed = 0;
 
@@ -626,27 +737,29 @@ void perform_1d_scan_window(std::shared_ptr<io::Options> options, std::shared_pt
     }
 
     run_scan_batch(std::move(ordered), profile, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
-                   [&](int node) { return node_name(parameter_name, node); }, apply_fixed, distance, fits_performed);
+                   [&](int node) { return node_name(label, node); }, apply_fixed, distance, fits_performed);
   };
 
-  auto report = [scan_workers](int round, std::size_t split, std::size_t segments, std::size_t points) {
+  auto report = [scan_workers](int round, std::size_t proposed, std::size_t points) {
     if (round == 0)
-      std::cout << "Coarse scan: " << points << " points"
-                << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
+      std::cout << "Walk starts at the best fit" << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
     else
-      std::cout << "Refinement " << round << ": splitting " << split << " of " << segments << " intervals (" << points << " points so far)\n";
+      std::cout << "Round " << round << ": " << proposed << " points proposed (" << points << " points so far)\n";
   };
 
-  const scan1d::Profile profile = scan1d::refine(settings, seed.llh, evaluate, report);
+  const scan1d::Profile profile = scan1d::walk(settings, seed.llh, evaluate, report);
 
-  std::cout << "Scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed << " fitted in this run\n";
+  std::cout << "Scan of " << label << " finished: " << profile.size() << " points, " << fits_performed << " fitted in this run";
+  if (!profile.empty())
+    std::cout << ", covering " << parameter_name << " in [" << position(profile.begin()->first) << ", " << position(profile.rbegin()->first) << ']';
+  std::cout << '\n';
 }
 
 /**
  * @brief Profiles a single configured parameter on a regular grid instead of
- * the adaptive lattice of perform_1d_scan_window.
+ * the outward walk of perform_1d_scan_walk.
  *
- * Same window convention as perform_1d_scan_window (taken from the caller),
+ * Same window convention as its caller (taken from the caller),
  * same warm-start/resume machinery, but every point in [low, high] is fitted
  * up front rather than refined around confidence crossings.
  *
@@ -685,7 +798,7 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
   // Also the source of the true (unfixed) best fit, saved to disk as
   // BestFit_<parameter> so analysis can reference it instead of the lowest
   // sampled grid point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular_" + parameter_name, names, format, warm_start, seeds, input_parameters.size());
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular_" + parameter_name, names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: " << parameter_name << " = " << seed.parameters[index] << (seed.converged ? "" : " (did not converge)") << '\n';
 
@@ -730,34 +843,75 @@ void perform_1d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   perform_1d_scan_regular_window(options, module, parameter_name, index, *lower, *upper, points);
 }
 
-/// Looks up parameter_name and requires the window to come from its own
-/// config LowerBound/UpperBound: a parameter with no bounds gives no honest
-/// window, and start value +- a few step widths would be an invention that
-/// quietly decides the answer for a parameter whose profile is wide.
-void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name) {
-  const auto& input_parameters = options->inputOptions().input_parameters();
-  const auto& names            = input_parameters.names();
+/// Looks up parameter_name and profiles it. Unlike the regular-grid scan this
+/// needs no window: the walk decides for itself how far it has to go
+/// (perform_1d_scan_walk), so a parameter without config bounds is scanned like
+/// any other.
+int parameter_index(const io::InputParameter& input_parameters, const std::string& parameter_name) {
+  const auto& names = input_parameters.names();
 
   const auto found = std::ranges::find(names, parameter_name);
   if (found == names.end())
     throw std::runtime_error("No parameter named '" + parameter_name + "' in the config");
 
-  const int   index     = static_cast<int>(std::ranges::distance(names.begin(), found));
-  const auto& parameter = input_parameters.parameters()[index];
+  return static_cast<int>(std::ranges::distance(names.begin(), found));
+}
 
-  const auto& lower = parameter.lower_bound();
-  const auto& upper = parameter.upper_bound();
-  if (!lower || !upper)
-    throw std::runtime_error("Parameter '" + parameter_name + "' has no LowerBound/UpperBound in the config; the 1D scan takes its window from those");
+void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
 
-  perform_1d_scan_window(options, module, parameter_name, index, *lower, *upper);
+  perform_1d_scan_walk(options, module, parameter_name, parameter_index(input_parameters, parameter_name));
+}
+
+/**
+ * @brief Runs the N-1 scans of one parameter.
+ *
+ * One profile of `target` per other free parameter, each with that parameter
+ * held at its configured AsimovValue -- the point the data was injected at,
+ * which is where a sensitivity study wants a nuisance pinned rather than at a
+ * fitted value that already absorbed part of the signal. Holding a parameter
+ * removes whatever degeneracy it has with the target, so the width of each
+ * profile says what that one parameter costs the target's sensitivity.
+ *
+ * The plain profile (nothing held) is run first as the reference the N-1 curves
+ * are read against. It writes the same files as --scanMode 1d, so the two share
+ * their fits instead of repeating them.
+ *
+ * Every scan gets its own best fit, itself run with the same parameter held, so
+ * a profile and the reference it is measured from always describe the same fit.
+ *
+ * Selected via --scanMode nm1, which needs --scanParameter to say what the
+ * target is.
+ */
+void perform_nm1_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& target) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+  const auto& parameters       = input_parameters.parameters();
+
+  const int index = parameter_index(input_parameters, target);
+
+  std::cout << "N-1 scan of " << target << ": reference profile with every parameter free\n";
+  perform_1d_scan_walk(options, module, target, index);
+
+  for (std::size_t i = 0; i < input_parameters.size(); ++i) {
+    if (static_cast<int>(i) == index || input_parameters.fixed(static_cast<int>(i)))
+      continue;
+
+    const FixedParameters held{{static_cast<int>(i), parameters[i].asimov_value()}};
+
+    std::cout << "N-1 scan of " << target << ": holding " << names[i] << " at its injected value " << parameters[i].asimov_value() << '\n';
+    perform_1d_scan_walk(options, module, target, index, held, "nm1_" + names[i] + "_");
+  }
 }
 
 /**
  * Runs a 1D scan over every non-fixed parameter in the config.
  *
- * A parameter with both LowerBound and UpperBound set scans that window, same
- * as perform_1d_scan. A parameter missing one or both is not skipped: a
+ * The adaptive scan needs no window: each parameter is walked outward from the
+ * best fit until its profile has risen far enough (perform_1d_scan_walk).
+ *
+ * The regular grid does need one, and takes it from the parameter's own
+ * LowerBound/UpperBound. A parameter missing one or both is not skipped: a
  * single shared free fit (all non-fixed parameters floating) supplies a
  * Migrad/Hesse error per parameter, and the missing side of the window is
  * approximated as fitted_value +- 3 * error. Doubling or tripling the error
@@ -769,13 +923,25 @@ void perform_1d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
  *
  * @param regular When true, every parameter is scanned on a regular grid of
  *                `points` points (perform_1d_scan_regular_window) instead of
- *                the adaptive lattice (perform_1d_scan_window).
+ *                being walked outward (perform_1d_scan_walk).
  * @param points  Grid points per parameter; only used when regular is true.
  */
 void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, bool regular = false,
                           int points = 30) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
+
+  if (!regular) {
+    for (std::size_t i = 0; i < input_parameters.size(); ++i) {
+      if (input_parameters.fixed(static_cast<int>(i)))
+        continue;
+
+      std::cout << "Scanning " << names[i] << "...\n";
+      perform_1d_scan_walk(options, module, names[i], static_cast<int>(i));
+    }
+
+    return;
+  }
 
   std::vector<std::size_t> unbounded_indices;
   for (std::size_t i = 0; i < input_parameters.size(); ++i) {
@@ -835,10 +1001,7 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
     }
 
     std::cout << "Scanning " << names[i] << "...\n";
-    if (regular)
-      perform_1d_scan_regular_window(options, module, names[i], static_cast<int>(i), low, high, points);
-    else
-      perform_1d_scan_window(options, module, names[i], static_cast<int>(i), low, high);
+    perform_1d_scan_regular_window(options, module, names[i], static_cast<int>(i), low, high, points);
   }
 }
 
@@ -876,8 +1039,8 @@ int main(int argc, char** argv) {
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
-      const std::string& scan_mode      = options->inputOptions().scan_mode();
-      const std::string& scan_parameter = options->inputOptions().scan_parameter();
+      const std::string& scan_mode       = options->inputOptions().scan_mode();
+      const std::string& scan_parameter  = options->inputOptions().scan_parameter();
       const int           scan_points    = options->inputOptions().scan_points();
 
       if (scan_mode == "2d") {
@@ -889,13 +1052,17 @@ int main(int argc, char** argv) {
           perform_1d_scan_all(options, module, false, scan_points);
         else
           perform_1d_scan(options, module, scan_parameter);
+      } else if (scan_mode == "nm1") {
+        if (scan_parameter.empty())
+          throw std::invalid_argument("--scanMode nm1 needs --scanParameter to say which parameter's sensitivity is being measured");
+        perform_nm1_scan(options, module, scan_parameter);
       } else if (scan_mode == "1d-regular") {
         if (scan_parameter.empty())
           perform_1d_scan_all(options, module, true, scan_points);
         else
           perform_1d_scan_regular(options, module, scan_parameter, scan_points);
       } else {
-        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 1d, 1d-regular");
+        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 1d, 1d-regular, nm1");
       }
     }
   } catch (const std::exception& e) {
