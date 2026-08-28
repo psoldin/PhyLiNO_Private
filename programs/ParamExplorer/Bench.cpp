@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
     // truth, and config_icecube_combined.json does (SpectralIndex starts at 2.4
     // with the data generated at 2.44), which leaves a residual of ~14% in the
     // highest bins and is not a bug.
+    model.reset();
     for (const auto& info : model.parameters())
       model.set(info.index, info.asimov);
 
@@ -69,8 +70,7 @@ int main(int argc, char** argv) {
 
     std::cout << "-2lnL at the asimov point: " << model.evaluate() << '\n';
 
-    for (const auto& info : model.parameters())
-      model.set(info.index, info.value);
+    model.reset();
 
     // Per parameter, not just one: a norm only rescales a cached histogram
     // while a spectral index forces every event to be reweighted, and the
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
         marg_ms.push_back(std::chrono::duration<double, std::milli>(t2 - t1).count());
       }
 
-      model.set(info.index, info.value);
+      model.set(info.index, info.start);
 
       std::sort(eval_ms.begin(), eval_ms.end());
       std::sort(marg_ms.begin(), marg_ms.end());

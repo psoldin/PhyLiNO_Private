@@ -2,6 +2,7 @@
 
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -50,6 +51,11 @@ namespace explorer {
       if (name == "template")            return QColor(0x2c, 0xa0, 0x2c);  // green
       if (name == "galactic")            return QColor(0x94, 0x67, 0xbd);  // purple
       return QColor(0x7f, 0x7f, 0x7f);
+    }
+
+    /** Where a value sits on a 0..kTicks slider spanning [lo, hi]. */
+    int tick_of(double lo, double hi, double value) {
+      return std::clamp(static_cast<int>(std::lround((value - lo) / (hi - lo) * kTicks)), 0, kTicks);
     }
 
     /** Turn per-bin values into a step polyline over the bin edges. */
@@ -118,6 +124,9 @@ namespace explorer {
     m_LogY = new QCheckBox("Log counts");
     m_LogY->setChecked(true);
 
+    auto* reset = new QPushButton("Reset");
+    reset->setToolTip("Put every parameter back to its StartValue from the config.");
+
     toolbar->addWidget(new QLabel(" Sample "));
     toolbar->addWidget(m_Sample);
     toolbar->addWidget(new QLabel(" Axis "));
@@ -125,6 +134,14 @@ namespace explorer {
     toolbar->addSeparator();
     toolbar->addWidget(m_Split);
     toolbar->addWidget(m_LogY);
+    toolbar->addSeparator();
+    toolbar->addWidget(reset);
+
+    connect(reset, &QPushButton::clicked, this, [this]() {
+      m_Model->reset();
+      sync_rows();
+      request_refresh();
+    });
 
     m_Chart = new QChartView();
     m_Chart->setRenderHint(QPainter::Antialiasing);
@@ -142,7 +159,7 @@ namespace explorer {
 
       r.slider = new QSlider(Qt::Horizontal);
       r.slider->setRange(0, kTicks);
-      r.slider->setValue(static_cast<int>(std::lround((info.value - r.lo) / (r.hi - r.lo) * kTicks)));
+      r.slider->setValue(tick_of(r.lo, r.hi, info.value));
       // The evaluation is too slow for a live drag on the worst parameters, and
       // inconsistent tracking between rows would be worse than none.
       r.slider->setTracking(false);
@@ -223,6 +240,22 @@ namespace explorer {
       m_Axis->addItem(QString::fromStdString(axis.kind_name));
   }
 
+  void MainWindow::sync_rows() {
+    const auto& parameters = m_Model->parameters();
+
+    for (const Row& row : m_Rows) {
+      const double value = parameters[static_cast<std::size_t>(row.index)].value;
+
+      // Both widgets are written, so both are blocked: letting either signal
+      // through would call back into the model and, worse, fight the other.
+      const QSignalBlocker block_slider(row.slider);
+      const QSignalBlocker block_spin(row.spin);
+
+      row.slider->setValue(tick_of(row.lo, row.hi, value));
+      row.spin->setValue(value);
+    }
+  }
+
   void MainWindow::set_from_slider(const Row& row, int tick) {
     const double value = row.lo + (row.hi - row.lo) * tick / kTicks;
 
@@ -236,8 +269,7 @@ namespace explorer {
   void MainWindow::set_from_spin(const Row& row, double value) {
     // Pinned rather than clamped: the model takes the typed value even when the
     // slider cannot represent it, so the plot shows what was asked for.
-    const int tick = std::clamp(static_cast<int>(std::lround((value - row.lo) / (row.hi - row.lo) * kTicks)),
-                                0, kTicks);
+    const int tick = tick_of(row.lo, row.hi, value);
 
     const QSignalBlocker blocker(row.slider);
     row.slider->setValue(tick);

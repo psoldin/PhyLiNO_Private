@@ -129,6 +129,7 @@ namespace explorer {
       m_Info.push_back(ParamInfo{.name   = input.name(i),
                                  .index  = i,
                                  .value  = start,
+                                 .start  = start,
                                  .step   = step,
                                  .asimov = input.parameters()[i].asimov_value(),
                                  .lo     = lo,
@@ -143,6 +144,11 @@ namespace explorer {
     m_Params.at(static_cast<std::size_t>(index)) = value;
     m_Info.at(static_cast<std::size_t>(index)).value = value;
     m_Stale = true;
+  }
+
+  void ExplorerModel::reset() {
+    for (const ParamInfo& info : m_Info)
+      set(info.index, info.start);
   }
 
   double ExplorerModel::evaluate() {

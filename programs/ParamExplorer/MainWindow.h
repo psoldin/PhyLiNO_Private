@@ -48,6 +48,9 @@ namespace explorer {
     void build_ui();
     void rebuild_axis_choices();
 
+    /** Push the model's current values back into every slider and spin box. */
+    void sync_rows();
+
     /** Evaluate, marginalize, redraw, update the status bar. The single refresh path. */
     void refresh();
 

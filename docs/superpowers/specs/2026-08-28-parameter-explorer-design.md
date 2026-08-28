@@ -38,8 +38,10 @@ layers, with Qt confined to the upper one.
 
 ```
 ExplorerModel(config_path)
-  parameters()               -> vector<ParamInfo{name, index, value, lo, hi, fixed}>
+  parameters()               -> vector<ParamInfo{name, index, value, start,
+                                                 step, asimov, lo, hi, fixed}>
   set(index, value)
+  reset()                    // every parameter back to its config StartValue
   evaluate()                 -> double            // -2lnL
   sample_names()             -> vector<string>
   axes(sample)               -> vector<AxisInfo{kind_name, edges}>
@@ -61,6 +63,11 @@ Sample combo box and axis combo box on top, `QChartView` in the centre, a
 scrollable slider panel below (one row per free parameter: label, `QSlider`,
 `QDoubleSpinBox`), and a status bar showing `-2lnL` and its delta from the
 config start point.
+
+A Reset button in the toolbar puts every parameter back to its config
+`StartValue`. `ParamInfo` therefore carries `start` alongside `value`: `set()`
+moves `value`, so without a separate field the start point is gone after the
+first drag and there is nothing to reset to.
 
 ### Build integration
 

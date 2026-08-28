@@ -14,7 +14,11 @@ namespace explorer {
   struct ParamInfo {
     std::string name;
     int         index = 0;
+    // The current value, which set() moves. `start` is the config's StartValue
+    // and is never moved -- it is what reset() goes back to, so it has to
+    // survive the first slider drag.
     double      value = 0.0;
+    double      start = 0.0;
     // The minimiser's initial step ("StepWidth"). Sets the spin box's step, and
     // stands in for a missing bound when inventing a slider range.
     double      step  = 0.0;
@@ -75,6 +79,12 @@ namespace explorer {
 
     /** Move one parameter. Cheap: writes the array, evaluates nothing. */
     void set(int index, double value);
+
+    /**
+     * Put every parameter back to the config's StartValue. Evaluates nothing;
+     * the caller refreshes.
+     */
+    void reset();
 
     /** -2lnL at the current point. */
     [[nodiscard]] double evaluate();
