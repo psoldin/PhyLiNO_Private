@@ -2803,3 +2803,104 @@ TEST(ICDataBaseTest, RejectsNonDoubleTopologyColumn) {
   EXPECT_THROW(io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg}), std::runtime_error);
   std::remove(path.c_str());
 }
+
+// --- The parameter explorer's stack -------------------------------------------
+//
+// These two need a built prediction, so they live here with the synthetic sample
+// fixtures rather than in ExplorerModelTests.cpp, whose projection tests need no
+// sample at all.
+
+// The explorer stacks four curves by default -- astro, atmospheric, template,
+// galactic -- and drops systematicsDelta, which is a signed correction rather
+// than a component. That choice is only honest if the four plus the correction
+// reconstruct the prediction the likelihood actually used. If they do not, the
+// plot is missing a contribution and nothing else would say so.
+TEST(ICExplorerStackTest, DefaultStackPlusSystematicsDeltaIsThePrediction) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "explorer_stack_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  std::vector<double> values     = nominal_parameter_values();
+  values[params::ic::ConvNorm]   = 1.3;
+  values[params::ic::PromptNorm] = 0.7;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  likelihood.generate_asimov(parameter);
+  ASSERT_TRUE(std::isfinite(likelihood.partial_llh(parameter)));
+
+  const auto components = result::ic::component_breakdown(likelihood, parameter);
+
+  const auto bins_of = [&](const std::string& key) -> const std::vector<double>& {
+    for (const auto& [name, bins] : components)
+      if (name == key) return bins;
+    throw std::logic_error("missing component " + key);
+  };
+
+  // The explorer's default keys, plus the entry it deliberately leaves out.
+  const std::vector<std::string> stack = {"astro", "atmospheric", "template", "galactic",
+                                          "systematicsDelta"};
+
+  const std::span<const double> predicted = likelihood.predicted();
+  ASSERT_TRUE(predicted.size() == static_cast<std::size_t>(binning.total_bins()));
+
+  for (std::size_t b = 0; b < predicted.size(); ++b) {
+    double sum = 0.0;
+    for (const std::string& key : stack) {
+      const auto& bins = bins_of(key);
+      // A component the sample does not declare is empty, which is how the
+      // explorer decides not to draw it.
+      if (!bins.empty())
+        sum += bins[b];
+    }
+
+    const double scale = std::max(std::fabs(predicted[b]), 1.0e-300);
+    ASSERT_TRUE(std::fabs(sum - predicted[b]) / scale < 1.0e-12)
+        << "bin " << b << ": stack " << sum << " vs prediction " << predicted[b];
+  }
+}
+
+// The explorer re-evaluates on every slider move and expects the same parameters
+// to give the same answer -- otherwise a plot would drift while the user changes
+// nothing. Caching inside the flux components is what makes this worth pinning:
+// the second evaluation at an unchanged point takes a different path through
+// check_and_recalculate() than the first.
+TEST(ICExplorerStackTest, RepeatedEvaluationAtOnePointIsStable) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "explorer_stability_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  std::vector<double> values = nominal_parameter_values();
+  ParameterWrapper    parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+  likelihood.generate_asimov(parameter);
+
+  const double first  = likelihood.partial_llh(parameter);
+  const double second = likelihood.partial_llh(parameter);
+  ASSERT_TRUE(std::isfinite(first));
+  ASSERT_TRUE(first == second) << "unchanged parameters gave " << first << " then " << second;
+
+  // And a moved parameter has to actually move the answer, or a slider would
+  // look dead.
+  values[params::ic::AstroNorm] *= 1.5;
+  parameter.reset_parameter(values.data());
+  const double moved = likelihood.partial_llh(parameter);
+  ASSERT_TRUE(std::isfinite(moved));
+  ASSERT_TRUE(moved != first) << "AstroNorm moved but -2lnL stayed at " << first;
+}
