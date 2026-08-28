@@ -8,7 +8,6 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QVBoxLayout>
-#include <QtCharts/QAreaSeries>
 #include <QtCharts/QChart>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QLogValueAxis>
@@ -16,6 +15,7 @@
 #include <QtCharts/QValueAxis>
 
 #include <QPainter>
+#include <QPen>
 
 #include <algorithm>
 #include <cmath>
@@ -32,35 +32,61 @@ namespace explorer {
     // writes the double straight through.
     constexpr int kTicks = 1000;
 
-    // QLogValueAxis cannot place a point at or below zero, and an empty bin is a
-    // perfectly ordinary thing for a prediction to contain. Those bins are drawn
-    // at the bottom of the axis instead of dropping out of the polyline.
-    constexpr double kLogFloor = 1.0e-3;
-
     /**
-     * Stack colours, in the draw order of ExplorerModel's component list. Chosen
-     * to stay distinguishable when filled and overlapping, and to keep the
-     * atmospheric halves visibly related to each other when the split is on.
+     * Component colours, keyed by name rather than by draw order so that
+     * atmospheric_conv and atmospheric_prompt keep their own identities when the
+     * split is toggled and the list length changes.
+     *
+     * conv and prompt are deliberately far apart. They were near-identical
+     * oranges at first, which made a prompt curve three decades below the
+     * conventional one hard to pick out even once it was drawn as its own line.
      */
-    const QColor kComponentColors[] = {
-      QColor(0x1f, 0x77, 0xb4),  // astro
-      QColor(0xff, 0x7f, 0x0e),  // atmospheric (or its conventional half)
-      QColor(0xff, 0xbb, 0x78),  // atmospheric prompt
-      QColor(0x2c, 0xa0, 0x2c),  // template
-      QColor(0x94, 0x67, 0xbd),  // galactic
-    };
+    QColor component_color(const std::string& name) {
+      if (name == "astro")               return QColor(0x1f, 0x77, 0xb4);  // blue
+      if (name == "atmospheric" ||
+          name == "atmospheric_veto")    return QColor(0xff, 0x7f, 0x0e);  // orange
+      if (name == "atmospheric_conv")    return QColor(0xff, 0x7f, 0x0e);  // orange
+      if (name == "atmospheric_prompt")  return QColor(0xd6, 0x27, 0x28);  // red
+      if (name == "template")            return QColor(0x2c, 0xa0, 0x2c);  // green
+      if (name == "galactic")            return QColor(0x94, 0x67, 0xbd);  // purple
+      return QColor(0x7f, 0x7f, 0x7f);
+    }
 
     /** Turn per-bin values into a step polyline over the bin edges. */
     QLineSeries* step_series(const std::vector<double>& edges, const std::vector<double>& values,
-                             bool log_y) {
+                             double floor) {
       auto* series = new QLineSeries();
       for (std::size_t i = 0; i < values.size(); ++i) {
-        const double y = log_y ? std::max(values[i], kLogFloor) : values[i];
+        const double y = std::max(values[i], floor);
         series->append(edges[i], y);
         series->append(edges[i + 1], y);
       }
 
       return series;
+    }
+
+    /** Largest value across everything that will be drawn. */
+    double max_of(const Marginalized& m) {
+      double max_y = 0.0;
+      for (const double v : m.total)
+        max_y = std::max(max_y, v);
+      for (const double v : m.data)
+        max_y = std::max(max_y, v);
+      for (const auto& component : m.components)
+        for (const double v : component.values)
+          max_y = std::max(max_y, v);
+
+      return max_y;
+    }
+
+    /**
+     * Bottom of a log axis: five decades below the peak, which keeps a component
+     * that is a fraction of a percent of the total on the plot without letting a
+     * single empty bin stretch the axis down to nothing. A fixed floor cannot do
+     * both -- the samples here span 26 000 events and 0.06.
+     */
+    double log_floor(double max_y) {
+      return max_y > 0.0 ? max_y * 1.0e-5 : 1.0e-3;
     }
 
   }  // namespace
@@ -127,7 +153,8 @@ namespace explorer {
       // end rather than being clamped away.
       r.spin->setRange(r.lo - 1000.0 * std::abs(r.hi - r.lo), r.hi + 1000.0 * std::abs(r.hi - r.lo));
       r.spin->setDecimals(4);
-      r.spin->setSingleStep((r.hi - r.lo) / 100.0);
+      // The minimiser's own step: arrowing the box once is a step the fit would take.
+      r.spin->setSingleStep(info.step > 0.0 ? info.step : (r.hi - r.lo) / 100.0);
       r.spin->setValue(info.value);
 
       if (info.fixed) {
@@ -223,56 +250,64 @@ namespace explorer {
     const auto sample = static_cast<std::size_t>(std::max(0, m_Sample->currentIndex()));
     const auto axis   = static_cast<std::size_t>(std::max(0, m_Axis->currentIndex()));
 
-    const double llh = m_Model->evaluate();
+    const double llh          = m_Model->evaluate();
     const auto   marginalized = m_Model->marginalize(sample, axis, m_Split->isChecked());
 
-    const bool log_y = m_LogY->isChecked();
+    const bool   log_y = m_LogY->isChecked();
+    const double max_y = max_of(marginalized);
+    const double floor = log_y ? log_floor(max_y) : 0.0;
 
     auto* chart = new QChart();
-    chart->setTitle(QString("%1 -- %2")
-                        .arg(m_Sample->currentText())
-                        .arg(m_Axis->currentText()));
+    chart->setTitle(QString("%1 -- %2").arg(m_Sample->currentText()).arg(m_Axis->currentText()));
 
-    // Cumulative upper edges: each component's area sits on top of the ones
-    // before it, so the top of the stack is the total prediction.
-    std::vector<double> cumulative(marginalized.data.size(), 0.0);
-    QLineSeries*        lower = step_series(marginalized.edges, cumulative, log_y);
-    lower->setVisible(false);
-    chart->addSeries(lower);
+    // Overlaid lines, not a stack.
+    //
+    // A stacked area cannot show what this window exists to show. The prompt
+    // atmospheric component is ~0.17% of the conventional one on the tracks
+    // sample, so as a band on top of the stack it is sub-pixel: splitting it out
+    // changed the legend and nothing else, and driving PromptNorm across its
+    // whole range moved the top of the stack by less than a line width. Drawn as
+    // its own curve on a log axis it sits three decades down and is perfectly
+    // legible, and the slider visibly moves it.
+    //
+    // The total is drawn separately, so composition is still readable: the gap
+    // between the total and the components is what systematicsDelta contributes.
+    for (const auto& component : marginalized.components) {
+      QLineSeries* series = step_series(marginalized.edges, component.values, floor);
+      series->setName(QString::fromStdString(component.name));
 
-    double max_y = 0.0;
+      QPen pen(component_color(component.name));
+      pen.setWidthF(2.0);
+      series->setPen(pen);
 
-    for (std::size_t c = 0; c < marginalized.components.size(); ++c) {
-      const auto& component = marginalized.components[c];
-      for (std::size_t b = 0; b < cumulative.size(); ++b)
-        cumulative[b] += component.values[b];
-
-      QLineSeries* upper = step_series(marginalized.edges, cumulative, log_y);
-
-      auto* area = new QAreaSeries(upper, lower);
-      area->setName(QString::fromStdString(component.name));
-      const QColor color = kComponentColors[std::min(c, std::size(kComponentColors) - 1)];
-      area->setColor(color);
-      area->setBorderColor(color.darker(130));
-      chart->addSeries(area);
-
-      lower = upper;
-      max_y = std::max(max_y, *std::max_element(cumulative.begin(), cumulative.end()));
+      chart->addSeries(series);
     }
 
-    // The data on top of the stack. Under UseData: false this is the Asimov
-    // expectation, so at the config's start point the points land exactly on the
-    // top of the stack -- which is the cheapest available check that the
-    // marginalization is right.
+    QLineSeries* total = step_series(marginalized.edges, marginalized.total, floor);
+    total->setName("total");
+    QPen total_pen(QColor(0x33, 0x33, 0x33));
+    total_pen.setWidthF(2.5);
+    total->setPen(total_pen);
+    chart->addSeries(total);
+
+    // Under UseData: false this is the Asimov expectation. At the point that
+    // data was generated at -- the AsimovValue, which is not always the start
+    // value -- the points land on the total.
     auto* data = new QScatterSeries();
     data->setName("data");
-    data->setMarkerSize(6.0);
+    data->setMarkerSize(5.0);
     data->setColor(Qt::black);
+    data->setBorderColor(Qt::black);
     for (std::size_t b = 0; b < marginalized.data.size(); ++b) {
+      // An empty bin is left out rather than drawn at the floor. Flooring it
+      // puts a marker on the axis line that reads as a real measurement of
+      // whatever the floor happens to be, and the tracks sample has a long tail
+      // of them; a gap is what an empty bin actually means.
+      if (log_y && marginalized.data[b] <= 0.0)
+        continue;
+
       const double centre = 0.5 * (marginalized.edges[b] + marginalized.edges[b + 1]);
-      const double y      = log_y ? std::max(marginalized.data[b], kLogFloor) : marginalized.data[b];
-      data->append(centre, y);
-      max_y = std::max(max_y, marginalized.data[b]);
+      data->append(centre, std::max(marginalized.data[b], floor));
     }
     chart->addSeries(data);
 
@@ -285,7 +320,10 @@ namespace explorer {
     if (log_y) {
       auto* log_axis = new QLogValueAxis();
       log_axis->setBase(10.0);
-      log_axis->setRange(kLogFloor, std::max(max_y * 1.5, 10.0 * kLogFloor));
+      log_axis->setRange(floor, std::max(max_y * 2.0, floor * 10.0));
+      // The default format prints a decade like 1e-3 as "0.0", which made the
+      // bottom of the axis read as several identical zeroes.
+      log_axis->setLabelFormat("%.3g");
       y_axis = log_axis;
     } else {
       auto* linear = new QValueAxis();
@@ -300,9 +338,6 @@ namespace explorer {
       series->attachAxis(y_axis);
     }
 
-    // The hidden baseline of the bottom area would otherwise take a legend slot
-    // of its own.
-    chart->legend()->markers(lower).clear();
     chart->legend()->setAlignment(Qt::AlignRight);
 
     // setChart() takes ownership and deletes the previous chart with all its

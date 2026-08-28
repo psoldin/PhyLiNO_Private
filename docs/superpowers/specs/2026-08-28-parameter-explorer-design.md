@@ -158,16 +158,36 @@ correct.
 
 ## Plotting
 
-QtCharts: `QAreaSeries` between cumulative-sum step polylines for the stack,
-`QScatterSeries` for the data points, `QLogValueAxis` for counts.
+QtCharts. One `QLineSeries` step polyline per component, one for the total, and a
+`QScatterSeries` for the data, on a `QLogValueAxis`.
 
-QtCharts ships with the installed Qt5, provides axes, ticks, legend, zoom and
-tooltips, and handles non-uniform bin edges because the stack is built from
-explicit polyline points rather than bar categories. Hand-rolling a
-`paintEvent` would mean ~250 lines of axis, tick and log-scale code that
-QtCharts already provides. Embedding a ROOT `THStack` would reuse an existing
-dependency, but ROOT 6 dropped `TQtWidget`, leaving a `TCanvas` attached to a
-native window handle — fragile on macOS.
+Overlaid lines, **not** a stacked area. Stacking was the original choice and it
+defeated the purpose of the window. On the tracks sample the prompt atmospheric
+component is 1179 events against the conventional 697399 -- 0.17% -- so as a
+band on top of a stack it is thinner than a line: ticking "split atmospheric"
+changed the legend and nothing else, and driving `PromptNorm` across its whole
+range moved the top of the stack by less than a line width. Both read as dead
+controls. Drawn as its own curve on a log axis the same component sits three
+decades down, perfectly legible, and the slider visibly lifts it through the
+astrophysical curve.
+
+The total is drawn as its own line, so composition stays readable: the gap
+between it and the components is what `systematicsDelta` contributes.
+
+The log axis floor is five decades below the peak rather than a fixed constant --
+the samples here span 26 000 events and 0.06, so no constant serves both. Empty
+data bins are omitted rather than floored: a marker sitting on the axis line
+reads as a real measurement of whatever the floor happens to be.
+
+Component colours are keyed by name, not by draw order, so the conv and prompt
+curves keep their identities as the list length changes with the checkbox. They
+are orange and red -- as two near-identical oranges, a prompt curve three decades
+below the conventional one was still hard to pick out.
+
+Hand-rolling a `paintEvent` would mean ~250 lines of axis, tick and log-scale
+code that QtCharts already provides. Embedding a ROOT `THStack` would reuse an
+existing dependency, but ROOT 6 dropped `TQtWidget`, leaving a `TCanvas` attached
+to a native window handle -- fragile on macOS.
 
 ## Error handling
 
@@ -175,17 +195,28 @@ native window handle — fragile on macOS.
   throws, as the loaders already do. `main` catches, shows a
   `QMessageBox::critical`, and exits non-zero.
 - **Parameters without an upper bound.** `ConvNorm`, `PromptNorm` and
-  `MuonNorm` declare `LowerBound` only. The fallback upper bound is
-  `max(2 * StartValue, LowerBound + 1)`. The spinbox is not clamped to the
-  slider range; typing past it rescales the slider.
+  `MuonNorm` declare `LowerBound` only, so the missing end is invented:
+  `reach = max(10 * StepWidth, |StartValue|, 1)`, and the upper bound is
+  `StartValue + max(4 * |StartValue - lo|, reach)`. That reaches ~5x nominal for
+  the norms, matching the range `AstroNorm` declares explicitly ([0, 5] around
+  1.77).
+
+  The first attempt, `max(2 * StartValue, LowerBound + 1)`, gave `PromptNorm`
+  a range of [0, 1] around a start of 0.5 -- too narrow to push the component
+  anywhere interesting, which is half of why that slider read as broken. The
+  spinbox is not clamped to the slider range; typing past it pins the slider to
+  an end.
 - **Integer sliders.** Each slider spans 0–1000 ticks mapped linearly onto
   `[lo, hi]`. The model's `double` is authoritative and the spinbox displays it
   to four significant digits. `QSignalBlocker` guards the slider/spinbox
   round trip against feedback loops.
 - **Log axis and empty bins.** `QLogValueAxis` cannot render values at or below
-  zero, so those bins are drawn at a floor of `1e-3` counts. A linear/log
-  toggle sits in the toolbar, since the single-bin cascade-muon sample makes a
-  log axis pointless.
+  zero. Component lines are floored so the polyline stays continuous; data
+  markers are dropped instead, since a floored marker reads as a measurement.
+  The axis label format is set explicitly -- the default prints a decade like
+  1e-3 as "0.0", so the bottom of the axis read as several identical zeroes. A
+  linear/log toggle sits in the toolbar, since the single-bin cascade-muon
+  sample makes a log axis pointless.
 - **Non-finite `-2lnL`.** Displayed verbatim. It describes the parameter point
   and is not a bug to conceal.
 

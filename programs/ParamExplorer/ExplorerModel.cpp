@@ -109,16 +109,27 @@ namespace explorer {
       const auto& lower = input.parameters()[i].lower_bound();
       const auto& upper = input.parameters()[i].upper_bound();
 
+      const double step = input.uncertainty(i);
+
       // Bounds are optional and one-sided in practice: ConvNorm, PromptNorm and
       // MuonNorm declare a LowerBound only. A slider needs two finite ends, so
-      // the missing side is invented -- wide enough to be worth dragging, and
-      // never so narrow that it excludes the start value.
-      const double lo = lower ? *lower : std::min(0.0, start - std::max(1.0, std::abs(start)));
-      const double hi = upper ? *upper : std::max(2.0 * start, lo + 1.0);
+      // the missing side is invented.
+      //
+      // Generously. An earlier version used 2 * StartValue, which gave
+      // PromptNorm a range of [0, 1] around a start of 0.5 -- too narrow to
+      // push the component anywhere interesting, and the slider read as broken
+      // because nothing visible happened. The span below reaches ~5x nominal
+      // for the norms, which is the range AstroNorm declares explicitly
+      // ([0, 5] around 1.77) and a reasonable read of what "explore this
+      // parameter" means.
+      const double reach = std::max({10.0 * step, std::abs(start), 1.0});
+      const double lo    = lower ? *lower : start - reach;
+      const double hi    = upper ? *upper : start + std::max(4.0 * std::abs(start - lo), reach);
 
       m_Info.push_back(ParamInfo{.name   = input.name(i),
                                  .index  = i,
                                  .value  = start,
+                                 .step   = step,
                                  .asimov = input.parameters()[i].asimov_value(),
                                  .lo     = lo,
                                  .hi     = hi,
@@ -170,6 +181,7 @@ namespace explorer {
 
     Marginalized result;
     result.edges = axis_edges(binning.axes()[axis]);
+    result.total = project(likelihood.predicted(), binning, axis);
     result.data  = project(likelihood.data(), binning, axis);
 
     const auto breakdown = breakdown_for(likelihood, m_Llh->parameter(), split_atmospheric);
@@ -186,8 +198,13 @@ namespace explorer {
       });
       // A sample builds only the components its config declares, so an absent or
       // empty one is a normal configuration, not an error -- it is skipped
-      // rather than drawn as a flat zero.
+      // rather than drawn as a flat zero. A component that is present but
+      // identically zero (a galactic norm fixed at a template the sample does
+      // not carry) is skipped for the same reason: it would be a flat line
+      // along the bottom of the plot and an entry in the legend.
       if (it == breakdown.end() || it->second.empty())
+        continue;
+      if (std::all_of(it->second.begin(), it->second.end(), [](double v) { return v == 0.0; }))
         continue;
 
       result.components.push_back(NamedHist{.name   = it->first,
