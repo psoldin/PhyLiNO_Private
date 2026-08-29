@@ -58,6 +58,50 @@ namespace io::ic {
    * designated-init constructed with `.binning` always provided, e.g.:
    *   SampleConfig sc{.name = sname, .binning = resolved};
    */
+  /**
+   * How a per-event uncertainty column is turned into a response width. The
+   * conventions differ per column and are not self-describing, so they are
+   * config rather than folklore:
+   *
+   *   None        the column already is the width in the axis's own units
+   *   Exp         exp(x): a network emitting log(sigma) to keep it positive,
+   *               which is what ELEFANTS does
+   *   Pow10       10^x, for a column carrying log10(sigma)
+   *   DegToRad    x * pi/180, for an angular sigma in degrees
+   */
+  enum class SigmaTransform { None, Exp, Pow10, DegToRad };
+
+  /**
+   * Forward folding of the per-event detector response into the analysis
+   * histogram (see io::ic::ResponseMatrix).
+   *
+   * Off by default: with it disabled every MC event drops its full weight into
+   * the single bin its reconstructed value falls in, which is what this code has
+   * always done.
+   */
+  struct ResponseConfig {
+    bool enabled = false;
+
+    // Centres. These must be the truth the uncertainty column was trained
+    // against, not the primary neutrino energy: ELEFANTS reconstructs the muon
+    // energy at closest approach, so its sigma is the width around THAT, and the
+    // neutrino-to-muon spread is separate physics the MC already carries event
+    // by event.
+    std::string truth_energy_branch = "ELEFANTS_tg_truth_log10";  // log10(E_true / GeV)
+    std::string truth_zenith_branch = "MCPrimaryZenith";          // radians
+
+    std::string    energy_sigma_branch    = "ELEFANTS_tg_sigma_log10";
+    std::string    zenith_sigma_branch    = "L5_sigma_paraboloid";
+    SigmaTransform energy_sigma_transform = SigmaTransform::None;
+    SigmaTransform zenith_sigma_transform = SigmaTransform::DegToRad;
+
+    // Bins beyond this many widths are not considered, and entries below
+    // min_fraction of an event's total are dropped. Both bound the matrix; what
+    // survives is renormalised, so neither changes the predicted total.
+    double truncation   = 5.0;
+    double min_fraction = 1.0e-4;
+  };
+
   struct SampleConfig {
     std::string name;
     bool        enabled = true;
@@ -103,6 +147,13 @@ namespace io::ic {
     // Galactic-plane templates, in config order. Empty unless the analysis binning
     // has an Ra axis (parse_samples rejects the combination otherwise).
     std::vector<GalacticTemplateConfig> galactic;
+
+    ResponseConfig response;
+
+    // Extra per-event reco columns read at load and carried on the sample, for
+    // scoring candidate category axes (programs/mcvariance). They take part in
+    // no fit; naming one costs a column read and nothing else.
+    std::vector<std::string> category_branches;
 
     // Per-event nu_mu survival factor (NNMFit OscillationsHook), exported by
     // tools/export_oscillation_factors.py. Row-aligned with `parquet`; applied to

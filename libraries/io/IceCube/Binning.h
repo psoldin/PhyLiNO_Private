@@ -1,6 +1,7 @@
 #pragma once
 
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -13,12 +14,26 @@ namespace io::ic {
    * zenith binning ("cscd-cos_5up") needs.
    */
   struct Axis {
-    enum class Kind { Log10Energy, CosZenith, Ra };
+    /**
+     * Category is a raw per-event reco column used as an analysis axis --
+     * a classifier score, a track-quality variable -- rather than a derived
+     * kinematic one. It is projected with the identity, and unlike every other
+     * kind it names the branch it reads, because there is no fixed set of them:
+     * the axis is spelled "Category:<branch>" in the binning's axes list.
+     *
+     * Splitting the histogram this way is not double-using a selection variable.
+     * The selection conditions on s > s_cut; the likelihood then works with
+     * p(E, cos(theta), s | s > s_cut), which is strictly more information than
+     * p(E, cos(theta) | s > s_cut). What the cut discards is the region below
+     * threshold, not the structure above it.
+     */
+    enum class Kind { Log10Energy, CosZenith, Ra, Category };
     Kind                kind;
     double              lo;
     double              hi;
     int                 n_bins;
-    std::vector<double> edges;  // empty => uniform
+    std::vector<double> edges;   // empty => uniform
+    std::string         branch;  // Category only: the reco column it bins
 
     [[nodiscard]] bool uniform() const noexcept { return edges.empty(); }
     [[nodiscard]] double step() const noexcept { return (hi - lo) / n_bins; }
@@ -27,7 +42,8 @@ namespace io::ic {
   };
 
   /**
-     * Parse an axis spec for the named kind ("Log10Energy"|"CosZenith"|"Ra"):
+     * Parse an axis spec for the named kind
+     * ("Log10Energy"|"CosZenith"|"Ra"|"Category:<branch>"):
      *   "(lo, hi, n_bins)"        uniform grid
      *   "[e0, e1, ..., eN]"       explicit ascending edges, N bins
      */
@@ -84,6 +100,9 @@ namespace io::ic {
    */
   [[nodiscard]] bool has_ra_axis(const Binning& binning) noexcept;
 
+  /** The Category axes of a binning, in axis order; empty for an ordinary one. */
+  [[nodiscard]] std::vector<Axis> category_axes(const Binning& binning);
+
   /**
    * Number of bins on the trailing Ra axis, or 1 when the binning has none.
    *
@@ -113,6 +132,14 @@ namespace io::ic {
    * pair with `binning` and counts, dropping out-of-range events. No weights and
    * no livetime scaling -- real data is a count.
    */
+  /**
+   * General form: one column per axis, in axis order. The two- and three-column
+   * overloads below are the common cases; this one also covers a binning with
+   * Category axes, where the column count is not fixed.
+   */
+  [[nodiscard]] std::vector<double> bin_event_counts(const Binning&                          binning,
+                                                     std::span<const std::vector<double>>    columns);
+
   [[nodiscard]] std::vector<double> bin_event_counts(const Binning&             binning,
                                                     const std::vector<double>& reco_energy,
                                                     const std::vector<double>& reco_zenith);

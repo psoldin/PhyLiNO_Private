@@ -18,6 +18,7 @@ namespace io::ic {
       case Kind::Log10Energy: return std::log10(raw_value);
       case Kind::CosZenith:   return std::cos(raw_value);
       case Kind::Ra:          return raw_value;
+      case Kind::Category:    return raw_value;
     }
     return raw_value;
   }
@@ -39,7 +40,9 @@ namespace io::ic {
       if (kind == "Log10Energy") return Axis::Kind::Log10Energy;
       if (kind == "CosZenith") return Axis::Kind::CosZenith;
       if (kind == "Ra") return Axis::Kind::Ra;
-      throw std::runtime_error("parse_axis: unknown axis kind '" + std::string(kind) + "'");
+      if (kind.starts_with("Category:")) return Axis::Kind::Category;
+      throw std::runtime_error("parse_axis: unknown axis kind '" + std::string(kind) +
+                               "' (expected Log10Energy, CosZenith, Ra or Category:<branch>)");
     }
 
     // "(a, b, c)" / "[a, b, c]" -> the numbers, punctuation blanked out
@@ -62,6 +65,16 @@ namespace io::ic {
 
   Axis parse_axis(const std::string_view kind, const std::string_view spec) {
     const Axis::Kind k = parse_axis_kind(kind);
+
+    // "Category:bdt_score" carries its own branch name; every other kind reads a
+    // column fixed by BranchNames.
+    std::string branch;
+    if (k == Axis::Kind::Category) {
+      branch = std::string(kind.substr(std::string_view("Category:").size()));
+      if (branch.empty())
+        throw std::runtime_error("parse_axis: 'Category:' needs a branch name, e.g. Category:bdt_score");
+    }
+
     const auto trimmed = spec.substr(spec.find_first_not_of(" \t"));
     const auto numbers = parse_numbers(trimmed);
 
@@ -72,13 +85,14 @@ namespace io::ic {
       if (!std::ranges::is_sorted(numbers))
         throw std::runtime_error("parse_axis: edge list '" + std::string(spec) + "' is not ascending");
 
-      return Axis{k, numbers.front(), numbers.back(), static_cast<int>(numbers.size() - 1), numbers};
+      return Axis{k, numbers.front(), numbers.back(), static_cast<int>(numbers.size() - 1), numbers,
+                  std::move(branch)};
     }
 
     if (numbers.size() != 3 || numbers[2] <= 0.0)
       throw std::runtime_error("parse_axis: bad spec '" + std::string(spec) + "' (want '(lo, hi, n_bins)') or [e0, e1, ...]");
 
-    return Axis{k, numbers[0], numbers[1], static_cast<int>(numbers[2]), {}};
+    return Axis{k, numbers[0], numbers[1], static_cast<int>(numbers[2]), {}, std::move(branch)};
   }
 
   std::string_view axis_kind_name(const Axis::Kind kind) noexcept {
@@ -86,8 +100,16 @@ namespace io::ic {
       case Axis::Kind::Log10Energy: return "Log10Energy";
       case Axis::Kind::CosZenith:   return "CosZenith";
       case Axis::Kind::Ra:          return "Ra";
+      case Axis::Kind::Category:    return "Category";
     }
     return "Unknown";
+  }
+
+  std::vector<Axis> category_axes(const Binning& binning) {
+    std::vector<Axis> out;
+    for (const Axis& a : binning.axes())
+      if (a.kind == Axis::Kind::Category) out.push_back(a);
+    return out;
   }
 
   Binning::Binning(std::vector<Axis> axes) : m_Axes(std::move(axes)) {
@@ -105,6 +127,25 @@ namespace io::ic {
       flat = flat * m_Axes[d].n_bins + i;
     }
     return flat;
+  }
+
+  std::vector<double> bin_event_counts(const Binning&                       binning,
+                                       const std::span<const std::vector<double>> columns) {
+    if (columns.size() != binning.n_axes())
+      throw std::runtime_error("bin_event_counts: got " + std::to_string(columns.size()) +
+                               " columns for a binning with " + std::to_string(binning.n_axes()) + " axes");
+
+    std::vector<double> counts(static_cast<std::size_t>(binning.total_bins()), 0.0);
+    if (columns.empty()) return counts;
+
+    const std::size_t   n = columns.front().size();
+    std::vector<double> reco(columns.size(), 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t c = 0; c < columns.size(); ++c) reco[c] = columns[c][i];
+      const int bin = binning.bin_index(reco);
+      if (bin >= 0) counts[static_cast<std::size_t>(bin)] += 1.0;
+    }
+    return counts;
   }
 
   std::vector<double> bin_event_counts(const Binning&             binning,

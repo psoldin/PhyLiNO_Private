@@ -66,6 +66,43 @@ namespace io::ic {
       return out;
     }
 
+    // Same, but tolerant of the numeric type: the diagnostic category columns are
+    // whatever the file happens to carry (bdt_score is float where the weight
+    // branches are double), and reading one as garbage would be worse than a
+    // slower branch here. Never used for anything the fit reads.
+    arrow::Result<std::vector<double>> get_numeric_column(const arrow::Table& table,
+                                                          const std::string&  name) {
+      auto col = table.GetColumnByName(name);
+      if (!col)
+        return arrow::Status::Invalid("ICDataBase: missing category column '" + name + "'");
+
+      const auto          chunk = col->chunk(0);
+      std::vector<double> out;
+      out.reserve(chunk->length());
+
+      if (chunk->type_id() == arrow::Type::DOUBLE) {
+        const auto array = std::static_pointer_cast<arrow::DoubleArray>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : array->Value(i));
+      } else if (chunk->type_id() == arrow::Type::FLOAT) {
+        const auto array = std::static_pointer_cast<arrow::FloatArray>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else if (chunk->type_id() == arrow::Type::INT64) {
+        const auto array = std::static_pointer_cast<arrow::Int64Array>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else if (chunk->type_id() == arrow::Type::INT32) {
+        const auto array = std::static_pointer_cast<arrow::Int32Array>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else {
+        return arrow::Status::Invalid("ICDataBase: category column '" + name + "' has type " +
+                                      chunk->type()->ToString() + ", expected a numeric type");
+      }
+      return out;
+    }
+
     // The sample's configured topology cut, as a dense keep-mask over the table's
     // rows: an event is kept if its topology column equals one of the configured
     // class labels, or (Topology.Exclude) kept unless it does. Returns an empty
@@ -126,13 +163,20 @@ namespace io::ic {
   }  // namespace
 
   arrow::Status ICDataBase::read_sample(const SampleConfig& cfg, ICSample& out) {
-    // read_sample builds a fixed 2-element {e_reco, reco_zenith} reco array below, and
-    // MC is always binned in the RA-free mc_binning: NNMFit's Binning_2D_to_3D bins the
-    // events in 2D and spreads the result over RA (see SampleLikelihood), so the
-    // per-event path never sees an RA axis.
-    if (cfg.mc_binning.n_axes() != 2)
+    // MC is always binned in the RA-free mc_binning: NNMFit's Binning_2D_to_3D bins
+    // the events in 2D and spreads the result over RA (see SampleLikelihood), so the
+    // per-event path never sees an RA axis. Beyond energy and zenith the binning may
+    // carry any number of Category axes, which ARE per-event and are read below.
+    const std::vector<Axis> mc_categories = category_axes(cfg.mc_binning);
+    if (cfg.mc_binning.n_axes() != 2 + mc_categories.size())
       return arrow::Status::Invalid(
-          "ICDataBase::read_sample: only 2-axis MC binnings are supported (sample '" + cfg.name + "')");
+          "ICDataBase::read_sample: the MC binning of sample '" + cfg.name +
+          "' must be (Log10Energy, CosZenith) followed by Category axes only");
+    if (cfg.mc_binning.axes()[0].kind != Axis::Kind::Log10Energy ||
+        cfg.mc_binning.axes()[1].kind != Axis::Kind::CosZenith)
+      return arrow::Status::Invalid(
+          "ICDataBase::read_sample: sample '" + cfg.name +
+          "' must bin energy first and zenith second; the flux components index on that order");
 
     std::cout << "Reading IceCube sample '" << cfg.name << "': " << cfg.parquet << '\n';
     ARROW_ASSIGN_OR_RAISE(auto table, read_parquet_file(cfg.parquet));
@@ -142,6 +186,41 @@ namespace io::ic {
     // Reconstructed variables: only needed to assign analysis bins.
     ARROW_ASSIGN_OR_RAISE(auto e_reco, get_double_column(*table, b.reco_energy));
     ARROW_ASSIGN_OR_RAISE(auto reco_zenith, get_double_column(*table, b.reco_zenith));
+
+    for (const std::string& branch : cfg.category_branches) {
+      ARROW_ASSIGN_OR_RAISE(auto column, get_numeric_column(*table, branch));
+      out.category_names.push_back(branch);
+      out.categories.push_back(std::move(column));
+    }
+
+    // Forward-folding inputs: the response centres and the per-event widths.
+    // Read here rather than in the likelihood because they are
+    // parameter-independent and ICDataBase is what is cached for the process.
+    if (cfg.response.enabled) {
+      ARROW_ASSIGN_OR_RAISE(out.response_truth_log_e,
+                            get_double_column(*table, cfg.response.truth_energy_branch));
+      ARROW_ASSIGN_OR_RAISE(out.response_truth_zenith,
+                            get_double_column(*table, cfg.response.truth_zenith_branch));
+      ARROW_ASSIGN_OR_RAISE(auto sigma_e, get_double_column(*table, cfg.response.energy_sigma_branch));
+      ARROW_ASSIGN_OR_RAISE(auto sigma_z, get_double_column(*table, cfg.response.zenith_sigma_branch));
+
+      auto apply = [](const double x, const SigmaTransform transform) noexcept {
+        constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+        switch (transform) {
+          case SigmaTransform::None: return x;
+          case SigmaTransform::Exp: return std::exp(x);
+          case SigmaTransform::Pow10: return std::pow(10.0, x);
+          case SigmaTransform::DegToRad: return x * kDegToRad;
+        }
+        return x;
+      };
+      out.response_sigma_log_e.resize(sigma_e.size());
+      out.response_sigma_zenith.resize(sigma_z.size());
+      for (std::size_t i = 0; i < sigma_e.size(); ++i)
+        out.response_sigma_log_e[i] = apply(sigma_e[i], cfg.response.energy_sigma_transform);
+      for (std::size_t i = 0; i < sigma_z.size(); ++i)
+        out.response_sigma_zenith[i] = apply(sigma_z[i], cfg.response.zenith_sigma_transform);
+    }
 
     // Per-event fit-time columns. Only the components this sample declares are
     // read: a parquet that carries no atmospheric weights (or no astrophysical
@@ -258,10 +337,20 @@ namespace io::ic {
       return w;
     };
 
-    std::size_t topology_dropped = 0;
+    // Category axes read raw reco columns, one per axis, in axis order.
+    std::vector<std::vector<double>> category_values;
+    for (const Axis& axis : mc_categories) {
+      ARROW_ASSIGN_OR_RAISE(auto column, get_numeric_column(*table, axis.branch));
+      category_values.push_back(std::move(column));
+    }
+
+    std::size_t         topology_dropped = 0;
+    std::vector<double> reco(2 + mc_categories.size(), 0.0);
     for (std::size_t i = 0; i < N; ++i) {
-      const std::array<double, 2> reco{e_reco[i], reco_zenith[i]};
-      const int                   bin  = cfg.mc_binning.bin_index(reco);
+      reco[0] = e_reco[i];
+      reco[1] = reco_zenith[i];
+      for (std::size_t c = 0; c < category_values.size(); ++c) reco[2 + c] = category_values[c][i];
+      const int bin = cfg.mc_binning.bin_index(reco);
       const bool                  kept = topology_keeps.empty() || topology_keeps[i];
 
       if (want_fraction && bin >= 0) {
@@ -284,6 +373,26 @@ namespace io::ic {
 
     // Compact to in-range events, group by bin, build the CSR index.
     out.sort_into_bins(cfg.mc_binning.total_bins());
+
+    // The response matrix indexes the sorted events, so it is built after the
+    // sort and never again: truth, widths and bin edges do not move during a fit.
+    if (cfg.response.enabled) {
+      std::size_t unusable = 0;
+      out.response = build_response_matrix(cfg.mc_binning, out.bin_idx, out.response_truth_log_e,
+                                           out.response_truth_zenith, out.response_sigma_log_e,
+                                           out.response_sigma_zenith, cfg.response.truncation,
+                                           cfg.response.min_fraction, unusable);
+
+      const double per_event = out.size() > 0 ? static_cast<double>(out.response.nnz()) /
+                                                    static_cast<double>(out.size())
+                                              : 0.0;
+      std::cout << "IceCube sample '" << cfg.name << "': response matrix " << out.response.nnz()
+                << " entries over " << out.size() << " events (" << per_event << " bins per event), "
+                << (static_cast<double>(out.response.bytes()) / 1e9) << " GB";
+      if (unusable > 0)
+        std::cout << "; " << unusable << " events had no usable response and kept their unfolded bin";
+      std::cout << '\n';
+    }
 
     if (cfg.filters_topology())
       std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
@@ -356,6 +465,15 @@ namespace io::ic {
       ARROW_ASSIGN_OR_RAISE(ra, get_double_column(*table, b.reco_ra));
     }
 
+    // Data must be binned on the same category axes as the MC, from the same
+    // columns; a data file lacking one of them fails here rather than silently
+    // producing a differently-shaped histogram.
+    std::vector<std::vector<double>> data_categories;
+    for (const Axis& axis : io::ic::category_axes(cfg.binning)) {
+      ARROW_ASSIGN_OR_RAISE(auto column, get_numeric_column(*table, axis.branch));
+      data_categories.push_back(std::move(column));
+    }
+
     // The same topology cut the MC path applies, so both sides of the likelihood
     // see one selection.
     ARROW_ASSIGN_OR_RAISE(const auto topology_keeps, topology_mask(*table, cfg));
@@ -373,6 +491,7 @@ namespace io::ic {
     std::vector<double> masked_energy;
     std::vector<double> masked_zenith;
     std::vector<double> masked_ra;
+    std::vector<std::vector<double>> masked_categories(data_categories.size());
     masked_energy.reserve(n_rows);
     masked_zenith.reserve(n_rows);
     if (needs_ra)
@@ -388,6 +507,8 @@ namespace io::ic {
         masked_zenith.push_back(zenith[i]);
         if (needs_ra)
           masked_ra.push_back(ra[i]);
+        for (std::size_t c = 0; c < data_categories.size(); ++c)
+          masked_categories[c].push_back(data_categories[c][i]);
       }
     }
 
@@ -406,8 +527,14 @@ namespace io::ic {
                     static_cast<double>(after_topology))
                 << "%)\n";
 
-    out          = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)
-                            : bin_event_counts(cfg.binning, masked_energy, masked_zenith);
+    if (!masked_categories.empty()) {
+      std::vector<std::vector<double>> columns{masked_energy, masked_zenith};
+      for (auto& column : masked_categories) columns.push_back(std::move(column));
+      out = bin_event_counts(cfg.binning, columns);
+    } else {
+      out = needs_ra ? bin_event_counts(cfg.binning, masked_energy, masked_zenith, masked_ra)
+                     : bin_event_counts(cfg.binning, masked_energy, masked_zenith);
+    }
     double total = 0.0;
     for (const double v : out)
       total += v;

@@ -1,0 +1,270 @@
+{
+  "Experiment": "IceCube",
+  "IceCube": {
+    "Backend": "cpu",
+    "Likelihood": "SAY",
+    "UseData": false,
+    "AstroModel": "Powerlaw",
+    "ERefGeV": 100000.0,
+    "AstroReferenceIndex": 2.0,
+    "AstroPerTypeNorm": false,
+    "ConvDeltaGammaERef": 1000.0,
+    "PromptDeltaGammaERef": 3800.0,
+    "Binnings": {
+      "tracks_2d": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.0, 7.0, 50)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "tracks": {
+        "enabled": true,
+        "binning": "tracks_2d",
+        "parquet": "/Users/soldin/Projects/DoubleChooz/software/FitPaper/PhyLiNO_Finish/evaluation/presentation/dataset_NT_FL_SnowStorm_tracks_NuMu_ELEFANTS_v2.parquet",
+        "livetime": 410978234.97,
+        "components": "astro, conventional, prompt",
+        "Oscillations": {
+          "File": "/Users/soldin/Downloads/nnmfit_files_shuyang/osc_survival_NT_FL_SnowStorm_tracks_NuMu.parquet",
+          "Branch": "osc_survival"
+        },
+        "Branches": {
+          "RecoEnergy": "ELEFANTS_tg_mu"
+        },
+        "Topology": {
+          "Branch": "classification",
+          "Values": "1"
+        }
+      }
+    }
+  },
+  "Parameter": [
+    {
+      "Name": "AstroNorm",
+      "StartValue": 1.8,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0,
+      "AsimovValue": 1.8
+    },
+    {
+      "Name": "SpectralIndex",
+      "StartValue": 2.52,
+      "StepWidth": 0.1,
+      "Fixed": false,
+      "Constrained": false,
+      "LowerBound": 1.4,
+      "AsimovValue": 2.52,
+      "UpperBound": 3.2
+    },
+    {
+      "Name": "ConvNorm",
+      "StartValue": 1.0,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0,
+      "AsimovValue": 1.0
+    },
+    {
+      "Name": "PromptNorm",
+      "StartValue": 1.0,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0,
+      "AsimovValue": 1.0
+    },
+    {
+      "Name": "BarrH",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "PriorValue": 0.0,
+      "PriorWidth": 0.15,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -0.8,
+      "UpperBound": 0.8,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "BarrW",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "PriorValue": 0.0,
+      "PriorWidth": 0.4,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -0.6,
+      "UpperBound": 0.6,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "BarrY",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "PriorValue": 0.0,
+      "PriorWidth": 0.3,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -0.6,
+      "UpperBound": 0.6,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "BarrZ",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "PriorValue": 0.0,
+      "PriorWidth": 0.12,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -0.244,
+      "UpperBound": 0.6,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "CRGrad",
+      "StartValue": 0.0,
+      "StepWidth": 0.1,
+      "PriorValue": 0.0,
+      "PriorWidth": 1.0,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -1.0,
+      "UpperBound": 2.0,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "DeltaGamma",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -1.0,
+      "UpperBound": 1.0,
+      "AsimovValue": 0.0
+    },
+    {
+      "Name": "MuonNorm",
+      "StartValue": 1.0,
+      "StepWidth": 0.1,
+      "PriorValue": 1.0,
+      "PriorWidth": 0.5,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": 0.0
+    },
+    {
+      "Name": "MuonGunNorm",
+      "StartValue": 1.0,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0
+    },
+    {
+      "Name": "VetoThreshold",
+      "StartValue": 0.0,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -1.301,
+      "UpperBound": 1.301
+    },
+    {
+      "Name": "DOMEff",
+      "StartValue": 1.0,
+      "StepWidth": 0.02,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1,
+      "AsimovValue": 1.0
+    },
+    {
+      "Name": "IceAbs",
+      "StartValue": 1.0,
+      "StepWidth": 0.02,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1,
+      "AsimovValue": 1.0
+    },
+    {
+      "Name": "IceScat",
+      "StartValue": 1.0,
+      "StepWidth": 0.02,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.9,
+      "UpperBound": 1.1,
+      "AsimovValue": 1.0
+    },
+    {
+      "Name": "HoleIceP0",
+      "StartValue": 0.249,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -0.1,
+      "UpperBound": 0.5980366362473171,
+      "AsimovValue": 0.249
+    },
+    {
+      "Name": "HoleIceP1",
+      "StartValue": -0.0568,
+      "StepWidth": 0.02,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -0.1135759700999585,
+      "UpperBound": 0.0,
+      "AsimovValue": -0.0568
+    },
+    {
+      "Name": "GalacticNorm0",
+      "StartValue": 1.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0
+    },
+    {
+      "Name": "GalacticNorm1",
+      "StartValue": 1.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 0.0
+    },
+    {
+      "Name": "AstroGamma1",
+      "StartValue": 1.31,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -10.0,
+      "UpperBound": 3.0
+    },
+    {
+      "Name": "AstroGamma2",
+      "StartValue": 2.74,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 2.0,
+      "UpperBound": 4.0
+    },
+    {
+      "Name": "AstroEBreak",
+      "StartValue": 4.4,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 3.6,
+      "UpperBound": 5.0
+    }
+  ]
+}
