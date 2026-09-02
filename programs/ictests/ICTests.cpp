@@ -2804,6 +2804,55 @@ TEST(ICDataBaseTest, RejectsNonDoubleTopologyColumn) {
   std::remove(path.c_str());
 }
 
+// Some reconstruction branches are stored single-precision. Those must load and
+// widen exactly, not be rejected alongside the integer columns above and not be
+// reinterpreted by an unchecked DoubleArray cast.
+TEST(ICDataBaseTest, ReadsFloatColumns) {
+  const std::string path = "ictests_float_columns.parquet";
+
+  // Exactly representable in float32, so the widened values compare equal.
+  const std::vector<float> reco_energy{1.0e3F, 3.0e4F};
+  const std::vector<float> reco_zenith{2.0F, 2.0F};
+  const std::vector<float> true_energy{1.5e3F, 2.5e3F};
+  {
+    auto float_array = [](const std::vector<float>& values) {
+      arrow::FloatBuilder           builder;
+      std::shared_ptr<arrow::Array> array;
+      EXPECT_TRUE(builder.AppendValues(values).ok());
+      EXPECT_TRUE(builder.Finish(&array).ok());
+      return array;
+    };
+
+    std::vector<std::shared_ptr<arrow::Field>> fields{
+        arrow::field("energy_truncated", arrow::float32()),
+        arrow::field("zenith_MPEFit", arrow::float32()),
+        arrow::field("MCPrimaryEnergy", arrow::float32()),
+        arrow::field("powerlaw", arrow::float64())};
+    std::vector<std::shared_ptr<arrow::Array>> arrays{
+        float_array(reco_energy), float_array(reco_zenith), float_array(true_energy),
+        double_array({1.0e-8, 1.0e-8})};
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 2).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning        binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                                Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+  io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+  cfg.parquet    = path;
+  cfg.components = {"astro"};
+
+  const io::ic::ICDataBase db(std::vector<io::ic::SampleConfig>{cfg});
+  const auto&              sample = db.sample(0);
+  ASSERT_TRUE(sample.size() == 2);
+  EXPECT_DOUBLE_EQ(sample.e_true[0], 1.5e3);
+  EXPECT_DOUBLE_EQ(sample.e_true[1], 2.5e3);
+
+  std::remove(path.c_str());
+}
+
 // --- The parameter explorer's stack -------------------------------------------
 //
 // These two need a built prediction, so they live here with the synthetic sample

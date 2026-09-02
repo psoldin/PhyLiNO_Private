@@ -44,37 +44,19 @@ namespace io::ic {
       return combined;
     }
 
-    // Fetch one CombineChunks'd double column by name into a dense vector; null -> 0.
-    arrow::Result<std::vector<double>> get_double_column(const arrow::Table& table,
-                                                         const std::string&  name) {
-      auto col = table.GetColumnByName(name);
-      if (!col)
-        return arrow::Status::Invalid("ICDataBase: missing required column '" + name + "'");
-
-      // The cast below is unchecked, so an int-typed column would be reinterpreted
-      // as doubles and read as garbage rather than failing. Every weight branch is
-      // a double, but config-named columns (topology) can be anything.
-      if (col->type()->id() != arrow::Type::DOUBLE)
-        return arrow::Status::Invalid("ICDataBase: column '" + name + "' has type " + col->type()->ToString() +
-                                      ", expected double");
-
-      auto                array = std::static_pointer_cast<arrow::DoubleArray>(col->chunk(0));
-      std::vector<double> out;
-      out.reserve(array->length());
-      for (int64_t i = 0, n = array->length(); i < n; ++i)
-        out.push_back(array->IsNull(i) ? 0.0 : array->Value(i));
-      return out;
-    }
-
-    // Same, but tolerant of the numeric type: the diagnostic category columns are
-    // whatever the file happens to carry (bdt_score is float where the weight
-    // branches are double), and reading one as garbage would be worse than a
-    // slower branch here. Never used for anything the fit reads.
+    // Fetch one CombineChunks'd numeric column by name into a dense vector; null -> 0.
+    // Tolerant of the stored type: a column is whatever the file happens to carry
+    // (bdt_score and some reco variables are float where the weight branches are
+    // double), and an unchecked DoubleArray cast would read those as garbage.
     arrow::Result<std::vector<double>> get_numeric_column(const arrow::Table& table,
                                                           const std::string&  name) {
       auto col = table.GetColumnByName(name);
       if (!col)
         return arrow::Status::Invalid("ICDataBase: missing category column '" + name + "'");
+
+      // CombineChunks leaves one chunk per column, or none at all for a zero-row file.
+      if (col->num_chunks() == 0)
+        return std::vector<double>{};
 
       const auto          chunk = col->chunk(0);
       std::vector<double> out;
@@ -101,6 +83,25 @@ namespace io::ic {
                                       chunk->type()->ToString() + ", expected a numeric type");
       }
       return out;
+    }
+
+    // The same read, restricted to the floating-point types. Everything the fit
+    // itself reads goes through here: every weight branch is a double, so an
+    // int-typed one means the file is not what the config claims and is rejected
+    // rather than silently converted. Float is accepted -- some reconstruction
+    // branches are stored single-precision, and widening one is exact.
+    arrow::Result<std::vector<double>> get_double_column(const arrow::Table& table,
+                                                         const std::string&  name) {
+      auto col = table.GetColumnByName(name);
+      if (!col)
+        return arrow::Status::Invalid("ICDataBase: missing required column '" + name + "'");
+
+      const auto id = col->type()->id();
+      if (id != arrow::Type::DOUBLE && id != arrow::Type::FLOAT)
+        return arrow::Status::Invalid("ICDataBase: column '" + name + "' has type " + col->type()->ToString() +
+                                      ", expected double or float");
+
+      return get_numeric_column(table, name);
     }
 
     // The sample's configured topology cut, as a dense keep-mask over the table's
