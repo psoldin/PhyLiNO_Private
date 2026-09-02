@@ -175,6 +175,16 @@ namespace io {
     /** Relative width of the randomized start values, as passed via --randomizeWidth. */
     [[nodiscard]] double randomize_width() const noexcept { return m_RandomizeWidth; }
 
+    /**
+     * Blind the written results (--blind): the signal parameters are left out of
+     * the parameter block and every bin above 1e4 GeV is written as zero, in the
+     * data, the prediction and every component alike. The fit is unaffected --
+     * all parameters float and all bins enter the likelihood, so a blinded run
+     * and an unblinded one minimize exactly the same thing. See ICBlinding.h for
+     * what counts as signal.
+     */
+    [[nodiscard]] bool blind() const noexcept { return m_Blind; }
+
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
@@ -190,6 +200,7 @@ namespace io {
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
+    bool   m_Blind{false};          /**< Keep the signal out of the written results. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */

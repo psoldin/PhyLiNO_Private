@@ -1,5 +1,6 @@
 #include "CudaBackend.h"
 #include "DetectorSystematics.h"
+#include "ICBlinding.h"
 #include "ICComponentBreakdown.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICDataBase.h"
@@ -2851,6 +2852,64 @@ TEST(ICDataBaseTest, ReadsFloatColumns) {
   EXPECT_DOUBLE_EQ(sample.e_true[1], 2.5e3);
 
   std::remove(path.c_str());
+}
+
+// --- Blinding ---------------------------------------------------------------
+//
+// The whole point of --blind is that the written file cannot be used to recover
+// the signal, so what it hides is worth pinning: an off-by-one on the energy
+// axis leaks the first bin above the threshold, and the leak would look like a
+// perfectly ordinary result.
+
+TEST(BlindingTest, HidesTheSignalParametersOnly) {
+  for (const std::string& name : {"AstroNorm", "SpectralIndex", "PromptNorm", "AstroGamma1",
+                                  "AstroGamma2", "AstroEBreak"})
+    EXPECT_TRUE(result::ic::is_blinded_parameter(name)) << name;
+
+  for (const std::string& name : {"ConvNorm", "BarrH", "BarrW", "BarrY", "BarrZ", "CRGrad",
+                                  "DeltaGamma", "MuonNorm", "MuonGunNorm", "VetoThreshold",
+                                  "DOMEff", "IceAbs", "IceScat", "HoleIceP0", "HoleIceP1",
+                                  "GalacticNorm0", "GalacticNorm1"})
+    EXPECT_FALSE(result::ic::is_blinded_parameter(name)) << name;
+}
+
+TEST(BlindingTest, HidesTheAstroComponentOnly) {
+  EXPECT_TRUE(result::ic::is_blinded_component("astro"));
+
+  // The rest of the breakdown stays: it is what a blinded result is inspected for.
+  for (const std::string& name : {"atmospheric", "atmospheric_veto", "atmospheric_conv",
+                                  "atmospheric_prompt", "template", "systematicsDelta",
+                                  "galactic"})
+    EXPECT_FALSE(result::ic::is_blinded_component(name)) << name;
+}
+
+TEST(BlindingTest, ZeroesEveryBinAboveTheThreshold) {
+  // 2.8 to 7.0 in steps of 0.2: the threshold (log10 1e4 = 4.0) is an exact
+  // edge, so the first six energy bins survive.
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.8, 7.0, 21},
+                         Axis{Axis::Kind::CosZenith, -1.0, 1.0, 7}});
+  EXPECT_EQ(result::ic::visible_bins(binning), 6u * 7u);
+
+  std::vector<double> bins(static_cast<std::size_t>(binning.total_bins()), 1.0);
+  result::ic::blind_bins(binning, bins);
+  for (std::size_t i = 0; i < bins.size(); ++i)
+    EXPECT_DOUBLE_EQ(bins[i], i < 6u * 7u ? 1.0 : 0.0) << "bin " << i;
+}
+
+TEST(BlindingTest, HidesTheBinStraddlingTheThreshold) {
+  // A bin that reaches above 1e4 GeV is hidden whole, however little of it does.
+  const Binning straddling({Axis{Axis::Kind::Log10Energy, 2.6, 4.8, 1},
+                            Axis{Axis::Kind::CosZenith, -1.0, 1.0, 1}});
+  EXPECT_EQ(result::ic::visible_bins(straddling), 0u);
+
+  const Binning edges({Axis{Axis::Kind::Log10Energy, 2.0, 5.0, 3, {2.0, 3.0, 4.5, 5.0}},
+                       Axis{Axis::Kind::CosZenith, -1.0, 1.0, 2}});
+  EXPECT_EQ(result::ic::visible_bins(edges), 1u * 2u);
+
+  // A binning that does not start with an energy axis is not one this knows how
+  // to blind, so it hides everything instead of guessing.
+  const Binning no_energy({Axis{Axis::Kind::CosZenith, -1.0, 1.0, 4}});
+  EXPECT_EQ(result::ic::visible_bins(no_energy), 0u);
 }
 
 // --- The parameter explorer's stack -------------------------------------------

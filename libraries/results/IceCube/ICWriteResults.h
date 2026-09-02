@@ -6,6 +6,7 @@
 #include "IceCube/ICLikelihood.h"
 #include "IceCube/ICParameter.h"
 
+#include "ICBlinding.h"
 #include "ICComponentBreakdown.h"
 #include "ICWriteResultsProto.h"
 
@@ -23,6 +24,7 @@ namespace result::ic {
   inline nlohmann::json get_json_file(ana::Fit& fit, ana::ic::ICLikelihood& llh, const io::ic::ICInputOptions& info) {
     const auto  min   = fit.get_minimizer();
     const auto& names = fit.options()->inputOptions().input_parameters().names();
+    const bool  blind = fit.options()->inputOptions().blind();
 
     // Every histogram read below -- prediction and per-component breakdown alike --
     // is whatever the last likelihood call left behind, so put the likelihood back
@@ -40,6 +42,8 @@ namespace result::ic {
     const double* x   = min->X();
     const double* err = min->Errors();
     for (std::size_t i = 0; i < names.size(); ++i) {
+      if (blind && is_blinded_parameter(names[i]))
+        continue;
       j["parameters"][names[i]] = {{"value", x[i]}, {"error", err[i]}};
     }
 
@@ -51,11 +55,20 @@ namespace result::ic {
 
     j["samples"] = nlohmann::json::array();
     for (std::size_t s = 0; s < llh.n_samples(); ++s) {
-      const auto& sample    = llh.sample(s);
-      const auto& config    = sample.config();
-      const auto  data      = sample.data();
-      const auto  predicted = sample.predicted();
+      const auto& sample = llh.sample(s);
+      const auto& config = sample.config();
 
+      // Copied out of the likelihood before blinding: the histograms below are the
+      // ones the fit is still holding, so they are zeroed here and not in place.
+      std::vector<double> data(sample.data().begin(), sample.data().end());
+      std::vector<double> predicted(sample.predicted().begin(), sample.predicted().end());
+      if (blind) {
+        blind_bins(config.binning, data);
+        blind_bins(config.binning, predicted);
+      }
+
+      // Summed after blinding, so a blinded total cannot be differenced against an
+      // unblinded one to recover the hidden bins.
       double sample_data_total = 0.0;
       double sample_pred_total = 0.0;
       for (std::size_t b = 0; b < data.size(); ++b) {
@@ -78,6 +91,11 @@ namespace result::ic {
       nlohmann::json component_totals = nlohmann::json::object();
       nlohmann::json component_bins   = nlohmann::json::object();
       for (auto& [key, bins] : component_breakdown(sample, llh.parameter())) {
+        if (blind) {
+          if (is_blinded_component(key))
+            continue;
+          blind_bins(config.binning, bins);
+        }
         component_totals[key] = sum_of(bins);
         component_bins[key]   = std::move(bins);
       }
@@ -88,8 +106,8 @@ namespace result::ic {
           {"livetime", config.livetime},
           {"totalBins", config.binning.total_bins()},
           {"axes", std::move(axes)},
-          {"data", std::vector<double>(data.begin(), data.end())},
-          {"prediction", std::vector<double>(predicted.begin(), predicted.end())},
+          {"data", std::move(data)},
+          {"prediction", std::move(predicted)},
           {"dataTotal", sample_data_total},
           {"predTotal", sample_pred_total},
           {"componentTotals", std::move(component_totals)},

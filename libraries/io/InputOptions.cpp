@@ -63,7 +63,8 @@ namespace io {
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")
 	("randomizeWidth", po::value<double>(&m_RandomizeWidth)->default_value(0.08), "Relative width of the randomized start values (NNMFit's default is 0.08)")
-	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf");
+	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf")
+	("blind", po::bool_switch(&m_Blind), "Blind the written results: drop the signal parameters (AstroNorm, SpectralIndex, PromptNorm, AstroGamma1, AstroGamma2, AstroEBreak) and zero every bin above 1e4 GeV. The fit itself still uses all of them");
 
     po::options_description cmdline_options;
     cmdline_options.add(generic_options);
