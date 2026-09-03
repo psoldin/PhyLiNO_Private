@@ -82,7 +82,11 @@ namespace ana {
     // ::Info(), so that silences every *other* scan worker's Minuit output
     // until the restart finishes -- and with two restarts overlapping, the
     // save/restore of that global races and can leave it muted for good.
-    m_Minimizer->SetPrintLevel(silent ? 0 : 2);
+    //
+    // --blind mutes it the same way: level 2 makes Minuit2 print the final
+    // parameter table, signal parameters included, which is exactly what the
+    // blinding keeps out of the written result.
+    m_Minimizer->SetPrintLevel(silent || input_options.blind() ? 0 : 2);
 
     m_Minimizer->SetFunction(*m_Functor);
     m_Minimizer->SetTolerance(input_options.tolerance());
