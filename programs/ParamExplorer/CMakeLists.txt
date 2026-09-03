@@ -14,8 +14,12 @@ target_link_libraries(PhyLiNOExplorerBench PRIVATE explorermodel)
 
 # The GUI is optional. Qt is a desktop-only dependency and the cluster has none,
 # so its absence skips this target and leaves LLHFit and the model layer above
-# untouched. Homebrew's Qt5 is keg-only, so a local build needs
-#   cmake -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt@5 ..
+# untouched. Homebrew keeps Qt5 keg-only, off CMake's default search path.
+foreach(prefix /opt/homebrew/opt/qt@5 /usr/local/opt/qt@5)
+  if(EXISTS ${prefix})
+    list(APPEND CMAKE_PREFIX_PATH ${prefix})
+  endif()
+endforeach()
 find_package(Qt5 COMPONENTS Widgets Charts QUIET)
 if(Qt5_FOUND)
   set(CMAKE_AUTOMOC ON)
