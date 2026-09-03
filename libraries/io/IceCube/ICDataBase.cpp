@@ -78,6 +78,11 @@ namespace io::ic {
         const auto array = std::static_pointer_cast<arrow::Int32Array>(chunk);
         for (int64_t i = 0, n = array->length(); i < n; ++i)
           out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
+      } else if (chunk->type_id() == arrow::Type::UINT8) {
+        // The NNMFit datasets store the standard-mask "exists" flags as uint8.
+        const auto array = std::static_pointer_cast<arrow::UInt8Array>(chunk);
+        for (int64_t i = 0, n = array->length(); i < n; ++i)
+          out.push_back(array->IsNull(i) ? 0.0 : static_cast<double>(array->Value(i)));
       } else {
         return arrow::Status::Invalid("ICDataBase: category column '" + name + "' has type " +
                                       chunk->type()->ToString() + ", expected a numeric type");
@@ -149,15 +154,24 @@ namespace io::ic {
       if (!energy_exists || !energy_fit_status || !dir_exists || !dir_fit_status)
         return arrow::Status::Invalid("ICDataBase: missing standard-mask columns ('" + reco_energy_branch + "_exists', '" + reco_energy_branch + "_fit_status', 'reco_dir_exists', 'reco_dir_fit_status')");
 
-      auto ee = std::static_pointer_cast<arrow::UInt8Array>(energy_exists->chunk(0));
-      auto es = std::static_pointer_cast<arrow::Int32Array>(energy_fit_status->chunk(0));
-      auto de = std::static_pointer_cast<arrow::UInt8Array>(dir_exists->chunk(0));
-      auto ds = std::static_pointer_cast<arrow::Int32Array>(dir_fit_status->chunk(0));
+      // Read through get_numeric_column rather than casting to one fixed Arrow
+      // type: the flags are uint8/int32 in the NNMFit datasets but int64 in
+      // others, and an unchecked static_pointer_cast reinterprets the buffer
+      // instead of converting it -- an int64 1 reads as a uint8 1 followed by
+      // seven 0s, so only every eighth row passes and 87.5% of the data is
+      // silently dropped.
+      ARROW_ASSIGN_OR_RAISE(const auto ee, get_numeric_column(table, reco_energy_branch + "_exists"));
+      ARROW_ASSIGN_OR_RAISE(const auto es, get_numeric_column(table, reco_energy_branch + "_fit_status"));
+      ARROW_ASSIGN_OR_RAISE(const auto de, get_numeric_column(table, "reco_dir_exists"));
+      ARROW_ASSIGN_OR_RAISE(const auto ds, get_numeric_column(table, "reco_dir_fit_status"));
 
-      const int64_t     n = table.num_rows();
+      const auto n = static_cast<std::size_t>(table.num_rows());
+      if (ee.size() != n || es.size() != n || de.size() != n || ds.size() != n)
+        return arrow::Status::Invalid("ICDataBase: standard-mask columns are not row-aligned with the table");
+
       std::vector<bool> pass(n, false);
-      for (int64_t i = 0; i < n; ++i)
-        pass[i] = ee->Value(i) == 1 && es->Value(i) == 0 && de->Value(i) == 1 && ds->Value(i) == 0;
+      for (std::size_t i = 0; i < n; ++i)
+        pass[i] = ee[i] == 1.0 && es[i] == 0.0 && de[i] == 1.0 && ds[i] == 0.0;
       return pass;
     }
 
