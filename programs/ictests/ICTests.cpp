@@ -119,6 +119,24 @@ TEST(BinningTest, NonUniformAxisIndex) {
   ASSERT_TRUE(threw);
 }
 
+// A failed reconstruction is stored as -1 in the parquet, so the energy axis sees
+// log10(-1) == NaN. NaN compares false against everything, so a naive range check
+// lets it through to the truncating cast, which piles it into bin 0.
+TEST(BinningTest, NonFiniteValueIsOutOfRange) {
+  const Axis uniform     = io::ic::parse_axis("Log10Energy", "(2.5, 7.0, 45)");
+  const Axis non_uniform = io::ic::parse_axis("CosZenith", "[-1.0, -0.5, 0.0, 1.0]");
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  ASSERT_TRUE(uniform.index(-1.0) == -1);  // log10(-1) == NaN
+  ASSERT_TRUE(uniform.index(0.0) == -1);   // log10(0)  == -inf
+  ASSERT_TRUE(uniform.index(nan) == -1);
+  ASSERT_TRUE(non_uniform.index(nan) == -1);
+
+  const Binning binning({uniform, io::ic::parse_axis("CosZenith", "(-1.0, 0.0872, 33)")});
+  const double  reco[2] = {-1.0, 2.0};
+  ASSERT_TRUE(binning.bin_index(reco) == -1);
+}
+
 // A binning may mix a uniform energy axis with an explicit-edge zenith axis: that
 // is exactly the cscd_cascade grid (21 x 7 = 147 bins). cscd_muon is one bin.
 TEST(BinningTest, MixedCascadeGrid) {
@@ -2096,6 +2114,76 @@ TEST(TemplateFluxTest, RatesAndFluctuations) {
   ASSERT_TRUE(threw);
 }
 
+// A sample may fit a sub-grid of the binning its pre-binned inputs were exported
+// in -- dropping the zenith bins that reach above the horizon, say. The template
+// is then read whole and gathered down, so no re-export is needed. Rebinning is
+// not on offer: a target bin that splits or merges source bins is rejected.
+TEST(TemplateFluxTest, SubGridFileBinning) {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+
+  const Binning source({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                        io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 4)")});
+  const Binning target({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                        io::ic::parse_axis("CosZenith", "(-1.0, 0.0, 2)")});
+
+  const io::ic::BinMap map = io::ic::make_bin_map(source, target);
+  ASSERT_TRUE(!map.identity());
+  ASSERT_TRUE(map.source_bins == 8);
+  const int expected[4] = {0, 1, 4, 5};
+  for (int b = 0; b < 4; ++b) ASSERT_TRUE(map.index[b] == expected[b]);
+
+  // Identical grids cost the loaders nothing.
+  ASSERT_TRUE(io::ic::make_bin_map(source, source).identity());
+
+  // Half a source bin cannot be gathered, only rebinned.
+  bool split_rejected = false;
+  try {
+    io::ic::make_bin_map(source, Binning({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                                          io::ic::parse_axis("CosZenith", "(-1.0, 0.25, 5)")}));
+  } catch (const std::runtime_error&) {
+    split_rejected = true;
+  }
+  ASSERT_TRUE(split_rejected);
+
+  const std::string path = "ictests_template_subgrid.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 8\n";
+    for (int b = 0; b < 8; ++b) out << (b + 1) * 1.0e-7 << ' ' << (b + 1) * 1.0e-8 << '\n';
+  }
+
+  const double livetime = 1.0e8;
+  const double norm     = 2.0;
+  TemplateFlux flux(target, path, params::ic::MuonGunNorm, livetime, map);
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::MuonGunNorm] = norm;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  ASSERT_TRUE(flux.histogram().size() == 4);
+  for (int b = 0; b < 4; ++b) {
+    const double rate  = (expected[b] + 1) * 1.0e-7;
+    const double sigma = (expected[b] + 1) * 1.0e-8;
+    const double mu    = norm * rate * livetime;
+    const double ssq   = (norm * sigma * livetime) * (norm * sigma * livetime);
+    ASSERT_TRUE(std::abs(flux.histogram()[b] - mu) < 1e-9 * mu);
+    ASSERT_TRUE(std::abs(flux.fluctuation()[b] - ssq) < 1e-9 * ssq);
+  }
+
+  // Without the map the same file is a plain bin-count mismatch, as before.
+  bool threw = false;
+  try {
+    TemplateFlux unmapped(target, path, params::ic::MuonGunNorm, livetime);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  std::remove(path.c_str());
+  ASSERT_TRUE(threw);
+}
+
 // SnowStorm gradients are a histogram-level additive perturbation of mu and
 // sigma^2 (NNMFit snowstorm_gradient.make_graph, external_gradients: True so the
 // histogram-gradient covariance is excluded):
@@ -2645,14 +2733,21 @@ namespace {
     ASSERT_TRUE(sink->Close().ok());
   }
 
-  // The four standard-mask columns, all passing, as the typed columns
-  // ICDataBase::standard_mask expects (uint8 flags, int32 fit statuses).
+  // The four standard-mask columns, all passing. The NNMFit datasets store them
+  // as uint8 flags and int32 fit statuses; other producers (the ANTS export)
+  // write all four as int64, so the reader must handle either width.
   void append_passing_mask_columns(std::vector<std::shared_ptr<arrow::Field>>& fields,
                                    std::vector<std::shared_ptr<arrow::Array>>& arrays,
-                                   const std::string& reco_energy, int64_t n_rows) {
-    auto flag = [n_rows](bool is_uint8) {
+                                   const std::string& reco_energy, int64_t n_rows,
+                                   bool as_int64 = false) {
+    auto flag = [n_rows, as_int64](bool is_exists) {
       std::shared_ptr<arrow::Array> array;
-      if (is_uint8) {
+      const int64_t                 value = is_exists ? 1 : 0;
+      if (as_int64) {
+        arrow::Int64Builder builder;
+        EXPECT_TRUE(builder.AppendValues(std::vector<int64_t>(n_rows, value)).ok());
+        EXPECT_TRUE(builder.Finish(&array).ok());
+      } else if (is_exists) {
         arrow::UInt8Builder builder;
         EXPECT_TRUE(builder.AppendValues(std::vector<uint8_t>(n_rows, 1)).ok());
         EXPECT_TRUE(builder.Finish(&array).ok());
@@ -2664,13 +2759,18 @@ namespace {
       return array;
     };
 
-    for (const auto& [name, is_uint8] : std::vector<std::pair<std::string, bool>>{
+    auto type = [as_int64](bool is_exists) {
+      if (as_int64) return arrow::int64();
+      return is_exists ? arrow::uint8() : arrow::int32();
+    };
+
+    for (const auto& [name, is_exists] : std::vector<std::pair<std::string, bool>>{
              {reco_energy + "_exists", true},
              {reco_energy + "_fit_status", false},
              {"reco_dir_exists", true},
              {"reco_dir_fit_status", false}}) {
-      fields.push_back(arrow::field(name, is_uint8 ? arrow::uint8() : arrow::int32()));
-      arrays.push_back(flag(is_uint8));
+      fields.push_back(arrow::field(name, type(is_exists)));
+      arrays.push_back(flag(is_exists));
     }
   }
 
@@ -2763,6 +2863,62 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
 
   std::remove(mc_path.c_str());
   std::remove(data_path.c_str());
+}
+
+// The standard-mask flags are uint8/int32 in the NNMFit datasets but int64 in
+// others. Casting the chunk to one fixed Arrow type reinterprets the buffer
+// instead of converting it: an int64 1 is a uint8 1 followed by seven 0s, so
+// only every eighth row passes and 87.5% of the data vanishes with no error.
+TEST(ICDataBaseTest, StandardMaskAcceptsWiderFlagTypes) {
+  const std::string mc_path = "ictests_maskwidth_mc.parquet";
+
+  // Sixteen rows, so a byte-wise misread keeps exactly two of them.
+  constexpr int64_t     kRows = 16;
+  std::vector<double>   reco_energy(kRows, 1.0e4);
+  std::vector<double>   reco_zenith(kRows, 2.0);  // cos = -0.416, in range
+
+  write_parquet(mc_path, {{"energy_truncated", {1.0e4}},
+                          {"zenith_MPEFit", {2.0}},
+                          {"MCPrimaryEnergy", {1.0e3}},
+                          {"powerlaw", {1.0e-8}}});
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto data_total = [&](bool as_int64) {
+    const std::string data_path = "ictests_maskwidth_data.parquet";
+    {
+      std::vector<std::shared_ptr<arrow::Field>> fields{
+          arrow::field("energy_truncated", arrow::float64()),
+          arrow::field("zenith_MPEFit", arrow::float64())};
+      std::vector<std::shared_ptr<arrow::Array>> arrays{double_array(reco_energy),
+                                                        double_array(reco_zenith)};
+      append_passing_mask_columns(fields, arrays, "energy_truncated", kRows, as_int64);
+
+      const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+      auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+      EXPECT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, kRows).ok());
+      EXPECT_TRUE(sink->Close().ok());
+    }
+
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet   = mc_path;
+    cfg.data_path = data_path;
+    cfg.components = {"astro"};
+    const io::ic::ICDataBase db{std::vector<io::ic::SampleConfig>{cfg}};
+
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    std::remove(data_path.c_str());
+    return total;
+  };
+
+  // Every row passes the mask, so every row must reach the histogram whichever
+  // integer width the producer chose.
+  ASSERT_TRUE(data_total(false) == static_cast<double>(kRows));
+  ASSERT_TRUE(data_total(true) == static_cast<double>(kRows));
+
+  std::remove(mc_path.c_str());
 }
 
 // A topology column that is not stored as a double would be reinterpreted by

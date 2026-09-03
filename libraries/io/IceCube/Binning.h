@@ -47,6 +47,9 @@ namespace io::ic {
      *   "(lo, hi, n_bins)"        uniform grid
      *   "[e0, e1, ..., eN]"       explicit ascending edges, N bins
      */
+  /** Bin edges of an axis: its own list, or the generated grid of a uniform one. */
+  [[nodiscard]] std::vector<double> axis_edges(const Axis& axis);
+
   [[nodiscard]] Axis parse_axis(std::string_view kind, std::string_view spec);
 
   /** Config spelling of an axis kind; inverse of parse_axis' kind argument. */
@@ -78,6 +81,42 @@ namespace io::ic {
     std::vector<Axis> m_Axes;
     int               m_TotalBins;
   };
+
+  /**
+   * Where each bin of a sample's binning sits in a histogram produced on a wider
+   * *source* grid the sample's binning is a sub-grid of.
+   *
+   * Pre-binned inputs -- the muon template, the SnowStorm gradients -- come out of
+   * NNMFit on one fixed grid. Fitting a sub-range of it (dropping the zenith bins
+   * that reach above the horizon, say) would otherwise mean re-exporting every
+   * such file; with a map the loaders read the file as exported and keep only the
+   * bins the sample actually has.
+   *
+   * `index[t]` is the source's flat bin for the sample's flat bin t, and
+   * `source_bins` is how many values such a file carries. An empty `index` means
+   * the two grids are identical and no gather is needed.
+   */
+  struct BinMap {
+    int              source_bins = 0;
+    std::vector<int> index;
+
+    [[nodiscard]] bool identity() const noexcept { return index.empty(); }
+  };
+
+  /**
+   * Map `target` onto `source`: same axis kinds in the same order, and every
+   * target bin exactly one source bin (edges compared with a tolerance -- the
+   * config spells the same grid out a second time in floating point). Throws
+   * otherwise: a target bin straddling source bins cannot be gathered, only
+   * rebinned, and quietly rebinning a template is how a fit ends up on numbers
+   * nobody can trace.
+   *
+   * Identical grids give back an identity map, which costs the loaders nothing.
+   */
+  [[nodiscard]] BinMap make_bin_map(const Binning& source, const Binning& target);
+
+  /** out[t] = values[map.index[t]], or a plain copy for an identity map. */
+  void gather_bins(const BinMap& map, std::span<const double> values, std::span<double> out);
 
   /**
    * The analysis binning without its trailing Ra axis -- the binning MC events are

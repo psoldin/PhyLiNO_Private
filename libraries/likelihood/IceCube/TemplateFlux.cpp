@@ -10,18 +10,25 @@ namespace ana::ic {
   TemplateFlux::TemplateFlux(const io::ic::Binning& binning,
                              const std::string&     template_file,
                              const int              norm_index,
-                             const double           livetime)
+                             const double           livetime,
+                             const io::ic::BinMap&  file_bins)
     : m_NormIndex(norm_index) {
     const int total_bins = binning.total_bins();
     m_Histogram.assign(total_bins, 0.0);
     m_Fluctuation.assign(total_bins, 0.0);
-    load(template_file, total_bins, livetime);
+    load(template_file, total_bins, livetime, file_bins);
   }
 
-  void TemplateFlux::load(const std::string& path, const int total_bins, const double livetime) {
+  void TemplateFlux::load(const std::string& path, const int total_bins, const double livetime,
+                          const io::ic::BinMap& file_bins) {
     std::ifstream in(path);
     if (!in)
       throw std::runtime_error("TemplateFlux: cannot open template file '" + path + "'");
+
+    // Rows the file itself carries: the sample's own bin count, unless the sample
+    // fits a sub-grid of the exported binning, in which case the file is read whole
+    // and gathered down (see io::ic::make_bin_map).
+    const int file_rows = file_bins.identity() ? total_bins : file_bins.source_bins;
 
     // Header: "# template bins <N>"; the remaining comments (bin edges) are
     // informational. The bin count is a hard check -- a template binned
@@ -38,34 +45,40 @@ namespace ana::ic {
         if (!(header >> bins_key >> declared_bins) || bins_key != "bins") declared_bins = -1;
       }
     }
-    if (declared_bins != total_bins)
+    if (declared_bins != file_rows)
       throw std::runtime_error("TemplateFlux: template '" + path + "' declares " +
                                std::to_string(declared_bins) + " bins, the sample's binning has " +
-                               std::to_string(total_bins));
+                               std::to_string(total_bins) +
+                               (file_bins.identity() ? "" : " and its file binning " + std::to_string(file_rows)));
 
-    m_Template.assign(total_bins, 0.0);
-    m_Sigma.assign(total_bins, 0.0);
+    std::vector<double> rates(file_rows, 0.0);
+    std::vector<double> sigmas(file_rows, 0.0);
 
     // `line` holds the first non-comment line read above; parse it, then the rest.
     std::istringstream first(line);
-    double             rate = 0.0, sigma = 0.0;
-    if (!(first >> rate >> sigma))
+    if (!(first >> rates[0] >> sigmas[0]))
       throw std::runtime_error("TemplateFlux: template '" + path + "' has no data rows");
-    m_Template[0] = rate * livetime;
-    m_Sigma[0]    = sigma * livetime;
 
-    for (int b = 1; b < total_bins; ++b) {
-      if (!(in >> rate >> sigma))
+    for (int b = 1; b < file_rows; ++b)
+      if (!(in >> rates[b] >> sigmas[b]))
         throw std::runtime_error("TemplateFlux: template '" + path + "' ended after " +
-                                 std::to_string(b) + " of " + std::to_string(total_bins) + " bins");
-      m_Template[b] = rate * livetime;
-      m_Sigma[b]    = sigma * livetime;
+                                 std::to_string(b) + " of " + std::to_string(file_rows) + " bins");
+
+    m_Template.assign(total_bins, 0.0);
+    m_Sigma.assign(total_bins, 0.0);
+    io::ic::gather_bins(file_bins, rates, m_Template);
+    io::ic::gather_bins(file_bins, sigmas, m_Sigma);
+    for (int b = 0; b < total_bins; ++b) {
+      m_Template[b] *= livetime;
+      m_Sigma[b] *= livetime;
     }
 
     double total = 0.0;
     for (const double v : m_Template) total += v;
-    std::cout << "TemplateFlux: loaded " << total_bins << "-bin template from " << path << " (" << total
-              << " events at norm 1)\n";
+    std::cout << "TemplateFlux: loaded " << total_bins << "-bin template from " << path;
+    if (!file_bins.identity())
+      std::cout << " (" << file_rows << " bins in the file, " << (file_rows - total_bins) << " dropped)";
+    std::cout << " (" << total << " events at norm 1)\n";
   }
 
   bool TemplateFlux::check_and_recalculate(const ParameterWrapper& parameter) {

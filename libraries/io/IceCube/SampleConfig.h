@@ -134,6 +134,14 @@ namespace io::ic {
     // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
     std::string gradient_file;
 
+    // "FileBinning": "<binning name>": the grid the pre-binned inputs (muon
+    // template, SnowStorm gradients) were exported in, when this sample fits a
+    // sub-grid of it -- dropping the zenith bins that reach above the horizon,
+    // say. The loaders then read those files as exported and keep only the bins
+    // this sample has, instead of every truncation needing its own export.
+    // Identity when unset. See io::ic::make_bin_map.
+    BinMap file_bin_map;
+
     // "Gradients": { "ScaleToTopology": true }: reuse a gradient file exported
     // from the unfiltered sample with a topology cut active, rescaling each bin's
     // gradient by the fraction of that bin's nominal weight the cut kept. The

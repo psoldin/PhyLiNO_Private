@@ -25,7 +25,11 @@ namespace io::ic {
 
   int Axis::index(const double raw_value) const noexcept {
     const double v = project(raw_value);
-    if (v < lo || v >= hi) return -1;
+    // Negated so a NaN lands here too: a failed reco is stored as -1 in the
+    // parquet, log10(-1) is NaN, and "NaN < lo || NaN >= hi" is false -- the
+    // event would fall through to the cast below, which is UB and in practice
+    // piles every such event into bin 0.
+    if (!(v >= lo && v < hi)) return -1;
     if (uniform()) return static_cast<int>((v - lo) / step());
     // First edge strictly greater than v. Since v >= lo == edges.front(), that
     // iterator is at least edges.begin() + 1, and the bin below it is the one
@@ -103,6 +107,95 @@ namespace io::ic {
       case Axis::Kind::Category:    return "Category";
     }
     return "Unknown";
+  }
+
+  std::vector<double> axis_edges(const Axis& axis) {
+    if (!axis.uniform()) return axis.edges;
+    std::vector<double> edges(static_cast<std::size_t>(axis.n_bins) + 1);
+    for (int i = 0; i <= axis.n_bins; ++i) edges[i] = axis.lo + i * axis.step();
+    return edges;
+  }
+
+  namespace {
+
+    // Source bin of every target bin on one axis. Both edge lists ascend, so a
+    // single sweep of the source edges finds them all.
+    std::vector<int> axis_bin_map(const Axis& source, const Axis& target, const std::size_t axis) {
+      const std::string where = "make_bin_map: axis " + std::to_string(axis) + " (" +
+                                std::string(axis_kind_name(target.kind)) + ")";
+      if (source.kind != target.kind || source.branch != target.branch)
+        throw std::runtime_error(where + " is '" + std::string(axis_kind_name(source.kind)) +
+                                 "' in the source binning; the two must agree axis by axis");
+
+      const std::vector<double> s = axis_edges(source);
+      const std::vector<double> t = axis_edges(target);
+      // Relative to the source span: the same grid written out twice in decimal
+      // agrees to ~1e-16 of its own scale, and nothing physical is this close.
+      const double tol = 1.0e-9 * std::max(1.0, std::abs(s.back() - s.front()));
+
+      std::vector<int> map(static_cast<std::size_t>(target.n_bins));
+      std::size_t      j = 0;
+      for (int i = 0; i < target.n_bins; ++i) {
+        while (j + 1 < s.size() && std::abs(s[j] - t[i]) > tol) ++j;
+        if (j + 1 >= s.size() || std::abs(s[j + 1] - t[i + 1]) > tol) {
+          char lo[32], hi[32];
+          std::snprintf(lo, sizeof(lo), "%.10g", t[i]);
+          std::snprintf(hi, sizeof(hi), "%.10g", t[i + 1]);
+          throw std::runtime_error(where + ": bin " + std::to_string(i) + " [" + lo + ", " + hi +
+                                   "] is not a bin of the source binning. A sub-grid may drop source "
+                                   "bins but not split or merge them");
+        }
+        map[static_cast<std::size_t>(i)] = static_cast<int>(j);
+      }
+      return map;
+    }
+
+  }  // namespace
+
+  BinMap make_bin_map(const Binning& source, const Binning& target) {
+    if (source.n_axes() != target.n_axes())
+      throw std::runtime_error("make_bin_map: the source binning has " + std::to_string(source.n_axes()) +
+                               " axes, the sample's has " + std::to_string(target.n_axes()));
+
+    std::vector<std::vector<int>> per_axis;
+    bool                          same_shape = true;
+    for (std::size_t d = 0; d < target.n_axes(); ++d) {
+      per_axis.push_back(axis_bin_map(source.axes()[d], target.axes()[d], d));
+      same_shape &= source.axes()[d].n_bins == target.axes()[d].n_bins;
+    }
+
+    // Equal bin counts on every axis, with each target bin matched to a distinct
+    // ascending source bin, leaves only the identity -- so there is nothing to
+    // gather and the loaders can read the file straight into place.
+    BinMap map{.source_bins = source.total_bins(), .index = {}};
+    if (same_shape) return map;
+
+    map.index.assign(static_cast<std::size_t>(target.total_bins()), 0);
+    std::vector<int> at(target.n_axes(), 0);  // row-major odometer over target bins
+    for (int b = 0; b < target.total_bins(); ++b) {
+      int flat = 0;
+      for (std::size_t d = 0; d < target.n_axes(); ++d)
+        flat = flat * source.axes()[d].n_bins + per_axis[d][static_cast<std::size_t>(at[d])];
+      map.index[static_cast<std::size_t>(b)] = flat;
+
+      for (int d = static_cast<int>(target.n_axes()) - 1; d >= 0; --d) {
+        if (++at[static_cast<std::size_t>(d)] < target.axes()[static_cast<std::size_t>(d)].n_bins) break;
+        at[static_cast<std::size_t>(d)] = 0;
+      }
+    }
+    return map;
+  }
+
+  void gather_bins(const BinMap& map, const std::span<const double> values, const std::span<double> out) {
+    if (map.identity()) {
+      std::ranges::copy(values, out.begin());
+      return;
+    }
+    if (out.size() != map.index.size())
+      throw std::runtime_error("gather_bins: " + std::to_string(out.size()) +
+                               " output bins for a map covering " + std::to_string(map.index.size()));
+    for (std::size_t b = 0; b < map.index.size(); ++b)
+      out[b] = values[static_cast<std::size_t>(map.index[b])];
   }
 
   std::vector<Axis> category_axes(const Binning& binning) {

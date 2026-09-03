@@ -320,6 +320,15 @@ namespace io::ic {
 
       SampleConfig& sample = samples.back();
       parse_component_files(sample_node, sample);
+
+      // Pre-binned inputs exported in a wider binning than the sample fits.
+      if (const auto file_binning = sample_node.get<std::string>("FileBinning", ""); !file_binning.empty()) {
+        const auto file_it = binnings.find(file_binning);
+        if (file_it == binnings.end())
+          throw std::runtime_error("parse_samples: sample '" + sample_name +
+                                   "' references unknown FileBinning '" + file_binning + "'");
+        sample.file_bin_map = make_bin_map(drop_ra_axis(file_it->second), sample.mc_binning);
+      }
       // Category axes refine the histogram beyond the binning every per-bin input
       // was produced in. SnowStorm gradients, muon templates and galactic maps are
       // all delivered as histograms in the 2D analysis binning, so they cannot

@@ -28,10 +28,16 @@ namespace ana::ic {
    */
   class TemplateFlux {
    public:
+    /**
+     * `file_bins` maps the sample's bins onto the grid the file was exported in
+     * (io::ic::make_bin_map). The default identity map is the usual case: the
+     * file is already in the sample's own binning.
+     */
     TemplateFlux(const io::ic::Binning& binning,
                  const std::string&     template_file,
                  int                    norm_index,
-                 double                 livetime);
+                 double                 livetime,
+                 const io::ic::BinMap&  file_bins = io::ic::BinMap{});
     ~TemplateFlux() = default;
 
     /** Rescale for the current parameters; false when the norm did not change. */
@@ -50,7 +56,7 @@ namespace ana::ic {
     std::vector<double> m_Histogram;    // norm * m_Template
     std::vector<double> m_Fluctuation;  // (norm * m_Sigma)^2
 
-    void load(const std::string& path, int total_bins, double livetime);
+    void load(const std::string& path, int total_bins, double livetime, const io::ic::BinMap& file_bins);
   };
 
 }  // namespace ana::ic
