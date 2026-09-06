@@ -106,6 +106,16 @@ namespace io {
     [[nodiscard]] bool scan_warm_start() const noexcept { return m_ScanWarmStart; }
 
     /**
+     * @brief A finished result whose parameters seed this run.
+     *
+     * Empty unless --seedFrom was given. The file is read with the same reader
+     * a scan resume uses, so it may be in either output format regardless of
+     * what this run writes. Given with or without its extension: the reader
+     * works from base names, and LLHFit strips a .json/.pb.gz suffix first.
+     */
+    [[nodiscard]] const std::string& seed_from() const noexcept { return m_SeedFrom; }
+
+    /**
      * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
      * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
      * (perform_2d_scan_regular), "1d" or "1d-regular" (perform_1d_scan_all,
@@ -194,6 +204,7 @@ namespace io {
     std::string      m_GpuDevices;         /**< Raw --gpuDevices value, e.g. "0:6,1:10". */
     std::vector<int> m_GpuDeviceOfWorker;  /**< --gpuDevices expanded to one device ordinal per worker slot. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
+    std::string m_SeedFrom;           /**< --seedFrom: result whose parameters are this run's start values. */
     std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
     int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */

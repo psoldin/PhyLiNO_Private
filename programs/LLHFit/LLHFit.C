@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -31,6 +32,7 @@
 #include "AdaptiveScan1D.h"
 #include "IceCube/ICWriteResultsProto.h"
 #include "ScanSeeds.h"
+#include "SeedQuality.h"
 
 #include <TROOT.h>
 
@@ -39,8 +41,30 @@ namespace {
   /// A point an earlier run already fitted.
   struct StoredFit {
     double              llh = 0.0;
-    std::vector<double> parameters;  ///< Empty unless the fit converged and every parameter was found.
+    std::vector<double> parameters;  ///< Empty unless the fit is usable as a seed; see seedquality::usable().
   };
+
+  /// seedquality::start_vector() plus the one-off report of a partial block.
+  std::vector<double> start_vector(const io::InputParameter& input_parameters, const std::map<std::string, double>& stored) {
+    const auto& names = input_parameters.names();
+
+    std::size_t filled = 0;
+    const auto  values = seedquality::start_vector(
+        names, stored, [&](std::size_t i) { return input_parameters.value(static_cast<int>(i)); }, filled);
+
+    // Said once per run, not once per scan point: under --blind every file is
+    // partial and the message would otherwise be the bulk of the output.
+    if (!values.empty() && filled < names.size()) {
+      static bool reported = false;
+      if (!reported) {
+        reported = true;
+        std::cout << "Stored fits carry " << filled << " of " << names.size()
+                  << " parameters; the rest start from their configured values (--blind drops the signal parameters)\n";
+      }
+    }
+
+    return values;
+  }
 
   /**
    * @brief Reads back a point an earlier run already fitted.
@@ -48,73 +72,62 @@ namespace {
    * Reads the format the run is configured to write, so a resume never looks
    * for a file the current run would not itself produce.
    *
-   * @param name   Base name of the point's output file.
-   * @param names  Parameter names in minimizer order, used to turn the file's
-   *               name-keyed parameter block back into a start vector.
-   * @param format --output-format, either "json" or "protobuf".
+   * @param name             Base name of the point's output file.
+   * @param input_parameters Configured parameters, for the minimizer order and
+   *                         for the start values of anything the file omits.
+   * @param format           --output-format, either "json" or "protobuf".
    * @return The result, or nullopt if the file is absent or holds no usable likelihood.
    */
-  std::optional<StoredFit> stored_fit(const std::string& name, const std::vector<std::string>& names, const std::string& format) {
+  std::optional<StoredFit> stored_fit(const std::string& name, const io::InputParameter& input_parameters, const std::string& format) {
+    bool                          converged = false;
+    double                        edm       = std::numeric_limits<double>::infinity();
+    double                        llh       = 0.0;
+    std::map<std::string, double> values;
+
     if (format == "protobuf") {
       const auto stored = result::ic::read_ice_cube_results_protobuf(name);
       if (!stored)
         return std::nullopt;
 
-      StoredFit result;
-      result.llh = stored->llh;
+      converged = stored->converged;
+      edm       = stored->edm;
+      llh       = stored->llh;
+      values    = stored->parameter_values;
+    } else {
+      const std::filesystem::path path = name + ".json";
+      if (!std::filesystem::exists(path))
+        return std::nullopt;
 
-      // Same rule as the JSON branch below: only a converged fit's parameters
-      // are trusted as a neighbour's start point.
-      if (stored->converged) {
-        std::vector<double> values;
-        values.reserve(names.size());
-        for (const std::string& parameter : names) {
-          const auto it = stored->parameter_values.find(parameter);
-          if (it == stored->parameter_values.end())
-            break;
-          values.push_back(it->second);
+      std::ifstream  file(path);
+      nlohmann::json stored = nlohmann::json::parse(file, nullptr, false);
+      if (stored.is_discarded() || !stored.contains("LLH"))
+        return std::nullopt;
+
+      llh = stored["LLH"].get<double>();
+      if (!std::isfinite(llh))
+        return std::nullopt;
+
+      converged = stored.value("converged", false);
+
+      // A result written before EDM was recorded leaves this at infinity, which
+      // falls the seed test back onto the converged flag alone.
+      edm = stored.value("EDM", std::numeric_limits<double>::infinity());
+
+      if (stored.contains("parameters")) {
+        for (const auto& [key, parameter] : stored["parameters"].items()) {
+          if (parameter.contains("value"))
+            values[key] = parameter["value"].get<double>();
         }
-
-        if (values.size() == names.size())
-          result.parameters = std::move(values);
       }
-
-      return result;
     }
-
-    const std::filesystem::path path = name + ".json";
-    if (!std::filesystem::exists(path))
-      return std::nullopt;
-
-    std::ifstream  file(path);
-    nlohmann::json stored = nlohmann::json::parse(file, nullptr, false);
-    if (stored.is_discarded() || !stored.contains("LLH"))
-      return std::nullopt;
-
-    const double llh = stored["LLH"].get<double>();
-    if (!std::isfinite(llh))
-      return std::nullopt;
 
     StoredFit result;
     result.llh = llh;
 
-    // Start values are only carried over from a fit that converged: a point that
-    // stalled is exactly the one whose parameters must not spread to its
-    // neighbours. A partial or renamed parameter block is dropped whole rather
-    // than filled in from the defaults, which would mix two different fits.
-    if (stored.value("converged", false) && stored.contains("parameters")) {
-      const auto&         block = stored["parameters"];
-      std::vector<double> values;
-      values.reserve(names.size());
-      for (const std::string& parameter : names) {
-        if (!block.contains(parameter) || !block[parameter].contains("value"))
-          break;
-        values.push_back(block[parameter]["value"].get<double>());
-      }
-
-      if (values.size() == names.size())
-        result.parameters = std::move(values);
-    }
+    // A fit seeds its neighbours when it got close enough to its own minimum,
+    // which EDM measures and Migrad's converged flag does not. See SeedQuality.h.
+    if (seedquality::usable(converged, edm))
+      result.parameters = start_vector(input_parameters, values);
 
     return result;
   }
@@ -214,6 +227,83 @@ namespace {
     return warm_start;
   }
 
+  /**
+   * @brief Start values named by --seedFrom, empty if the option was not given.
+   *
+   * The free fit that opens a scan is a plain minimisation from the config's
+   * StartValues, and on a likelihood with more than one minimum it can converge
+   * cleanly into the wrong one -- which then anchors the whole lattice, sets
+   * every Hesse error, and seeds every scan point that has no fitted neighbour.
+   * This is the way out: point the run at a result that is known to sit at the
+   * right minimum and every fit starts from there.
+   *
+   * Read with the same reader a resume uses, so the file may be in either
+   * output format regardless of what this run writes -- a scan switched to
+   * protobuf can still be seeded from the JSON fit that found the minimum. The
+   * reader adds the extension, so the option takes a base name.
+   *
+   * Throws rather than warning: the option is an explicit instruction, and a
+   * silently ignored one would leave the run doing exactly what it was told not
+   * to do.
+   */
+  /// The extensions the result writers append, longest first so ".pb.gz" is
+  /// matched before a bare ".gz" ever could be.
+  constexpr std::array kResultExtensions{".pb.gz", ".json"};
+
+  /// Base name of a result, whether it was given with or without its extension.
+  /// stored_fit() appends the extension itself, so "Output.json" would otherwise
+  /// send it looking for "Output.json.json".
+  std::string result_base_name(std::string path) {
+    for (const std::string_view extension : kResultExtensions) {
+      if (path.size() > extension.size() && path.ends_with(extension)) {
+        path.resize(path.size() - extension.size());
+        break;
+      }
+    }
+    return path;
+  }
+
+  std::vector<double> load_seed_from_values(const std::shared_ptr<io::Options>& options) {
+    const auto& input = options->inputOptions();
+    if (input.seed_from().empty())
+      return {};
+
+    if (input.randomize_seeds()) {
+      std::cout << "--seedFrom ignored: --randomizeSeeds sets the start values instead\n";
+      return {};
+    }
+
+    const std::string path = result_base_name(input.seed_from());
+
+    const auto& input_parameters = input.input_parameters();
+    const auto& format           = input.output_format();
+
+    // Both formats are tried whichever way round: a scan writing protobuf can be
+    // seeded from the JSON fit that found the minimum, and the reverse.
+    auto stored = stored_fit(path, input_parameters, format);
+    if (!stored)
+      stored = stored_fit(path, input_parameters, format == "protobuf" ? "json" : "protobuf");
+
+    if (!stored)
+      throw std::runtime_error("--seedFrom \"" + input.seed_from() + "\": no readable result there (looked for " + path + ".json and " + path + ".pb.gz)");
+
+    if (stored->parameters.empty())
+      throw std::runtime_error("--seedFrom \"" + input.seed_from() + "\": the result holds no usable start values -- either it stopped too far from its minimum to seed anything (see SeedQuality.h) or its parameter names do not match this config");
+
+    std::cout << "Start values from " << path << " (likelihood " << stored->llh << ")\n";
+    return stored->parameters;
+  }
+
+  /// load_seed_from_values() once per run: the scans ask for it from several
+  /// places, and reading the file again each time would repeat both the work and
+  /// the message. Calling this before the module is built is also what turns a
+  /// mistyped --seedFrom into an error in the first second of a run instead of
+  /// after the MC has been loaded.
+  const std::vector<double>& seed_from_values(const std::shared_ptr<io::Options>& options) {
+    static const std::vector<double> values = load_seed_from_values(options);
+    return values;
+  }
+
   /// Writes `path` the first time a scan runs in this directory; on every later
   /// run checks the stored descriptor still matches, so Output_* files from a
   /// differently configured scan are never silently reused.
@@ -222,8 +312,7 @@ namespace {
       std::ifstream  existing_file(path);
       nlohmann::json existing = nlohmann::json::parse(existing_file);
       if (existing != grid)
-        throw std::runtime_error(path + " in this directory describes a different " + kind + "; the " + file_pattern +
-                                  " files here belong to that one. Scan into an empty directory instead.");
+        throw std::runtime_error(path + " in this directory describes a different " + kind + "; the " + file_pattern + " files here belong to that one. Scan into an empty directory instead.");
     } else {
       std::ofstream(path) << grid.dump(2) << '\n';
     }
@@ -234,7 +323,7 @@ namespace {
   /// converged parameters as the fallback warm-start point for cells that have
   /// no fitted neighbour yet.
   struct SeedFit {
-    double              llh        = std::numeric_limits<double>::infinity();
+    double              llh = std::numeric_limits<double>::infinity();
     std::vector<double> parameters;  ///< Fitted X; empty if not run, non-finite, or read back from disk.
     std::vector<double> errors;      ///< Migrad/Hesse errors; empty unless this run fitted them itself.
     bool                converged  = false;
@@ -250,10 +339,10 @@ namespace {
    * before any scan point has a fitted neighbour of its own.
    */
   template <typename Key, typename ApplyFixed>
-  SeedFit bootstrap_seed_fit(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
-                              const std::string& best_fit_name, const std::vector<std::string>& names, const std::string& format,
-                              bool warm_start, scanseed::Store<Key>& seeds, std::size_t n_parameters, ApplyFixed&& apply_fixed) {
-    if (const auto known = stored_fit(best_fit_name, names, format)) {
+  SeedFit bootstrap_seed_fit(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& best_fit_name, const io::InputParameter& input_parameters, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds, ApplyFixed&& apply_fixed) {
+    const std::size_t n_parameters = input_parameters.size();
+
+    if (const auto known = stored_fit(best_fit_name, input_parameters, format)) {
       std::cout << "Best fit already stored: " << known->llh << '\n';
 
       // The parameters come back too, unlike the likelihood alone that used to
@@ -271,6 +360,16 @@ namespace {
 
     ana::Fit seed_fit(options, module);
     apply_fixed(*seed_fit.get_minimizer());
+
+    // The store holds nothing yet, so this is the --seedFrom vector when one
+    // was given and empty otherwise. Applied here because the free fit is the
+    // one that most needs it: it is the only fit of a scan with no neighbour to
+    // fall back on, and it is the fit the whole lattice is anchored on.
+    if (const auto start = seeds.fallback(); !start.empty()) {
+      std::cout << "Seeding the free fit from --seedFrom\n";
+      apply_start_values(*seed_fit.get_minimizer(), input_parameters, start);
+    }
+
     seed_fit.minimize();
 
     const auto seed_min = seed_fit.get_minimizer();
@@ -321,10 +420,7 @@ namespace {
    *                       to read back from a resumed point).
    */
   template <typename Key, typename NameFn, typename ApplyFixed, typename Distance>
-  void run_scan_batch(std::vector<Key> nodes, std::map<Key, double>& surface, std::shared_ptr<io::Options> options,
-                       std::shared_ptr<ana::ExperimentModule> module, const io::InputParameter& input_parameters,
-                       const std::vector<std::string>& names, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds,
-                       int scan_workers, NameFn&& name_fn, ApplyFixed&& apply_fixed, Distance&& distance, int& fits_performed) {
+  void run_scan_batch(std::vector<Key> nodes, std::map<Key, double>& surface, std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const io::InputParameter& input_parameters, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds, int scan_workers, NameFn&& name_fn, ApplyFixed&& apply_fixed, Distance&& distance, int& fits_performed) {
     const int        n_nodes   = static_cast<int>(nodes.size());
     const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
     std::atomic<int> next_index{0};
@@ -332,10 +428,10 @@ namespace {
 
     auto worker = [&](int worker_index) {
       for (int pos = next_index.fetch_add(1); pos < n_nodes; pos = next_index.fetch_add(1)) {
-        const Key          node = nodes[pos];
-        const std::string  name = name_fn(node);
+        const Key         node = nodes[pos];
+        const std::string name = name_fn(node);
 
-        if (const auto known = stored_fit(name, names, format)) {
+        if (const auto known = stored_fit(name, input_parameters, format)) {
           // A resumed run puts the points it reads back into the store, so the
           // fits it still has to do start from a neighbour just as they would
           // have in the run that was interrupted.
@@ -353,18 +449,22 @@ namespace {
 
         // The scanned variable(s) are fixed above, so what warm start carries
         // over is the nuisance parameters, and those barely move between
-        // adjacent points.
-        if (warm_start) {
-          const auto start = seeds.nearest(node, distance);
-          if (!start.empty())
-            apply_start_values(*min, input_parameters, start);
-        }
+        // adjacent points. Consulted even with warm start off: nothing is ever
+        // stored then, so what comes back is the --seedFrom vector if there is
+        // one and nothing at all if there is not.
+        if (const auto start = seeds.nearest(node, distance); !start.empty())
+          apply_start_values(*min, input_parameters, start);
 
         fit.minimize();
 
         result::write_results(fit, name);
 
-        if (warm_start && fit.converged() && std::isfinite(min->MinValue()))
+        // Gated on EDM rather than on Migrad's verdict: a point that stopped
+        // just short of the tolerance is still at its minimum for seeding
+        // purposes, and dropping those empties the store on a run whose
+        // convergence rate is low -- which leaves every point cold-starting
+        // from the free fit. See SeedQuality.h.
+        if (warm_start && seedquality::usable(fit.converged(), min->Edm()) && std::isfinite(min->MinValue()))
           seeds.store(node, std::vector<double>(min->X(), min->X() + input_parameters.size()));
 
         // Minuit reporting "Edm is above max" is common at the edges of the
@@ -417,6 +517,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<scan::Node> seeds;
+  seeds.set_fallback(seed_from_values(options));
 
   // Working in integer lattice coordinates keeps every point of every depth
   // exactly representable and gives each one a stable name.
@@ -448,7 +549,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
   // may undercut it, and refine() takes the lower of the two. Saved to disk as
   // BestFit so analysis can reference the true unfixed minimum instead of the
   // lowest sampled grid point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFit", names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit", input_parameters, format, warm_start, seeds, no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: SpectralIndex = " << seed.parameters[static_cast<int>(SpectralIndex)]
               << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
@@ -465,8 +566,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       std::ranges::sort(ordered, {}, [&](const scan::Node& node) { return distance(node, best); });
     }
 
-    run_scan_batch(std::move(ordered), surface, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
-                   [](const scan::Node& node) { return node_name(node); }, apply_fixed, distance, fits_performed);
+    run_scan_batch(std::move(ordered), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name(node); }, apply_fixed, distance, fits_performed);
   };
 
   auto report = [scan_workers](int round, std::size_t split, std::size_t cells, std::size_t points) {
@@ -525,6 +625,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<scan::Node> seeds;
+  seeds.set_fallback(seed_from_values(options));
 
   const double spacing_x = (high_x - low_x) / (points_x - 1);
   const double spacing_y = (high_y - low_y) / (points_y - 1);
@@ -554,7 +655,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   // perform_2d_scan the free fit's likelihood itself is otherwise unused --
   // it only seeds the very first fits, before any grid point has a value of
   // its own to seed from.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular", input_parameters, format, warm_start, seeds, no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: AstroGamma2 = " << seed.parameters[static_cast<int>(AstroGamma2)]
               << ", AstroNorm = " << seed.parameters[static_cast<int>(AstroNorm)] << (seed.converged ? "" : " (did not converge)") << '\n';
@@ -571,8 +672,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   std::cout << "Regular grid: " << nodes.size() << " points (" << points_x << " x " << points_y << ")"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  run_scan_batch(std::move(nodes), surface, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
-                 [](const scan::Node& node) { return node_name_regular(node); }, apply_fixed, distance, fits_performed);
+  run_scan_batch(std::move(nodes), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name_regular(node); }, apply_fixed, distance, fits_performed);
 
   std::cout << "Regular grid scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
@@ -636,9 +736,7 @@ std::optional<Lattice> stored_lattice(const std::string& path) {
  * @param tag            Prefix distinguishing this scan's files from the plain
  *                       scan of the same parameter. Empty for the plain scan.
  */
-void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
-                           const std::string& parameter_name, int index, const FixedParameters& extra_fixed = {},
-                           const std::string& tag = "") {
+void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name, int index, const FixedParameters& extra_fixed = {}, const std::string& tag = "") {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
@@ -651,12 +749,13 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
   const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<int> seeds;
+  seeds.set_fallback(seed_from_values(options));
 
   // The free fit is both the reference the rise is measured from and the point
   // the walk starts at. Saved to disk as BestFit_<label> so analysis can
   // reference the true unfixed minimum instead of the lowest sampled point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + label, names, format, warm_start, seeds, input_parameters.size(),
-                                        [&](ROOT::Math::Minimizer& min) { apply_extra_fixed(min, extra_fixed); });
+  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + label, input_parameters, format, warm_start, seeds,
+                                       [&](ROOT::Math::Minimizer& min) { apply_extra_fixed(min, extra_fixed); });
 
   const std::string grid_path = "scan_grid_" + label + ".json";
 
@@ -736,8 +835,7 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
       std::ranges::sort(ordered, {}, [&](int node) { return distance(node, best); });
     }
 
-    run_scan_batch(std::move(ordered), profile, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
-                   [&](int node) { return node_name(label, node); }, apply_fixed, distance, fits_performed);
+    run_scan_batch(std::move(ordered), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name(label, node); }, apply_fixed, distance, fits_performed);
   };
 
   auto report = [scan_workers](int round, std::size_t proposed, std::size_t points) {
@@ -765,8 +863,7 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
  *
  * @param points Number of grid points, including both endpoints.
  */
-void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
-                                     const std::string& parameter_name, int index, double low, double high, int points) {
+void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name, int index, double low, double high, int points) {
   if (points < 2)
     throw std::runtime_error("perform_1d_scan_regular_window needs at least 2 points");
 
@@ -779,11 +876,12 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
   const bool warm_start = resolve_warm_start(options);
 
   scanseed::Store<int> seeds;
+  seeds.set_fallback(seed_from_values(options));
 
   const double spacing = (high - low) / (points - 1);
 
-  auto position     = [&](int node) { return low + node * spacing; };
-  auto distance      = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
+  auto position    = [&](int node) { return low + node * spacing; };
+  auto distance    = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
   auto apply_fixed = [&](ROOT::Math::Minimizer& min, int node) {
     min.SetVariableValue(index, position(node));
     min.FixVariable(index);
@@ -798,7 +896,7 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
   // Also the source of the true (unfixed) best fit, saved to disk as
   // BestFit_<parameter> so analysis can reference it instead of the lowest
   // sampled grid point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular_" + parameter_name, names, format, warm_start, seeds, input_parameters.size(), no_extra_fixed);
+  const auto seed = bootstrap_seed_fit(options, module, "BestFitRegular_" + parameter_name, input_parameters, format, warm_start, seeds, no_extra_fixed);
   if (!seed.from_store && !seed.parameters.empty())
     std::cout << "Seed fit: " << parameter_name << " = " << seed.parameters[index] << (seed.converged ? "" : " (did not converge)") << '\n';
 
@@ -813,8 +911,7 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
   std::cout << "Regular scan of " << parameter_name << ": " << points << " points"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  run_scan_batch(std::move(nodes), profile, options, module, input_parameters, names, format, warm_start, seeds, scan_workers,
-                 [&](int node) { return node_name_regular(parameter_name, node); }, apply_fixed, distance, fits_performed);
+  run_scan_batch(std::move(nodes), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name_regular(parameter_name, node); }, apply_fixed, distance, fits_performed);
 
   std::cout << "Regular scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed
             << " fitted in this run\n";
@@ -823,8 +920,7 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
 /// Looks up parameter_name and requires the window to come from its own
 /// config LowerBound/UpperBound, same convention as perform_1d_scan, but
 /// walks a regular grid of `points` values instead of the adaptive lattice.
-void perform_1d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module,
-                              const std::string& parameter_name, int points) {
+void perform_1d_scan_regular(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name, int points) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
 
@@ -926,8 +1022,7 @@ void perform_nm1_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana:
  *                being walked outward (perform_1d_scan_walk).
  * @param points  Grid points per parameter; only used when regular is true.
  */
-void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, bool regular = false,
-                          int points = 30) {
+void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, bool regular = false, int points = 30) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
 
@@ -957,7 +1052,7 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
   // no reason to pay for a second fit just to profile one of them.
   std::vector<double> fallback_values;
   std::vector<double> fallback_errors;
-  bool                 have_fallback_fit = false;
+  bool                have_fallback_fit = false;
   if (!unbounded_indices.empty()) {
     ana::Fit reference_fit(options, module);
     reference_fit.minimize();
@@ -1027,6 +1122,10 @@ int main(int argc, char** argv) {
 
     const auto options = std::make_shared<io::Options>(argc, argv, ana::collect_input_options(modules));
 
+    // Read here rather than where it is used: a bad --seedFrom should fail now,
+    // not once the MC is in memory. The result is cached for the real callers.
+    seed_from_values(options);
+
     const auto module = modules.at(options->inputOptions().experiment());
 
     // --fitOnly runs the plain fit and writes "Output.json"; without it the scan
@@ -1036,12 +1135,17 @@ int main(int argc, char** argv) {
     // one converged result rather than a surface.
     if (options->inputOptions().fit_only()) {
       ana::Fit fit(options, module);
+      auto     min = fit.get_minimizer();
+
+      if (const auto start = seed_from_values(options); !start.empty())
+        apply_start_values(*min, options->inputOptions().input_parameters(), start);
+
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
-      const std::string& scan_mode       = options->inputOptions().scan_mode();
-      const std::string& scan_parameter  = options->inputOptions().scan_parameter();
-      const int           scan_points    = options->inputOptions().scan_points();
+      const std::string& scan_mode      = options->inputOptions().scan_mode();
+      const std::string& scan_parameter = options->inputOptions().scan_parameter();
+      const int          scan_points    = options->inputOptions().scan_points();
 
       if (scan_mode == "2d") {
         perform_2d_scan(options, module);

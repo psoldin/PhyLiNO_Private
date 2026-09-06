@@ -155,6 +155,7 @@ namespace result::ic {
     ProtoStoredFit result;
     result.converged = msg.converged();
     result.llh       = msg.chi2();
+    result.edm       = msg.edm();
     for (const auto& [key, parameter] : msg.parameters())
       result.parameter_values[key] = parameter.value();
 
