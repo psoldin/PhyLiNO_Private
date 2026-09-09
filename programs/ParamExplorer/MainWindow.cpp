@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "ICBlinding.h"
+
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QPushButton>
@@ -106,7 +108,7 @@ namespace explorer {
   }
 
   void MainWindow::build_ui() {
-    setWindowTitle("PhyLiNO Parameter Explorer");
+    setWindowTitle(m_Model->blind() ? "PhyLiNO Parameter Explorer [BLIND]" : "PhyLiNO Parameter Explorer");
 
     auto* toolbar = addToolBar("View");
 
@@ -174,11 +176,17 @@ namespace explorer {
       r.spin->setSingleStep(info.step > 0.0 ? info.step : (r.hi - r.lo) / 100.0);
       r.spin->setValue(info.value);
 
-      if (info.fixed) {
+      // Blinded params are masked the same way fixed ones are disabled -- not
+      // hidden, so the panel's layout does not shift between a blind and an
+      // unblind run. The displayed value is whatever it is parked at (the
+      // config's StartValue, not anything derived from data), so leaving it
+      // visible while disabled leaks nothing; letting it be dragged would.
+      const bool blinded = m_Model->blind() && result::ic::is_blinded_parameter(info.name);
+      if (info.fixed || blinded) {
         label->setEnabled(false);
         r.slider->setEnabled(false);
         r.spin->setEnabled(false);
-        label->setToolTip("Fixed in the config");
+        label->setToolTip(blinded ? "Blinded: masked until unblinding" : "Fixed in the config");
       }
 
       grid->addWidget(label, row, 0);

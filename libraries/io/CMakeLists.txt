@@ -10,6 +10,8 @@ set(files
         IceCube/Binning.h
         IceCube/Binning.cpp
         IceCube/BranchNames.h
+        IceCube/EventCuts.h
+        IceCube/EventCuts.cpp
         IceCube/SampleConfig.h
         IceCube/SampleConfig.cpp
 )

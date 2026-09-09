@@ -6,6 +6,7 @@
 // checks that do need a built prediction live in ICTests.cpp with the synthetic
 // sample fixtures.
 
+#include "ICBlinding.h"
 #include "Marginalize.h"
 
 #include <gtest/gtest.h>
@@ -118,6 +119,32 @@ TEST(ExplorerProjectTest, RejectsMismatchedInput) {
 
   const std::vector<double> right_size(6, 1.0);
   EXPECT_THROW(static_cast<void>(explorer::project(right_size, binning, 2)), std::out_of_range);
+}
+
+// ExplorerModel::marginalize() blinds the flat, pre-projection array (via
+// result::ic::blind_bins()) rather than truncating the projected result -- the
+// point being that hiding events above 1e4 GeV has to work under any axis, not
+// just the energy axis itself. This is the composition that makes that true: a
+// bin at the highest energy contributes to every zenith bin, so blinding before
+// projecting has to remove it from both, not just from the energy axis's own
+// projection (which BlindingTest in ICTests.cpp already covers).
+TEST(ExplorerProjectTest, BlindingBeforeProjectionHidesHighEnergyOnEveryAxis) {
+  const Binning binning = two_axis_binning();  // Log10Energy 2..5 (3 bins) x CosZenith -1..1 (2 bins).
+
+  std::vector<double> bins = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0};
+  result::ic::blind_bins(binning, bins);
+  // The top energy bin (edges [4, 5), flat indices 4 and 5) is entirely above
+  // kBlindMaxLog10Energy and is zeroed; the rest survive untouched.
+  const std::vector<double> expected = {1.0, 2.0, 4.0, 8.0, 0.0, 0.0};
+  EXPECT_EQ(bins, expected);
+
+  // Projected onto zenith -- not the axis blinding truncates along -- the
+  // masked energy bin's contribution is gone from both zenith bins, not just
+  // absorbed into one of them or left in.
+  const auto zenith = explorer::project(bins, binning, 1);
+  ASSERT_EQ(zenith.size(), 2u);
+  EXPECT_DOUBLE_EQ(zenith[0], 1.0 + 4.0);
+  EXPECT_DOUBLE_EQ(zenith[1], 2.0 + 8.0);
 }
 
 // A uniform axis reports the grid its (lo, hi, n_bins) implies.

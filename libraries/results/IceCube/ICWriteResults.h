@@ -53,6 +53,8 @@ namespace result::ic {
     double data_total = 0.0;
     double pred_total = 0.0;
 
+    const bool use_say = info.likelihood_type() == io::ic::LikelihoodType::SAY;
+
     j["samples"] = nlohmann::json::array();
     for (std::size_t s = 0; s < llh.n_samples(); ++s) {
       const auto& sample = llh.sample(s);
@@ -77,6 +79,20 @@ namespace result::ic {
       }
       data_total += sample_data_total;
       pred_total += sample_pred_total;
+
+      // Per-bin -2lnL at the reported point (see bin_likelihood() for what the
+      // sum does and does not include). Blinded like the histograms above, since
+      // a bin's term is a function of its own data count.
+      std::vector<double> bin_llh = bin_likelihood(sample, use_say);
+      // The SAY per-bin variance the term above was built from. Without it the
+      // per-bin likelihood cannot be turned into a pull downstream: under SAY the
+      // effective error of a bin is sqrt(mu + sigma^2), not sqrt(mu). All zeros
+      // under Poisson, where sigma^2 is never assembled.
+      std::vector<double> bin_ssq(sample.ssq().begin(), sample.ssq().end());
+      if (blind) {
+        blind_bins(config.binning, bin_llh);
+        blind_bins(config.binning, bin_ssq);
+      }
 
       nlohmann::json axes = nlohmann::json::array();
       for (const io::ic::Axis& axis : config.binning.axes()) {
@@ -108,6 +124,8 @@ namespace result::ic {
           {"axes", std::move(axes)},
           {"data", std::move(data)},
           {"prediction", std::move(predicted)},
+          {"binLLH", std::move(bin_llh)},
+          {"binSsq", std::move(bin_ssq)},
           {"dataTotal", sample_data_total},
           {"predTotal", sample_pred_total},
           {"componentTotals", std::move(component_totals)},

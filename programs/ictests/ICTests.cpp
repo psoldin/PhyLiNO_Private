@@ -538,6 +538,92 @@ TEST(SampleConfigTest, ParsesAndValidatesTopology) {
   ASSERT_TRUE(!throws(R"(, "Gradients": { "File": "g.txt" })"));  // without the cut: fine
 }
 
+// "Cuts": { "<name>": { "Branch": ..., "Min": ..., "Max": ... } } is a separate
+// mechanism from the topology cut: thresholds on a continuous column, several
+// at once, and legal alongside a Topology block. Pre-binned inputs still have to
+// be re-exported, but here the config can say so instead of being refused.
+TEST(SampleConfigTest, ParsesAndValidatesEventCuts) {
+  static constexpr char kTemplate[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "grid": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "s": { "binning": "grid", "parquet": "s.parquet", "components": "astro"EXTRA }
+    }
+  }
+}
+)JSON";
+
+  auto parse_with = [](const std::string& extra) {
+    std::string json(kTemplate);
+    json.replace(json.find("EXTRA"), std::strlen("EXTRA"), extra);
+    boost::property_tree::ptree pt;
+    std::istringstream          iss(json);
+    boost::property_tree::read_json(iss, pt);
+    return io::ic::parse_samples(pt.get_child("IceCube"));
+  };
+
+  auto throws = [&parse_with](const std::string& extra) {
+    try {
+      static_cast<void>(parse_with(extra));
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // No "Cuts" block: no cut.
+  ASSERT_TRUE(!parse_with("")[0].filters_events());
+
+  const auto cut = parse_with(R"(, "Cuts": { "ants": { "Branch": "ANTSCORE", "Min": 0.9 } })");
+  ASSERT_TRUE(cut[0].filters_events());
+  ASSERT_TRUE(cut[0].cuts.size() == 1);
+  ASSERT_TRUE(cut[0].cuts[0].name == "ants");
+  ASSERT_TRUE(cut[0].cuts[0].branch == "ANTSCORE");
+  ASSERT_TRUE(cut[0].cuts[0].min == 0.9);
+  // An unset bound is infinite, so a one-sided cut really is one-sided.
+  ASSERT_TRUE(cut[0].cuts[0].max == std::numeric_limits<double>::infinity());
+
+  // Both bounds are exclusive, matching the `score > cut` the exports apply.
+  ASSERT_TRUE(!cut[0].cuts[0].keeps(0.9));
+  ASSERT_TRUE(cut[0].cuts[0].keeps(0.90001));
+  // A NaN was never scored, so no threshold on that score can keep it.
+  ASSERT_TRUE(!cut[0].cuts[0].keeps(std::numeric_limits<double>::quiet_NaN()));
+
+  // Several cuts are an intersection, and they are independent of Topology.
+  const auto both = parse_with(
+      R"(, "Topology": { "Branch": "c", "Values": "1" })"
+      R"(, "Cuts": { "a": { "Branch": "s1", "Min": 0.5 }, "b": { "Branch": "s2", "Max": 2.0 } })");
+  ASSERT_TRUE(both[0].filters_topology());
+  ASSERT_TRUE(both[0].cuts.size() == 2);
+  ASSERT_TRUE(both[0].cuts[1].branch == "s2");
+  ASSERT_TRUE(both[0].cuts[1].max == 2.0);
+  ASSERT_TRUE(both[0].cuts[1].min == -std::numeric_limits<double>::infinity());
+
+  // A cut that cannot select anything, or selects everything, is a config error
+  // rather than a silent no-op in either direction.
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "s" } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Min": 0.5 } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "", "Min": 0.5 } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "s", "Min": 2.0, "Max": 1.0 } })"));
+
+  // Pre-binned inputs must be re-exported under the cut; the config asserts that
+  // with CutsMatchInputs, which is meaningless (and so refused) without a cut.
+  const std::string ants   = R"(, "Cuts": { "a": { "Branch": "ANTSCORE", "Min": 0.9 } })";
+  const std::string grads  = R"(, "Gradients": { "File": "g.txt" })";
+  ASSERT_TRUE(throws(ants + grads));
+  ASSERT_TRUE(!throws(ants + grads + R"(, "CutsMatchInputs": true)"));
+  ASSERT_TRUE(throws(R"(, "CutsMatchInputs": true)"));
+  // DataCounts are not filtered by this framework at all, so no flag excuses them.
+  ASSERT_TRUE(throws(ants + R"(, "DataCounts": "counts.txt", "CutsMatchInputs": true)"));
+}
+
 // A sample whose analysis binning carries an RA axis keeps a second, RA-free
 // binning for the MC: per-event weights, the muon template and the SnowStorm
 // gradients all stay 2D and are broadcast over RA at prediction time.
@@ -1089,6 +1175,55 @@ TEST(SampleLikelihoodTest, AsimovIsMinimum) {
   // nonzero value. The Poisson term does subtract it; that zero is asserted
   // by LikelihoodParityTest.PoissonAsimovIsExactlyZero.
   ASSERT_TRUE(llh_nominal < llh_perturbed);
+}
+
+// The per-bin -2lnL the results writers report must sum back to the sample's
+// own partial_llh(). It is computed by a separate loop (result::ic::bin_likelihood
+// walks the analysis bins; the likelihood collapses each RA slice instead), so a
+// term dropped on one side -- the saturated Poisson subtraction, say, which SAY
+// does not apply and Poisson does -- would leave the sum silently offset while
+// every bin still looked reasonable.
+TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning binning = synthetic_binning();
+  const io::ic::ICSample sample = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
+  ParameterWrapper nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  // Away from the Asimov point, so the sum is a nonzero number that an offset
+  // could not hide in.
+  std::vector<double> perturbed_values = nominal_values;
+  perturbed_values[params::ic::AstroNorm] *= 1.5;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(perturbed_values.data());
+
+  for (const bool use_say : {false, true}) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say);
+    likelihood.generate_asimov(nominal);
+
+    const double llh = likelihood.partial_llh(perturbed);
+    ASSERT_TRUE(std::isfinite(llh));
+
+    const std::vector<double> bins = result::ic::bin_likelihood(likelihood, use_say);
+    ASSERT_EQ(bins.size(), binning.total_bins());
+
+    double sum = 0.0;
+    for (const double v : bins)
+      sum += v;
+
+    // Same terms, different summation order, so this is a float-comparison
+    // tolerance and not a physics one.
+    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say;
+  }
 }
 
 // The conventional/prompt split the results writers report must decompose the
@@ -2860,6 +2995,102 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   ASSERT_TRUE(kept.e_true.size() == 2);
   ASSERT_TRUE(kept.e_true[0] == 1.0e3);
   ASSERT_TRUE(kept.e_true[1] == 3.0e3);
+
+  std::remove(mc_path.c_str());
+  std::remove(data_path.c_str());
+}
+
+// The event cut has to reach the MC and the data, and has to compose with a
+// topology cut rather than replace it: the two select on different columns and a
+// sample may want both.
+TEST(ICDataBaseTest, EventCutsApplyToMcAndData) {
+  const std::string mc_path   = "ictests_eventcut_mc.parquet";
+  const std::string data_path = "ictests_eventcut_data.parquet";
+
+  // Six MC events in the binning below. The NaN score was never scored, so no
+  // threshold may keep it.
+  const std::vector<double> score{0.10, 0.50, 0.90, 0.95, 0.99,
+                                  std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> classification{1.0, 1.0, 2.0, 2.0, 1.0, 1.0};
+  const std::vector<double> reco_energy{1.0e3, 3.0e3, 1.0e4, 3.0e4, 1.0e5, 3.0e5};  // log10 in [2, 7)
+  const std::vector<double> reco_zenith{2.0, 2.0, 2.0, 2.0, 2.0, 2.0};  // cos = -0.416, in range
+
+  write_parquet(mc_path, {{"energy_truncated", reco_energy},
+                          {"zenith_MPEFit", reco_zenith},
+                          {"MCPrimaryEnergy", {1.0e3, 2.0e3, 3.0e3, 4.0e3, 5.0e3, 6.0e3}},
+                          {"powerlaw", {1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8}},
+                          {"ANTSCORE", score},
+                          {"classification", classification}});
+
+  // Data: four events, same columns, two above a 0.5 threshold.
+  {
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : std::vector<std::pair<std::string, std::vector<double>>>{
+             {"energy_truncated", {1.0e3, 3.0e3, 1.0e4, 3.0e4}},
+             {"zenith_MPEFit", {2.0, 2.0, 2.0, 2.0}},
+             {"ANTSCORE", {0.10, 0.90, 0.95, std::numeric_limits<double>::quiet_NaN()}},
+             {"classification", {1.0, 1.0, 2.0, 1.0}}}) {
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(double_array(values));
+    }
+    append_passing_mask_columns(fields, arrays, "energy_truncated", 4);
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 4).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto load = [&](const std::vector<io::ic::EventCut>& cuts, const std::vector<int>& labels) {
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet         = mc_path;
+    cfg.data_path       = data_path;
+    cfg.components      = {"astro"};
+    cfg.cuts            = cuts;
+    cfg.topology_branch = labels.empty() ? "" : "classification";
+    cfg.topology_values = labels;
+    return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
+  };
+
+  auto data_total = [](const io::ic::ICDataBase& db) {
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    return total;
+  };
+
+  const io::ic::EventCut above_half{.name = "ants", .branch = "ANTSCORE", .min = 0.5};
+
+  const auto unfiltered = load({}, {});
+  ASSERT_TRUE(unfiltered.sample(0).size() == 6);
+  ASSERT_TRUE(data_total(unfiltered) == 4.0);
+
+  // MC and data are cut by the same rule; the bound is exclusive, so the 0.50
+  // event goes, and the NaN goes with it.
+  const auto cut = load({above_half}, {});
+  ASSERT_TRUE(cut.sample(0).size() == 3);
+  ASSERT_TRUE(data_total(cut) == 2.0);
+
+  // The kept events must be the high-scoring ones, not merely the right count:
+  // a mask applied at the wrong offset would keep the same number of rows.
+  ASSERT_TRUE(cut.sample(0).e_true[0] == 3.0e3);
+  ASSERT_TRUE(cut.sample(0).e_true[1] == 4.0e3);
+  ASSERT_TRUE(cut.sample(0).e_true[2] == 5.0e3);
+
+  // An upper bound cuts from the other side, and two cuts intersect.
+  const io::ic::EventCut below_096{.name = "hi", .branch = "ANTSCORE", .max = 0.96};
+  ASSERT_TRUE(load({below_096}, {}).sample(0).size() == 4);              // 0.10, 0.50, 0.90, 0.95
+  ASSERT_TRUE(load({above_half, below_096}, {}).sample(0).size() == 2);  // 0.90, 0.95
+
+  // Composes with the topology cut instead of replacing it: class 1 AND > 0.5
+  // leaves the 0.99 event alone. Both sides of the likelihood see it.
+  const auto both = load({above_half}, {1});
+  ASSERT_TRUE(both.sample(0).size() == 1);
+  ASSERT_TRUE(both.sample(0).e_true[0] == 5.0e3);
+  ASSERT_TRUE(data_total(both) == 1.0);
 
   std::remove(mc_path.c_str());
   std::remove(data_path.c_str());

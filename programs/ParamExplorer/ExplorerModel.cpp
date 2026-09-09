@@ -1,16 +1,17 @@
 #include "ExplorerModel.h"
 
+#include "ICBlinding.h"
 #include "ICComponentBreakdown.h"
 #include "IceCube/ICParameter.h"
 #include "Marginalize.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace explorer {
 
@@ -69,15 +70,29 @@ namespace explorer {
       return components;
     }
 
+    /** A copy of `values`, with ICBlinding.h's mask applied when `blind` is set. */
+    [[nodiscard]] std::vector<double> maybe_blind(std::span<const double> values,
+                                                  const io::ic::Binning& binning, bool blind) {
+      std::vector<double> copy(values.begin(), values.end());
+      if (blind)
+        result::ic::blind_bins(binning, copy);
+      return copy;
+    }
+
   }  // namespace
 
-  ExplorerModel::ExplorerModel(const std::string& config_path) {
+  ExplorerModel::ExplorerModel(const std::string& config_path, bool blind) {
     // io::Options parses a command line, so the config path is handed over the
-    // way LLHFit does it -- through the ("config,c") option.
-    std::string        program = "PhyLiNOExplorer";
-    std::string        flag    = "-c";
-    std::string        path    = config_path;
-    std::array<char*, 3> argv{program.data(), flag.data(), path.data()};
+    // way LLHFit does it -- through the ("config,c") option, with "--blind"
+    // added the same way LLHFit's own command line would carry it.
+    std::vector<std::string> arg_strings{"PhyLiNOExplorer", "-c", config_path};
+    if (blind)
+      arg_strings.emplace_back("--blind");
+
+    std::vector<char*> argv;
+    argv.reserve(arg_strings.size());
+    for (std::string& arg : arg_strings)
+      argv.push_back(arg.data());
 
     m_Module = std::make_shared<ana::ic::ICExperimentModule>();
 
@@ -86,6 +101,7 @@ namespace explorer {
 
     m_Options = std::make_shared<io::Options>(static_cast<int>(argv.size()), argv.data(),
                                               ana::collect_input_options(modules));
+    m_Blind   = m_Options->inputOptions().blind();
 
     const std::string& experiment = m_Options->inputOptions().experiment();
     if (experiment != m_Module->name())
@@ -173,7 +189,7 @@ namespace explorer {
     result.reserve(binning.n_axes());
     for (const auto& axis : binning.axes())
       result.push_back(AxisInfo{.kind_name = std::string(io::ic::axis_kind_name(axis.kind)),
-                                .edges     = axis_edges(axis)});
+                                .edges     = explorer::axis_edges(axis)});
 
     return result;
   }
@@ -186,9 +202,9 @@ namespace explorer {
     const auto& binning    = likelihood.config().binning;
 
     Marginalized result;
-    result.edges = axis_edges(binning.axes()[axis]);
-    result.total = project(likelihood.predicted(), binning, axis);
-    result.data  = project(likelihood.data(), binning, axis);
+    result.edges = explorer::axis_edges(binning.axes()[axis]);
+    result.total = project(maybe_blind(likelihood.predicted(), binning, m_Blind), binning, axis);
+    result.data  = project(maybe_blind(likelihood.data(), binning, m_Blind), binning, axis);
 
     const auto breakdown = breakdown_for(likelihood, m_Llh->parameter(), split_atmospheric);
 
@@ -197,6 +213,12 @@ namespace explorer {
                         : std::span<const std::string_view>(kSummedStack);
 
     for (const std::string_view wanted : wanted_keys) {
+      // Dropped rather than zeroed, like the writers drop it: a zeroed astro
+      // curve reads as "the fit found no astrophysical flux", a wrong statement
+      // rather than a withheld one. See ICBlinding.h.
+      if (m_Blind && result::ic::is_blinded_component(wanted))
+        continue;
+
       // A veto-reweighted sample spells the summed entry "atmospheric_veto",
       // so the summed key matches either spelling.
       const auto it = std::find_if(breakdown.begin(), breakdown.end(), [wanted](const auto& entry) {
@@ -214,7 +236,8 @@ namespace explorer {
         continue;
 
       result.components.push_back(NamedHist{.name   = it->first,
-                                            .values = project(it->second, binning, axis)});
+                                            .values = project(maybe_blind(it->second, binning, m_Blind),
+                                                              binning, axis)});
     }
 
     return result;

@@ -139,6 +139,35 @@ namespace io::ic {
       return keep;
     }
 
+    // The sample's configured event cuts (EventCuts.h), as a dense keep-mask over
+    // the table's rows: an event is kept only if every cut's column falls inside
+    // that cut's bounds. Empty mask when none is configured, which callers read
+    // as "keep everything", exactly as for topology_mask.
+    //
+    // Kept apart from topology_mask rather than folded into it: the two select on
+    // different kinds of column and a sample may configure both, so the callers
+    // intersect the two masks instead of one mask having to mean both things.
+    arrow::Result<std::vector<bool>> event_cut_mask(const arrow::Table& table, const SampleConfig& cfg) {
+      if (!cfg.filters_events())
+        return std::vector<bool>{};
+
+      std::vector<bool> keep;
+      for (const EventCut& cut : cfg.cuts) {
+        ARROW_ASSIGN_OR_RAISE(auto column, get_double_column(table, cut.branch));
+
+        if (keep.empty())
+          keep.assign(column.size(), true);
+        else if (column.size() != keep.size())
+          return arrow::Status::Invalid("ICDataBase: cut column '" + cut.branch + "' has " +
+                                        std::to_string(column.size()) + " rows, cut column '" +
+                                        cfg.cuts.front().branch + "' has " + std::to_string(keep.size()));
+
+        for (std::size_t i = 0; i < column.size(); ++i)
+          keep[i] = keep[i] && cut.keeps(column[i]);
+      }
+      return keep;
+    }
+
     // NNMFit's standard mask (MaskHandler._make_standard_mask): an event passes
     // if its reco-energy and reco-direction fits both exist and succeeded.
     // Measured 2026-07-27: 0% dropped on both cascade MC baselines and both
@@ -328,6 +357,13 @@ namespace io::ic {
                                     std::to_string(topology_keeps.size()) + " rows, the weight columns have " +
                                     std::to_string(out.e_true.size()));
 
+    // The event cuts are a second, independent mask over the same rows; the two
+    // are intersected below.
+    ARROW_ASSIGN_OR_RAISE(const auto cut_keeps, event_cut_mask(*table, cfg));
+    if (!cut_keeps.empty() && cut_keeps.size() != out.e_true.size())
+      return arrow::Status::Invalid("ICDataBase: event-cut columns have " + std::to_string(cut_keeps.size()) +
+                                    " rows, the weight columns have " + std::to_string(out.e_true.size()));
+
     // Assign each event to an analysis bin from its reco energy and zenith.
     const std::size_t N = out.e_true.size();
     out.bin_idx.resize(N);
@@ -360,22 +396,30 @@ namespace io::ic {
     }
 
     std::size_t         topology_dropped = 0;
+    std::size_t         cut_dropped      = 0;
     std::vector<double> reco(2 + mc_categories.size(), 0.0);
     for (std::size_t i = 0; i < N; ++i) {
       reco[0] = e_reco[i];
       reco[1] = reco_zenith[i];
       for (std::size_t c = 0; c < category_values.size(); ++c) reco[2 + c] = category_values[c][i];
-      const int bin = cfg.mc_binning.bin_index(reco);
-      const bool                  kept = topology_keeps.empty() || topology_keeps[i];
+      const int  bin              = cfg.mc_binning.bin_index(reco);
+      const bool passes_topology  = topology_keeps.empty() || topology_keeps[i];
+      const bool passes_cuts      = cut_keeps.empty() || cut_keeps[i];
+      const bool kept             = passes_topology && passes_cuts;
 
-      if (want_fraction && bin >= 0) {
+      // The surviving fraction is measured within the event-cut selection: with
+      // cuts active the gradient file being rescaled was itself exported under
+      // those cuts (CutsMatchInputs), so the events they remove are outside the
+      // ratio entirely rather than in its denominator.
+      if (want_fraction && bin >= 0 && passes_cuts) {
         const double w = nominal_weight(i);
         full_weight[bin] += w;
-        if (kept) kept_weight[bin] += w;
+        if (passes_topology) kept_weight[bin] += w;
       }
 
       out.bin_idx[i] = kept ? bin : -1;
-      if (!kept) ++topology_dropped;
+      if (!passes_topology) ++topology_dropped;
+      if (!passes_cuts) ++cut_dropped;
     }
 
     if (want_fraction) {
@@ -413,6 +457,11 @@ namespace io::ic {
       std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
                 << topology_dropped << " of " << N << " rows ("
                 << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(N)) << "%)\n";
+
+    if (cfg.filters_events())
+      std::cout << "IceCube sample '" << cfg.name << "': event cut " << describe_event_cuts(cfg.cuts)
+                << " dropped " << cut_dropped << " of " << N << " rows ("
+                << (100.0 * static_cast<double>(cut_dropped) / static_cast<double>(N)) << "%)\n";
 
     std::cout << "IceCube sample '" << cfg.name << "' loaded: " << N << " rows, "
               << out.size() << " in analysis range ("
@@ -497,6 +546,13 @@ namespace io::ic {
                                     std::to_string(topology_keeps.size()) + " rows, the data file has " +
                                     std::to_string(n_rows));
 
+    // Likewise the event cuts: cutting the MC alone would move the prediction
+    // away from a measurement that still contains the events it dropped.
+    ARROW_ASSIGN_OR_RAISE(const auto cut_keeps, event_cut_mask(*table, cfg));
+    if (!cut_keeps.empty() && cut_keeps.size() != n_rows)
+      return arrow::Status::Invalid("ICDataBase: event-cut columns have " + std::to_string(cut_keeps.size()) +
+                                    " rows, the data file has " + std::to_string(n_rows));
+
     // NNMFit's standard mask: apply it to real data (the MC baselines are
     // measured pre-cut and read_sample does not apply it there). Compact to the
     // passing rows rather than poisoning failing ones with a sentinel: NaN would
@@ -512,7 +568,12 @@ namespace io::ic {
     if (needs_ra)
       masked_ra.reserve(n_rows);
     std::size_t topology_dropped = 0;
+    std::size_t cut_dropped      = 0;
     for (std::size_t i = 0; i < n_rows; ++i) {
+      if (!cut_keeps.empty() && !cut_keeps[i]) {
+        ++cut_dropped;
+        continue;
+      }
       if (!topology_keeps.empty() && !topology_keeps[i]) {
         ++topology_dropped;
         continue;
@@ -527,19 +588,25 @@ namespace io::ic {
       }
     }
 
+    if (cfg.filters_events())
+      std::cout << "IceCube data '" << cfg.name << "': event cut " << describe_event_cuts(cfg.cuts)
+                << " dropped " << cut_dropped << " of " << n_rows << " rows ("
+                << (100.0 * static_cast<double>(cut_dropped) / static_cast<double>(n_rows)) << "%)\n";
+
     if (cfg.filters_topology())
       std::cout << "IceCube data '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
-                << topology_dropped << " of " << n_rows << " rows ("
-                << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(n_rows)) << "%)\n";
+                << topology_dropped << " of " << (n_rows - cut_dropped) << " rows ("
+                << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(n_rows - cut_dropped))
+                << "%)\n";
 
-    // The standard-mask report counts only the rows the mask itself rejected, so a
-    // topology cut does not inflate it.
-    const std::size_t after_topology = n_rows - topology_dropped;
-    if (masked_energy.size() != after_topology)
+    // The standard-mask report counts only the rows the mask itself rejected, so
+    // neither selection above inflates it.
+    const std::size_t after_selection = n_rows - topology_dropped - cut_dropped;
+    if (masked_energy.size() != after_selection)
       std::cout << "IceCube data '" << cfg.name << "': standard mask dropped "
-                << (after_topology - masked_energy.size()) << " of " << after_topology << " rows ("
-                << (100.0 * static_cast<double>(after_topology - masked_energy.size()) /
-                    static_cast<double>(after_topology))
+                << (after_selection - masked_energy.size()) << " of " << after_selection << " rows ("
+                << (100.0 * static_cast<double>(after_selection - masked_energy.size()) /
+                    static_cast<double>(after_selection))
                 << "%)\n";
 
     if (!masked_categories.empty()) {

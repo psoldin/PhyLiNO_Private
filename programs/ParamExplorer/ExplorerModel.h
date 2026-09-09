@@ -72,10 +72,20 @@ namespace explorer {
    */
   class ExplorerModel {
    public:
-    /** Throws whatever the option parser and the parquet loaders throw. */
-    explicit ExplorerModel(const std::string& config_path);
+    /**
+     * Throws whatever the option parser and the parquet loaders throw.
+     *
+     * `blind` threads a "--blind" through to the same io::Options every other
+     * program parses it from, so ICLikelihood/SampleLikelihood behave exactly as
+     * they do under LLHFit --blind (the fit itself is untouched -- see
+     * ICBlinding.h). marginalize() then masks its output the same way the
+     * result writers do.
+     */
+    explicit ExplorerModel(const std::string& config_path, bool blind = false);
 
     [[nodiscard]] const std::vector<ParamInfo>& parameters() const noexcept { return m_Info; }
+
+    [[nodiscard]] bool blind() const noexcept { return m_Blind; }
 
     /** Move one parameter. Cheap: writes the array, evaluates nothing. */
     void set(int index, double value);
@@ -123,6 +133,7 @@ namespace explorer {
 
     double m_Reference = 0.0;
     bool   m_Stale     = true;
+    bool   m_Blind     = false;
   };
 
 }  // namespace explorer

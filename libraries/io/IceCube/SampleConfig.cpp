@@ -151,6 +151,30 @@ namespace io::ic {
                                    "filtered by this framework, so the cut would only apply to the prediction");
       }
 
+      // The same pre-binned-input problem as the topology cut above, except an
+      // event cut is a threshold the exports can and do reproduce: the notebooks
+      // that write the muon template and the SnowStorm gradients take the cut as
+      // a parameter. So this is not a refusal but an assertion the config has to
+      // make -- nothing in a template file records which selection produced it,
+      // and the file names differ only by a suffix.
+      if (sample.filters_events()) {
+        if (!sample.data_counts_path.empty())
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines an event cut with pre-binned \"DataCounts\"; the counts are not "
+                                   "filtered by this framework, so the cut would only apply to the prediction");
+        if ((!sample.template_file.empty() || !sample.gradient_file.empty() || !sample.galactic.empty()) &&
+            !sample.cuts_match_inputs)
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' combines an event cut with a pre-binned muon template, SnowStorm gradient "
+                                   "file or galactic template. Re-export those with the same cut applied and set "
+                                   "\"CutsMatchInputs\": true to confirm it, or they will describe a selection the "
+                                   "prediction no longer has");
+      }
+      if (sample.cuts_match_inputs && !sample.filters_events())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' sets CutsMatchInputs but has no \"Cuts\"; there is nothing for the pre-binned "
+                                 "inputs to match and the flag would hide a later config mistake");
+
       if (!sample.galactic.empty() && !has_ra_axis(sample.binning))
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' declares a galactic template but its binning has no Ra axis; the "
@@ -166,7 +190,8 @@ namespace io::ic {
 
     // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
     // "Gradients": { "File": ... }, "Oscillations": { "File": ..., "Branch": ... },
-    // "Topology": { "Branch": ..., "Values": "1, 2" } and "Galactic": { ... },
+    // "Topology": { "Branch": ..., "Values": "1, 2" }, "Cuts": { "<name>": {
+    // "Branch": ..., "Min": ..., "Max": ... } } and "Galactic": { ... },
     // all optional.
     void parse_component_files(const boost::property_tree::ptree& node, SampleConfig& sample) {
       if (const auto tmpl = node.get_child_optional("Template")) {
@@ -214,6 +239,9 @@ namespace io::ic {
           sample.topology_values.push_back(parsed);
         }
       }
+
+      sample.cuts              = parse_event_cuts(node, sample.name);
+      sample.cuts_match_inputs = node.get<bool>("CutsMatchInputs", false);
 
       if (const auto response = node.get_child_optional("Response")) {
         auto parse_transform = [&sample](const std::string& text, const char* key) {

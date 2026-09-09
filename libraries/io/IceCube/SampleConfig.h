@@ -10,6 +10,7 @@
 
 #include "Binning.h"
 #include "BranchNames.h"
+#include "EventCuts.h"
 
 namespace io::ic {
 
@@ -189,6 +190,23 @@ namespace io::ic {
     bool             topology_drop_nan = false;
 
     [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty() || topology_drop_nan; }
+
+    // Per-event range cuts on continuous columns ("Cuts": { "<name>": { "Branch":
+    // ..., "Min": ..., "Max": ... } }), applied to the MC parquet and to a data
+    // parquet alike. Independent of the topology cut above and intersected with
+    // it, so a sample can select a class *and* threshold a score. See EventCuts.h.
+    std::vector<EventCut> cuts;
+
+    // "CutsMatchInputs": true: this sample's pre-binned inputs (muon/galactic
+    // templates, SnowStorm gradients) were re-exported with `cuts` applied, so
+    // pairing them with the cuts is a match rather than the normalisation error
+    // validate_components() otherwise refuses. There is nothing in a template
+    // file that records which selection produced it, so this is an assertion the
+    // config makes and the framework takes at its word -- unlike the topology
+    // cut's Gradients.ScaleToTopology, which derives the correction instead.
+    bool cuts_match_inputs = false;
+
+    [[nodiscard]] bool filters_events() const noexcept { return !cuts.empty(); }
 
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,
