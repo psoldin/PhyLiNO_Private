@@ -116,9 +116,18 @@ target_link_libraries(icecube PUBLIC io likelihood utilities ${Boost_LIBRARIES}
 # collides with that at link time (TLS/non-TLS layout mismatch on an internal
 # rapidjson symbol). Static linking keeps our Arrow/Parquet symbols out of the
 # executable's dynamic dependency list entirely, so there's nothing to collide.
-target_link_libraries(icecube PUBLIC Arrow::arrow_static)
+# Some distributions (e.g. Arch) ship Arrow/Parquet as shared libraries only; fall
+# back to those there. That is safe as long as ROOT itself is not built with Arrow.
+if(TARGET Arrow::arrow_static AND TARGET Parquet::parquet_static)
+    set(ICECUBE_ARROW_TARGET Arrow::arrow_static)
+    set(ICECUBE_PARQUET_TARGET Parquet::parquet_static)
+else()
+    set(ICECUBE_ARROW_TARGET Arrow::arrow_shared)
+    set(ICECUBE_PARQUET_TARGET Parquet::parquet_shared)
+endif()
+target_link_libraries(icecube PUBLIC ${ICECUBE_ARROW_TARGET})
 target_link_libraries(icecube PRIVATE nlohmann_json::nlohmann_json
-                      Parquet::parquet_static
+                      ${ICECUBE_PARQUET_TARGET}
                       protobuf::libprotobuf)
 
 # The per-bin flux and SAY ssq loops carry omp pragmas; without this target they
