@@ -155,7 +155,7 @@ namespace ana {
         if (upper) start = std::min(start, *upper - margin);
       }
 
-      if (print_parameters) {
+      if (print_parameters && !input_options.blind()) {
         std::cout << "Set up parameter " << std::setw(5) << i << ": " << std::setw(18) << names[i]
                   << " with value " << std::setw(10) << start;
         if (randomize_this)
@@ -201,7 +201,7 @@ namespace ana {
         continue;
 
       if (fixed[i]) {
-        if (print_parameters) {
+        if (print_parameters && !input_options.blind()) {
           std::cout << "Fixing parameter " << std::setw(5) << i << " " << names[i] << '\n';
         }
         m_Minimizer->FixVariable(static_cast<unsigned int>(i));
