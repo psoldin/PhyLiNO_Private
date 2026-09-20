@@ -2961,6 +2961,8 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
     cfg.components      = {"astro"};
     cfg.topology_branch = labels.empty() ? "" : "classification";
     cfg.topology_values = labels;
+    // A NaN passes the cut by default; this test wants the NaN row gone.
+    cfg.topology_drop_nan = !labels.empty();
     return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
   };
 
@@ -2974,7 +2976,8 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   ASSERT_TRUE(unfiltered.sample(0).size() == 6);
   ASSERT_TRUE(data_total(unfiltered) == 4.0);
 
-  // One class: MC and data are cut by the same rule. The NaN row is dropped.
+  // One class: MC and data are cut by the same rule. The NaN row is dropped
+  // because the test opts in with topology_drop_nan.
   const auto tracks_only = load({1});
   ASSERT_TRUE(tracks_only.sample(0).size() == 2);
   ASSERT_TRUE(data_total(tracks_only) == 2.0);
