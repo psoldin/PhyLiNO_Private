@@ -30,6 +30,7 @@
 
 #include "AdaptiveGrid.h"
 #include "AdaptiveScan1D.h"
+#include "IceCube/ICBlinding.h"
 #include "IceCube/ICWriteResultsProto.h"
 #include "ScanSeeds.h"
 #include "SeedQuality.h"
@@ -1025,10 +1026,17 @@ void perform_nm1_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana:
 void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, bool regular = false, int points = 30) {
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
+  const bool  blind            = options->inputOptions().blind();
+
+  // Under --blind the signal parameters are not scanned at all: their profile
+  // is exactly what the blinding withholds from the written results.
+  auto skipped = [&](std::size_t i) {
+    return input_parameters.fixed(static_cast<int>(i)) || (blind && result::ic::is_blinded_parameter(names[i]));
+  };
 
   if (!regular) {
     for (std::size_t i = 0; i < input_parameters.size(); ++i) {
-      if (input_parameters.fixed(static_cast<int>(i)))
+      if (skipped(i))
         continue;
 
       std::cout << "Scanning " << names[i] << "...\n";
@@ -1040,7 +1048,7 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
 
   std::vector<std::size_t> unbounded_indices;
   for (std::size_t i = 0; i < input_parameters.size(); ++i) {
-    if (input_parameters.fixed(static_cast<int>(i)))
+    if (skipped(i))
       continue;
     const auto& parameter = input_parameters.parameters()[i];
     if (!parameter.lower_bound() || !parameter.upper_bound())
@@ -1070,7 +1078,7 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
   constexpr double kErrorMultiplier = 3.0;
 
   for (std::size_t i = 0; i < input_parameters.size(); ++i) {
-    if (input_parameters.fixed(static_cast<int>(i)))
+    if (skipped(i))
       continue;
 
     const auto& parameter = input_parameters.parameters()[i];
@@ -1146,6 +1154,10 @@ int main(int argc, char** argv) {
       const std::string& scan_mode      = options->inputOptions().scan_mode();
       const std::string& scan_parameter = options->inputOptions().scan_parameter();
       const int          scan_points    = options->inputOptions().scan_points();
+
+      if (options->inputOptions().blind() && (scan_mode == "1d" || scan_mode == "1d-regular") &&
+          result::ic::is_blinded_parameter(scan_parameter))
+        throw std::invalid_argument("--blind does not scan the signal parameters; --scanParameter " + scan_parameter + " is one of them");
 
       if (scan_mode == "2d") {
         perform_2d_scan(options, module);
