@@ -2682,7 +2682,8 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   const std::string data_path = "ictests_topology_data.parquet";
 
   // Six MC events, all inside the binning below; classification carries three
-  // classes plus one NaN, which no configured label may match.
+  // classes plus one NaN. A NaN is not a class label, so it passes the cut
+  // unless "NaN" is listed among the values (SampleConfig::topology_drop_nan).
   const std::vector<double> classification{1.0, 2.0, 1.0, 3.0, 2.0,
                                            std::numeric_limits<double>::quiet_NaN()};
   // Reco energy is in GeV; the axis takes log10 of it, so these land in [2, 7).
@@ -2718,13 +2719,15 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
                          Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
 
-  auto load = [&](const std::vector<int>& labels) {
+  auto load = [&](const std::vector<int>& labels, bool drop_nan = false, bool exclude = false) {
     io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
     cfg.parquet         = mc_path;
     cfg.data_path       = data_path;
     cfg.components      = {"astro"};
-    cfg.topology_branch = labels.empty() ? "" : "classification";
-    cfg.topology_values = labels;
+    cfg.topology_branch = labels.empty() && !drop_nan ? "" : "classification";
+    cfg.topology_values   = labels;
+    cfg.topology_drop_nan = drop_nan;
+    cfg.topology_exclude  = exclude;
     return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
   };
 
@@ -2738,20 +2741,30 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   ASSERT_TRUE(unfiltered.sample(0).size() == 6);
   ASSERT_TRUE(data_total(unfiltered) == 4.0);
 
-  // One class: MC and data are cut by the same rule. The NaN row is dropped.
-  const auto tracks_only = load({1});
+  // One class: MC and data are cut by the same rule. The NaN row passes by
+  // default and is dropped only when "NaN" is listed.
+  const auto tracks_with_nan = load({1});
+  ASSERT_TRUE(tracks_with_nan.sample(0).size() == 3);
+  ASSERT_TRUE(data_total(tracks_with_nan) == 2.0);
+
+  const auto tracks_only = load({1}, true);
   ASSERT_TRUE(tracks_only.sample(0).size() == 2);
   ASSERT_TRUE(data_total(tracks_only) == 2.0);
 
   // Several classes are a union, not a last-one-wins.
-  const auto two_classes = load({1, 2});
+  const auto two_classes = load({1, 2}, true);
   ASSERT_TRUE(two_classes.sample(0).size() == 4);
   ASSERT_TRUE(data_total(two_classes) == 3.0);
 
   // A label no event carries selects nothing rather than falling back to all.
-  const auto none = load({7});
+  const auto none = load({7}, true);
   ASSERT_TRUE(none.sample(0).empty());
   ASSERT_TRUE(data_total(none) == 0.0);
+
+  // Exclude with only "NaN" listed drops just the unlabelled row.
+  const auto no_nan = load({}, true, true);
+  ASSERT_TRUE(no_nan.sample(0).size() == 5);
+  ASSERT_TRUE(data_total(no_nan) == 4.0);
 
   // The kept events must be the class-1 ones, not merely the right count: a
   // mask applied at the wrong offset would keep the same number of rows.
