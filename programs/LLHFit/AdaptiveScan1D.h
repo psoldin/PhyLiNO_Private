@@ -22,9 +22,16 @@
  *
  * Step size is chosen the same way. After every round the local slope of the
  * profile is measured and the next step is sized to raise the likelihood by
- * about `gain`, so points come out dense where the curve bends and sparse where
- * it is flat, with no assumption that the profile is parabolic, symmetric, or
- * even single-minimum.
+ * about the allowed rise, so points follow the curve with no assumption that the
+ * profile is parabolic, symmetric, or even single-minimum.
+ *
+ * The allowed rise is not a constant: it is a fraction of how far the profile
+ * already sits above the best fit, with a floor near the minimum (see
+ * allowed_rise). A fixed rise per step would spend almost every point between
+ * 1 and 4 sigma, where a steepening parabola packs many units of delta chi2
+ * into little parameter range, and leave the 1 sigma interval -- the part a
+ * profile is read for -- with a single gap. Letting the rise grow keeps the
+ * points dense around the 1 sigma crossing and spreads them out in the tail.
  *
  * Points sit on integer offsets from the best fit, in units of `unit` (chosen by
  * the caller, normally a small fraction of the parameter's step width). Integer
@@ -52,10 +59,17 @@ namespace scan1d {
     /// strictly inside the scanned range instead of on its edge.
     double target = 16.0;
 
-    /// Rise the next step aims for. Sets the point density: the whole walk out
-    /// to `target` costs roughly target/gain points per direction wherever the
-    /// slope estimate holds.
-    double gain = 1.0;
+    /// Smallest rise a step aims for, which is what the allowed rise falls back
+    /// to near the best fit. Sets the point density inside the 1 sigma
+    /// interval: on a parabola the first point lands at sqrt(gain) sigma.
+    double gain = 0.1;
+
+    /// Rise a step aims for as a fraction of the delta chi2 it starts from.
+    /// Above gain/relative_gain the allowed rise grows with the profile, so the
+    /// spacing in the parameter widens the further out the walk gets; on a
+    /// parabola it grows roughly in proportion to the distance from the best
+    /// fit. Zero gives a constant rise of `gain` per step everywhere.
+    double relative_gain = 0.5;
 
     /// Step of the first round, in lattice units. Only a starting guess; from
     /// the second round on the step comes from the measured slope.
@@ -92,6 +106,12 @@ namespace scan1d {
     return lowest;
   }
 
+  /// Rise allowed between two neighbouring points of which the lower sits
+  /// `delta` above the best fit.
+  inline double allowed_rise(const Settings& settings, double delta) {
+    return std::max(settings.gain, settings.relative_gain * std::max(0.0, delta));
+  }
+
   namespace detail {
 
     /// One direction of the walk.
@@ -107,7 +127,7 @@ namespace scan1d {
       /// wider profile can clear the whole rise in one jump and leave nothing
       /// sampled in between. Instead the crossing point becomes a wall and the
       /// direction keeps filling the gap behind it until the last step is worth
-      /// no more than `gain`, which is what makes the walk independent of how
+      /// no more than the allowed rise, which is what makes the walk independent of how
       /// well the configured step width happens to match the true width.
       bool bounded = false;
       int  wall    = 0;
@@ -199,7 +219,7 @@ namespace scan1d {
       const double last_delta = value_at(profile, arm.last) - reference;
 
       // Size the next step from the slope the last two points measured, so the
-      // profile rises by about `gain` per step. Behind a wall the slope of the
+      // profile rises by about the allowed rise per step. Behind a wall the slope of the
       // gap itself is the better estimate: it is the stretch still to be filled.
       int    span  = std::abs(arm.last - previous);
       double delta = last_delta - previous_delta;
@@ -212,7 +232,8 @@ namespace scan1d {
 
       // Clamped as a double first: a slope of 1e-12 would otherwise ask for a
       // step no int can hold.
-      const double wanted_step = slope > 0.0 ? std::clamp(settings.gain / slope, 1.0, static_cast<double>(settings.max_step))
+      const double rise        = allowed_rise(settings, last_delta);
+      const double wanted_step = slope > 0.0 ? std::clamp(rise / slope, 1.0, static_cast<double>(settings.max_step))
                                              : static_cast<double>(settings.max_step);
 
       // Growing the step by more than a factor of four in one round would let a
@@ -224,7 +245,7 @@ namespace scan1d {
       if (arm.bounded) {
         // The direction is done once the gap behind the wall is worth less than
         // one step's rise, or is too narrow to put another point in.
-        if (span <= settings.min_step || delta <= settings.gain) {
+        if (span <= settings.min_step || delta <= rise) {
           arm.active = false;
           return;
         }
@@ -300,9 +321,9 @@ namespace scan1d {
     // round whose step was still growing can clear a whole stretch of the
     // profile in one jump, and on a steep parameter that stretch is wide enough
     // to hide the 1 sigma crossing entirely. Every neighbouring pair that rises
-    // by more than `gain` is halved until it does not, which gives the finished
-    // curve one density everywhere instead of one near the target and another
-    // in the middle.
+    // by more than the allowed rise is halved until it does not, which gives the
+    // finished curve the same density rule everywhere instead of one near the
+    // target and another in the middle.
     for (;; ++round) {
       const double reference = std::min(seed, reference_value(profile));
 
@@ -319,7 +340,7 @@ namespace scan1d {
         if (right - left < 2 || std::min(left_value, right_value) - reference >= settings.target)
           continue;
 
-        if (std::abs(right_value - left_value) > settings.gain)
+        if (std::abs(right_value - left_value) > allowed_rise(settings, std::min(left_value, right_value) - reference))
           nodes.push_back(left + (right - left) / 2);
       }
 
