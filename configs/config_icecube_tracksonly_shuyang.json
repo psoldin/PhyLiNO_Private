@@ -260,6 +260,24 @@
       "Constrained": false,
       "LowerBound": 3.6,
       "UpperBound": 5.0
+    },
+    {
+      "Name": "AstroParabolaB",
+      "StartValue": 0.0,
+      "StepWidth": 0.05,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": -2.0,
+      "UpperBound": 2.0
+    },
+    {
+      "Name": "AstroLogECut",
+      "StartValue": 7.0,
+      "StepWidth": 0.1,
+      "Fixed": true,
+      "Constrained": false,
+      "LowerBound": 4.0,
+      "UpperBound": 9.0
     }
   ]
 }

@@ -82,7 +82,11 @@ namespace ana {
     // ::Info(), so that silences every *other* scan worker's Minuit output
     // until the restart finishes -- and with two restarts overlapping, the
     // save/restore of that global races and can leave it muted for good.
-    m_Minimizer->SetPrintLevel(silent ? 0 : 2);
+    //
+    // --blind mutes it the same way: level 2 makes Minuit2 print the final
+    // parameter table, signal parameters included, which is exactly what the
+    // blinding keeps out of the written result.
+    m_Minimizer->SetPrintLevel(silent || input_options.blind() ? 0 : 2);
 
     m_Minimizer->SetFunction(*m_Functor);
     m_Minimizer->SetTolerance(input_options.tolerance());
@@ -151,7 +155,7 @@ namespace ana {
         if (upper) start = std::min(start, *upper - margin);
       }
 
-      if (print_parameters) {
+      if (print_parameters && !input_options.blind()) {
         std::cout << "Set up parameter " << std::setw(5) << i << ": " << std::setw(18) << names[i]
                   << " with value " << std::setw(10) << start;
         if (randomize_this)
@@ -197,7 +201,7 @@ namespace ana {
         continue;
 
       if (fixed[i]) {
-        if (print_parameters) {
+        if (print_parameters && !input_options.blind()) {
           std::cout << "Fixing parameter " << std::setw(5) << i << " " << names[i] << '\n';
         }
         m_Minimizer->FixVariable(static_cast<unsigned int>(i));

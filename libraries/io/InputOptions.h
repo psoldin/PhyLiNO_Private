@@ -106,6 +106,16 @@ namespace io {
     [[nodiscard]] bool scan_warm_start() const noexcept { return m_ScanWarmStart; }
 
     /**
+     * @brief A finished result whose parameters seed this run.
+     *
+     * Empty unless --seedFrom was given. The file is read with the same reader
+     * a scan resume uses, so it may be in either output format regardless of
+     * what this run writes. Given with or without its extension: the reader
+     * works from base names, and LLHFit strips a .json/.pb.gz suffix first.
+     */
+    [[nodiscard]] const std::string& seed_from() const noexcept { return m_SeedFrom; }
+
+    /**
      * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
      * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
      * (perform_2d_scan_regular), "1d" or "1d-regular" (perform_1d_scan_all,
@@ -175,6 +185,16 @@ namespace io {
     /** Relative width of the randomized start values, as passed via --randomizeWidth. */
     [[nodiscard]] double randomize_width() const noexcept { return m_RandomizeWidth; }
 
+    /**
+     * Blind the written results (--blind): the signal parameters are left out of
+     * the parameter block and every bin above 1e4 GeV is written as zero, in the
+     * data, the prediction and every component alike. The fit is unaffected --
+     * all parameters float and all bins enter the likelihood, so a blinded run
+     * and an unblinded one minimize exactly the same thing. See ICBlinding.h for
+     * what counts as signal.
+     */
+    [[nodiscard]] bool blind() const noexcept { return m_Blind; }
+
    private:
     long   m_Seed;              /**< The global random seed. */
     bool   m_Silent;            /**< Flag indicating if the program should run in silent mode. */
@@ -184,12 +204,14 @@ namespace io {
     std::string      m_GpuDevices;         /**< Raw --gpuDevices value, e.g. "0:6,1:10". */
     std::vector<int> m_GpuDeviceOfWorker;  /**< --gpuDevices expanded to one device ordinal per worker slot. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
+    std::string m_SeedFrom;           /**< --seedFrom: result whose parameters are this run's start values. */
     std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
     int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
+    bool   m_Blind{false};          /**< Keep the signal out of the written results. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */

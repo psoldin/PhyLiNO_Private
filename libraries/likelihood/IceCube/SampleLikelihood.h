@@ -78,6 +78,11 @@ namespace ana::ic {
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
 
+    /** Combined per-event weight of the flux components, for the MC-variance
+        diagnostic. Empty unless the components were asked to keep them, which
+        SAY and forward folding both do. */
+    [[nodiscard]] std::vector<double> per_event_weight() const;
+
     /** Per-bin prediction of one named part of this sample, for the results writer. */
     [[nodiscard]] std::span<const double> astro_histogram() const noexcept {
       return m_Astro ? m_Astro->histogram() : std::span<const double>{};
@@ -114,10 +119,14 @@ namespace ana::ic {
     /** Replace the Asimov expectation with measured counts (UseData). */
     void set_data(std::span<const double> counts);
 
+    /** Swap the SAY term for the Barlow-Beeston light one (needs use_say). */
+    void set_barlow_beeston(bool on) noexcept { m_UseBB = on; }
+
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
     bool                        m_UseSAY;
+    bool                        m_UseBB = false;  ///< Barlow-Beeston light on the SAY sigma^2
     bool                        m_UseMultiThreading;
 
     // Only the components the config declares are constructed; the parquet
@@ -177,6 +186,14 @@ namespace ana::ic {
     // MC-binning scratch: the per-event components and the 2D templates/gradients
     // are summed here, then spread over the RA axis (mu / n_ra, sigma^2 / n_ra^2 --
     // NNMFit Binning_2D_to_3D). n_ra == 1 makes both broadcasts exact copies.
+    // Folded flux histograms, filled from the per-event weights through the
+    // sample's response matrix. Empty unless the sample declares one.
+    std::vector<double> m_FoldedAstro;
+    std::vector<double> m_FoldedAtmo;
+
+    /** hist[b] = sum_k f_bk * per_event[event_bk] over the response matrix. */
+    void fold(std::span<const double> per_event, std::vector<double>& out) const noexcept;
+
     std::vector<double> m_McTotal;
     std::vector<double> m_McSsq;
     // The per-event half of m_McSsq, kept apart from the histogram-level terms
@@ -227,6 +244,7 @@ namespace ana::ic {
     /** -2 lnL over the analysis bins, reading the prediction group by group. */
     [[nodiscard]] double poisson_llh() const;
     [[nodiscard]] double say_llh() const;
+    [[nodiscard]] double bb_llh() const;
 
     /** Recompute the per-bin constants derived from m_Data. Call after every
         write to m_Data and nowhere else. */

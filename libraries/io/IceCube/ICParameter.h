@@ -32,6 +32,9 @@ namespace params::ic {
    *   AstroGamma1, AstroGamma2, AstroEBreak -> NNMFit's AstroBPL broken power law,
    *     active only when IceCube.AstroModel is "BrokenPowerlaw" (they replace
    *     SpectralIndex there). Fixed in a single-power-law config.
+   *   AstroParabolaB, AstroLogECut -> NNMFit's LogEnergyIndex (astro_parabola_b) and
+   *     Cutoff (cutoff_pos), multiplied onto the single power law when IceCube.AstroModel
+   *     is "LogParabola" or "PowerlawCutoff" respectively. Fixed in every other config.
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -78,6 +81,12 @@ namespace params::ic {
     AstroGamma1,
     AstroGamma2,
     AstroEBreak,
+
+    // --- astrophysical curvature / cutoff on top of the single power law, each
+    // read only by its own IceCube.AstroModel; AstroNorm and SpectralIndex keep
+    // their single-power-law meaning there. Fixed in every other config. ---
+    AstroParabolaB,  // "LogParabola": NNMFit astro_parabola_b, x (E/1e5)^(-b log10(E/1e5))
+    AstroLogECut,    // "PowerlawCutoff": NNMFit cutoff_pos = log10(E_cut / GeV), x exp(-E/E_cut)
     _last_of_General_
   };
 
@@ -98,9 +107,9 @@ namespace params::ic {
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
   static_assert(nDetSysParams == 5,
     "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
-  static_assert(number_of_parameters() == 23,
+  static_assert(number_of_parameters() == 25,
     "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms "
-    "+ 3 astro broken-power-law params. "
+    "+ 3 astro broken-power-law params + log-parabola curvature + cutoff energy. "
     "Update every config's Parameter array and this if the layout changes.");
 
 }  // namespace params::ic

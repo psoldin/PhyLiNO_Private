@@ -1,6 +1,8 @@
 #pragma once
 
 #include "IceCube/ICLikelihood.h"
+#include "IceCube/PoissonLikelihood.h"
+#include "IceCube/SAYLikelihood.h"
 #include "IceCube/SampleLikelihood.h"
 #include "ParameterWrapper.h"
 
@@ -62,6 +64,43 @@ namespace result::ic {
     components.emplace_back("atmospheric_prompt", sample.in_analysis_bins(atmo_split.prompt));
 
     return components;
+  }
+
+  /**
+   * Per-bin -2lnL of one sample, in its analysis binning: the same term
+   * SampleLikelihood::poisson_llh()/say_llh() sum, evaluated one bin at a time.
+   *
+   * The fit's own loops collapse each RA slice into a handful of scalar
+   * operations, so they cannot hand out the individual terms; this walks the
+   * materialised prediction (and sigma^2 under SAY) instead. Only the results
+   * writers call it, once per fit, so the per-bin logarithms it costs do not
+   * matter -- but for the same reason the sum differs from the fit's own value
+   * in the last bits, floating-point summation not being associative.
+   *
+   * Under Poisson the saturated term log P(k|k) is subtracted per bin, exactly
+   * as poisson_llh() does. Under SAY it is not, again matching say_llh().
+   * Summing the result therefore reproduces this sample's partial_llh(); the
+   * fit's total LLH is that sum over samples PLUS the Gaussian parameter pulls
+   * (ICLikelihood::calculate_pulls), which belong to no bin.
+   *
+   * `sample` must hold the prediction of the point being reported -- the writers
+   * re-evaluate the likelihood at the minimum first, as for component_breakdown().
+   */
+  inline std::vector<double> bin_likelihood(const ana::ic::SampleLikelihood& sample, const bool use_say) {
+    const auto data = sample.data();
+    const auto pred = sample.predicted();
+
+    std::vector<double> out(data.size(), 0.0);
+    if (!use_say) {
+      for (std::size_t b = 0; b < data.size(); ++b)
+        out[b] = -2.0 * ana::ic::poisson_bin_log_likelihood_saturated(data[b], pred[b]);
+      return out;
+    }
+
+    const auto ssq = sample.ssq();
+    for (std::size_t b = 0; b < data.size(); ++b)
+      out[b] = -2.0 * ana::ic::say_bin_log_likelihood(data[b], pred[b], ssq[b]);
+    return out;
   }
 
   inline double sum_of(const std::vector<double>& values) {

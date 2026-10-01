@@ -21,8 +21,10 @@ namespace ana::ic {
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(std::move(gpu_backend))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
-    const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
-    std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";
+    const bool use_bb  = input_options.likelihood_type() == io::ic::LikelihoodType::BBLite;
+    // BBLite reads the same per-bin sigma^2 as SAY, so it shares the SAY setup.
+    const bool use_say = use_bb || input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
+    std::cout << "ICLikelihood: using " << (use_bb ? "BBLite" : use_say ? "SAY" : "Poisson") << " likelihood\n";
 
     const GlobalFluxSettings settings{
         .e_ref_gev                = input_options.e_ref_gev(),
@@ -60,6 +62,7 @@ namespace ana::ic {
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
           m_DataBase->sample(k), cfg, settings,
           m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say));
+      m_Samples.back()->set_barlow_beeston(use_bb);
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");

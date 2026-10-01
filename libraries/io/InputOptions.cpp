@@ -52,7 +52,8 @@ namespace io {
 	("threads", po::value<int>(&m_MultiThreadingCores)->default_value(-1), "OpenMP team size used when -m is given; -1 keeps the environment default")
 	("scanWorkers", po::value<int>(&m_ScanWorkers)->default_value(1), "Number of grid points the 2D scan fits concurrently (each worker runs a full fit)")
 	("gpuDevices", po::value<std::string>(&m_GpuDevices)->default_value(""), "GPU ordinal per scan worker, as device:count[,device:count...] (e.g. \"0:6,1:10\"); empty keeps every worker on device 0")
-	("scanWarmStart", po::value<bool>(&m_ScanWarmStart)->default_value(true), "Start each scan fit from the converged parameters of the nearest scan point already fitted (ignored with --randomizeSeeds)")
+	("scanWarmStart", po::value<bool>(&m_ScanWarmStart)->default_value(true), "Start each scan fit from the parameters of the nearest scan point already fitted (ignored with --randomizeSeeds)")
+	("seedFrom", po::value<std::string>(&m_SeedFrom)->default_value(""), "A finished result, with or without its .json/.pb.gz extension, whose fitted parameters become the start values: of the plain fit with --fitOnly, and of a scan's free fit and of every scan point that has no fitted neighbour yet. Use it when the free fit settles into a local minimum. Ignored with --randomizeSeeds")
 	("scanMode", po::value<std::string>(&m_ScanMode)->default_value("2d"), "Which scan LLHFit runs when --fitOnly is not given: 2d|2d-regular|1d|1d-regular|nm1")
 	("scanParameter", po::value<std::string>(&m_ScanParameter)->default_value(""), "Restrict --scanMode 1d/1d-regular to a single named parameter instead of every non-fixed one; required by --scanMode nm1, where it names the parameter whose sensitivity is measured")
 	("scanPoints", po::value<int>(&m_ScanPoints)->default_value(30), "Grid points per axis for --scanMode 2d-regular/1d-regular")
@@ -63,7 +64,8 @@ namespace io {
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")
 	("randomizeWidth", po::value<double>(&m_RandomizeWidth)->default_value(0.08), "Relative width of the randomized start values (NNMFit's default is 0.08)")
-	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf");
+	("output-format", po::value<std::string>(&m_OutputFormat)->default_value("json"), "Result output format: json|protobuf")
+	("blind", po::bool_switch(&m_Blind), "Blind the written results: drop the signal parameters (AstroNorm, SpectralIndex, PromptNorm, AstroGamma1, AstroGamma2, AstroEBreak, AstroParabolaB, AstroLogECut) and zero every bin above 1e4 GeV. The fit itself still uses all of them; --scanMode 1d/1d-regular skips them");
 
     po::options_description cmdline_options;
     cmdline_options.add(generic_options);

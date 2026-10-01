@@ -10,6 +10,7 @@
 
 #include "Binning.h"
 #include "BranchNames.h"
+#include "EventCuts.h"
 
 namespace io::ic {
 
@@ -58,6 +59,50 @@ namespace io::ic {
    * designated-init constructed with `.binning` always provided, e.g.:
    *   SampleConfig sc{.name = sname, .binning = resolved};
    */
+  /**
+   * How a per-event uncertainty column is turned into a response width. The
+   * conventions differ per column and are not self-describing, so they are
+   * config rather than folklore:
+   *
+   *   None        the column already is the width in the axis's own units
+   *   Exp         exp(x): a network emitting log(sigma) to keep it positive,
+   *               which is what ELEFANTS does
+   *   Pow10       10^x, for a column carrying log10(sigma)
+   *   DegToRad    x * pi/180, for an angular sigma in degrees
+   */
+  enum class SigmaTransform { None, Exp, Pow10, DegToRad };
+
+  /**
+   * Forward folding of the per-event detector response into the analysis
+   * histogram (see io::ic::ResponseMatrix).
+   *
+   * Off by default: with it disabled every MC event drops its full weight into
+   * the single bin its reconstructed value falls in, which is what this code has
+   * always done.
+   */
+  struct ResponseConfig {
+    bool enabled = false;
+
+    // Centres. These must be the truth the uncertainty column was trained
+    // against, not the primary neutrino energy: ELEFANTS reconstructs the muon
+    // energy at closest approach, so its sigma is the width around THAT, and the
+    // neutrino-to-muon spread is separate physics the MC already carries event
+    // by event.
+    std::string truth_energy_branch = "ELEFANTS_tg_truth_log10";  // log10(E_true / GeV)
+    std::string truth_zenith_branch = "MCPrimaryZenith";          // radians
+
+    std::string    energy_sigma_branch    = "ELEFANTS_tg_sigma_log10";
+    std::string    zenith_sigma_branch    = "L5_sigma_paraboloid";
+    SigmaTransform energy_sigma_transform = SigmaTransform::None;
+    SigmaTransform zenith_sigma_transform = SigmaTransform::DegToRad;
+
+    // Bins beyond this many widths are not considered, and entries below
+    // min_fraction of an event's total are dropped. Both bound the matrix; what
+    // survives is renormalised, so neither changes the predicted total.
+    double truncation   = 5.0;
+    double min_fraction = 1.0e-4;
+  };
+
   struct SampleConfig {
     std::string name;
     bool        enabled = true;
@@ -90,6 +135,14 @@ namespace io::ic {
     // Exported SnowStorm gradient file for this sample ("" = no detector systematics).
     std::string gradient_file;
 
+    // "FileBinning": "<binning name>": the grid the pre-binned inputs (muon
+    // template, SnowStorm gradients) were exported in, when this sample fits a
+    // sub-grid of it -- dropping the zenith bins that reach above the horizon,
+    // say. The loaders then read those files as exported and keep only the bins
+    // this sample has, instead of every truncation needing its own export.
+    // Identity when unset. See io::ic::make_bin_map.
+    BinMap file_bin_map;
+
     // "Gradients": { "ScaleToTopology": true }: reuse a gradient file exported
     // from the unfiltered sample with a topology cut active, rescaling each bin's
     // gradient by the fraction of that bin's nominal weight the cut kept. The
@@ -103,6 +156,13 @@ namespace io::ic {
     // Galactic-plane templates, in config order. Empty unless the analysis binning
     // has an Ra axis (parse_samples rejects the combination otherwise).
     std::vector<GalacticTemplateConfig> galactic;
+
+    ResponseConfig response;
+
+    // Extra per-event reco columns read at load and carried on the sample, for
+    // scoring candidate category axes (programs/mcvariance). They take part in
+    // no fit; naming one costs a column read and nothing else.
+    std::vector<std::string> category_branches;
 
     // Per-event nu_mu survival factor (NNMFit OscillationsHook), exported by
     // tools/export_oscillation_factors.py. Row-aligned with `parquet`; applied to
@@ -130,6 +190,23 @@ namespace io::ic {
     bool             topology_drop_nan = false;
 
     [[nodiscard]] bool filters_topology() const noexcept { return !topology_values.empty() || topology_drop_nan; }
+
+    // Per-event range cuts on continuous columns ("Cuts": { "<name>": { "Branch":
+    // ..., "Min": ..., "Max": ... } }), applied to the MC parquet and to a data
+    // parquet alike. Independent of the topology cut above and intersected with
+    // it, so a sample can select a class *and* threshold a score. See EventCuts.h.
+    std::vector<EventCut> cuts;
+
+    // "CutsMatchInputs": true: this sample's pre-binned inputs (muon/galactic
+    // templates, SnowStorm gradients) were re-exported with `cuts` applied, so
+    // pairing them with the cuts is a match rather than the normalisation error
+    // validate_components() otherwise refuses. There is nothing in a template
+    // file that records which selection produced it, so this is an assertion the
+    // config makes and the framework takes at its word -- unlike the topology
+    // cut's Gradients.ScaleToTopology, which derives the correction instead.
+    bool cuts_match_inputs = false;
+
+    [[nodiscard]] bool filters_events() const noexcept { return !cuts.empty(); }
 
     [[nodiscard]] bool has_component(std::string_view component) const noexcept {
       return std::ranges::any_of(components,

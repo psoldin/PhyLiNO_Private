@@ -1,6 +1,7 @@
 #pragma once
 
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -13,12 +14,26 @@ namespace io::ic {
    * zenith binning ("cscd-cos_5up") needs.
    */
   struct Axis {
-    enum class Kind { Log10Energy, CosZenith, Ra };
+    /**
+     * Category is a raw per-event reco column used as an analysis axis --
+     * a classifier score, a track-quality variable -- rather than a derived
+     * kinematic one. It is projected with the identity, and unlike every other
+     * kind it names the branch it reads, because there is no fixed set of them:
+     * the axis is spelled "Category:<branch>" in the binning's axes list.
+     *
+     * Splitting the histogram this way is not double-using a selection variable.
+     * The selection conditions on s > s_cut; the likelihood then works with
+     * p(E, cos(theta), s | s > s_cut), which is strictly more information than
+     * p(E, cos(theta) | s > s_cut). What the cut discards is the region below
+     * threshold, not the structure above it.
+     */
+    enum class Kind { Log10Energy, CosZenith, Ra, Category };
     Kind                kind;
     double              lo;
     double              hi;
     int                 n_bins;
-    std::vector<double> edges;  // empty => uniform
+    std::vector<double> edges;   // empty => uniform
+    std::string         branch;  // Category only: the reco column it bins
 
     [[nodiscard]] bool uniform() const noexcept { return edges.empty(); }
     [[nodiscard]] double step() const noexcept { return (hi - lo) / n_bins; }
@@ -27,10 +42,14 @@ namespace io::ic {
   };
 
   /**
-     * Parse an axis spec for the named kind ("Log10Energy"|"CosZenith"|"Ra"):
+     * Parse an axis spec for the named kind
+     * ("Log10Energy"|"CosZenith"|"Ra"|"Category:<branch>"):
      *   "(lo, hi, n_bins)"        uniform grid
      *   "[e0, e1, ..., eN]"       explicit ascending edges, N bins
      */
+  /** Bin edges of an axis: its own list, or the generated grid of a uniform one. */
+  [[nodiscard]] std::vector<double> axis_edges(const Axis& axis);
+
   [[nodiscard]] Axis parse_axis(std::string_view kind, std::string_view spec);
 
   /** Config spelling of an axis kind; inverse of parse_axis' kind argument. */
@@ -64,6 +83,42 @@ namespace io::ic {
   };
 
   /**
+   * Where each bin of a sample's binning sits in a histogram produced on a wider
+   * *source* grid the sample's binning is a sub-grid of.
+   *
+   * Pre-binned inputs -- the muon template, the SnowStorm gradients -- come out of
+   * NNMFit on one fixed grid. Fitting a sub-range of it (dropping the zenith bins
+   * that reach above the horizon, say) would otherwise mean re-exporting every
+   * such file; with a map the loaders read the file as exported and keep only the
+   * bins the sample actually has.
+   *
+   * `index[t]` is the source's flat bin for the sample's flat bin t, and
+   * `source_bins` is how many values such a file carries. An empty `index` means
+   * the two grids are identical and no gather is needed.
+   */
+  struct BinMap {
+    int              source_bins = 0;
+    std::vector<int> index;
+
+    [[nodiscard]] bool identity() const noexcept { return index.empty(); }
+  };
+
+  /**
+   * Map `target` onto `source`: same axis kinds in the same order, and every
+   * target bin exactly one source bin (edges compared with a tolerance -- the
+   * config spells the same grid out a second time in floating point). Throws
+   * otherwise: a target bin straddling source bins cannot be gathered, only
+   * rebinned, and quietly rebinning a template is how a fit ends up on numbers
+   * nobody can trace.
+   *
+   * Identical grids give back an identity map, which costs the loaders nothing.
+   */
+  [[nodiscard]] BinMap make_bin_map(const Binning& source, const Binning& target);
+
+  /** out[t] = values[map.index[t]], or a plain copy for an identity map. */
+  void gather_bins(const BinMap& map, std::span<const double> values, std::span<double> out);
+
+  /**
    * The analysis binning without its trailing Ra axis -- the binning MC events are
    * assigned to. Returns `binning` unchanged when it has no Ra axis, so a 2-axis
    * sample gets an identical binning back.
@@ -83,6 +138,9 @@ namespace io::ic {
    * the third reco value supplied.
    */
   [[nodiscard]] bool has_ra_axis(const Binning& binning) noexcept;
+
+  /** The Category axes of a binning, in axis order; empty for an ordinary one. */
+  [[nodiscard]] std::vector<Axis> category_axes(const Binning& binning);
 
   /**
    * Number of bins on the trailing Ra axis, or 1 when the binning has none.
@@ -113,6 +171,14 @@ namespace io::ic {
    * pair with `binning` and counts, dropping out-of-range events. No weights and
    * no livetime scaling -- real data is a count.
    */
+  /**
+   * General form: one column per axis, in axis order. The two- and three-column
+   * overloads below are the common cases; this one also covers a binning with
+   * Category axes, where the column count is not fixed.
+   */
+  [[nodiscard]] std::vector<double> bin_event_counts(const Binning&                          binning,
+                                                     std::span<const std::vector<double>>    columns);
+
   [[nodiscard]] std::vector<double> bin_event_counts(const Binning&             binning,
                                                     const std::vector<double>& reco_energy,
                                                     const std::vector<double>& reco_zenith);

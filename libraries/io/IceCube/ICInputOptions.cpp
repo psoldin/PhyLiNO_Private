@@ -16,9 +16,11 @@ namespace io::ic {
       m_LikelihoodType = LikelihoodType::Poisson;
     } else if (likelihood_str == "SAY") {
       m_LikelihoodType = LikelihoodType::SAY;
+    } else if (likelihood_str == "BBLite") {
+      m_LikelihoodType = LikelihoodType::BBLite;
     } else {
       throw std::runtime_error(
-          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson' or 'SAY')");
+          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson', 'SAY' or 'BBLite')");
     }
 
     const std::string backend_str = ic.get<std::string>("Backend", "cpu");
@@ -51,9 +53,13 @@ namespace io::ic {
       m_AstroModel = AstroModel::Powerlaw;
     } else if (astro_model_str == "BrokenPowerlaw") {
       m_AstroModel = AstroModel::BrokenPowerlaw;
+    } else if (astro_model_str == "LogParabola") {
+      m_AstroModel = AstroModel::LogParabola;
+    } else if (astro_model_str == "PowerlawCutoff") {
+      m_AstroModel = AstroModel::PowerlawCutoff;
     } else {
-      throw std::runtime_error(
-          "ICInputOptions: unknown AstroModel '" + astro_model_str + "' (expected 'Powerlaw' or 'BrokenPowerlaw')");
+      throw std::runtime_error("ICInputOptions: unknown AstroModel '" + astro_model_str +
+                               "' (expected 'Powerlaw', 'BrokenPowerlaw', 'LogParabola' or 'PowerlawCutoff')");
     }
 
     m_ERefGeV             = ic.get<double>("ERefGeV", m_ERefGeV);

@@ -82,6 +82,13 @@ namespace scanseed {
       return best != nullptr ? *best : m_Fallback;
     }
 
+    /// The fallback itself, for a caller that needs the start values before any
+    /// point exists -- the free fit that opens a scan.
+    [[nodiscard]] std::vector<double> fallback() const {
+      const std::scoped_lock lock(m_Mutex);
+      return m_Fallback;
+    }
+
     /// Number of points remembered. For reporting.
     [[nodiscard]] std::size_t size() const {
       const std::scoped_lock lock(m_Mutex);

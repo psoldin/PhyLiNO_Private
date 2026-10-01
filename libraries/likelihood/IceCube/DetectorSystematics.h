@@ -38,8 +38,14 @@ namespace ana::ic {
    */
   class DetectorSystematics {
    public:
+    /**
+     * `file_bins` maps the sample's bins onto the grid the gradient file was
+     * exported in (io::ic::make_bin_map); the default identity map is a file
+     * already in the sample's own binning.
+     */
     DetectorSystematics(const io::ic::Binning& binning, const std::string& gradient_file,
-                        std::span<const double> bin_scale = {});
+                        std::span<const double> bin_scale = {},
+                        const io::ic::BinMap&   file_bins = io::ic::BinMap{});
     ~DetectorSystematics() = default;
 
     bool check_and_recalculate(const ParameterWrapper& parameter);
@@ -63,7 +69,7 @@ namespace ana::ic {
     std::vector<double> m_MuDelta;
     std::vector<double> m_SsqDelta;
 
-    void load(const std::string& path, int total_bins);
+    void load(const std::string& path, int total_bins, const io::ic::BinMap& file_bins);
   };
 
 }  // namespace ana::ic

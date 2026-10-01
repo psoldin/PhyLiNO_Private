@@ -28,6 +28,7 @@ namespace result::ic {
   struct ProtoStoredFit {
     bool                          converged = false;
     double                        llh       = 0.0;
+    double                        edm       = 0.0;  ///< Estimated distance to the minimum, in -2 log L units.
     std::map<std::string, double> parameter_values;  ///< Fitted value, keyed by config name.
   };
 

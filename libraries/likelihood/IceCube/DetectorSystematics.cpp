@@ -24,11 +24,12 @@ namespace ana::ic {
 
   DetectorSystematics::DetectorSystematics(const io::ic::Binning&        binning,
                                            const std::string&            gradient_file,
-                                           const std::span<const double> bin_scale) {
+                                           const std::span<const double> bin_scale,
+                                           const io::ic::BinMap&         file_bins) {
     const int total_bins = binning.total_bins();
     m_MuDelta.assign(total_bins, 0.0);
     m_SsqDelta.assign(total_bins, 0.0);
-    load(gradient_file, total_bins);
+    load(gradient_file, total_bins, file_bins);
 
     if (bin_scale.empty()) return;
     if (bin_scale.size() != static_cast<std::size_t>(total_bins))
@@ -53,10 +54,17 @@ namespace ana::ic {
               << mean / static_cast<double>(bin_scale.size()) << ")\n";
   }
 
-  void DetectorSystematics::load(const std::string& path, const int total_bins) {
+  void DetectorSystematics::load(const std::string& path, const int total_bins,
+                                 const io::ic::BinMap& file_bins) {
     std::ifstream in(path);
     if (!in)
       throw std::runtime_error("DetectorSystematics: cannot open gradient file '" + path + "'");
+
+    // Rows the file itself carries: the sample's own bin count, unless the sample
+    // fits a sub-grid of the exported binning, in which case the file is read whole
+    // and gathered down (see io::ic::make_bin_map).
+    const int           file_rows = file_bins.identity() ? total_bins : file_bins.source_bins;
+    std::vector<double> row(file_rows, 0.0);
 
     std::string line;
     if (!next_line(in, line))
@@ -74,9 +82,11 @@ namespace ana::ic {
       if (word != "gradients" || bins_key != "bins" || params_key != "params" || scale_key != "lt_scale")
         throw std::runtime_error("DetectorSystematics: '" + path +
                                  "' has no '# gradients bins <N> params <K> lt_scale <s>' header");
-      if (bins != total_bins)
+      if (bins != file_rows)
         throw std::runtime_error("DetectorSystematics: '" + path + "' declares " + std::to_string(bins) +
-                                 " bins, the sample's binning has " + std::to_string(total_bins));
+                                 " bins, the sample's binning has " + std::to_string(total_bins) +
+                                 (file_bins.identity() ? ""
+                                                       : " and its file binning " + std::to_string(file_rows)));
       if (params != params::ic::nDetSysParams)
         throw std::runtime_error("DetectorSystematics: '" + path + "' declares " + std::to_string(params) +
                                  " systematics, expected " + std::to_string(params::ic::nDetSysParams));
@@ -104,24 +114,30 @@ namespace ana::ic {
                                  "' (the export script's order must match params::ic)");
       m_Gradient[k].assign(total_bins, 0.0);
       m_GradientError[k].assign(total_bins, 0.0);
-      for (int b = 0; b < total_bins; ++b)
-        if (!(in >> m_Gradient[k][b] >> m_GradientError[k][b]))
+      std::vector<double> error_row(file_rows, 0.0);
+      for (int b = 0; b < file_rows; ++b)
+        if (!(in >> row[b] >> error_row[b]))
           throw std::runtime_error("DetectorSystematics: '" + path + "' ran out of values in '" + name + "'");
+      io::ic::gather_bins(file_bins, row, m_Gradient[k]);
+      io::ic::gather_bins(file_bins, error_row, m_GradientError[k]);
       std::getline(in, line);  // consume the rest of the last data line
     }
 
     for (int p = 0; p < nPairs; ++p) {
       read_marker("cov");
       m_Covariance[p].assign(total_bins, 0.0);
-      for (int b = 0; b < total_bins; ++b)
-        if (!(in >> m_Covariance[p][b]))
+      for (int b = 0; b < file_rows; ++b)
+        if (!(in >> row[b]))
           throw std::runtime_error("DetectorSystematics: '" + path + "' ran out of covariance values");
+      io::ic::gather_bins(file_bins, row, m_Covariance[p]);
       std::getline(in, line);
     }
 
     std::cout << "DetectorSystematics: loaded " << params::ic::nDetSysParams << " gradients x " << total_bins
               << " bins (+ " << nPairs << " covariance pairs, livetime scale " << m_LivetimeScale << ") from "
-              << path << '\n';
+              << path;
+    if (!file_bins.identity()) std::cout << " (" << file_rows << " bins in the file)";
+    std::cout << '\n';
   }
 
   bool DetectorSystematics::check_and_recalculate(const ParameterWrapper& parameter) {

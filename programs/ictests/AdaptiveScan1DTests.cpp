@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 // STL includes
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -186,7 +187,7 @@ TEST(AdaptiveScan1D, SurvivesPointsWithoutALikelihood) {
 
 /// The walk grows its step while the profile is flat, which can clear a whole
 /// stretch -- the 1 sigma crossing included -- in one jump. Nothing below the
-/// target may be left coarser than one step's worth of likelihood.
+/// target may be left coarser than one step's allowed rise.
 TEST(AdaptiveScan1D, LeavesNoGapWiderThanOneStepsRise) {
   Harness    harness;
   const auto profile = harness.run(asymmetric);
@@ -198,7 +199,7 @@ TEST(AdaptiveScan1D, LeavesNoGapWiderThanOneStepsRise) {
     if (right - left < 2 || std::min(left_value, right_value) >= harness.settings.target)
       continue;
 
-    EXPECT_LE(std::abs(right_value - left_value), harness.settings.gain)
+    EXPECT_LE(std::abs(right_value - left_value), scan1d::allowed_rise(harness.settings, std::min(left_value, right_value)))
         << "gap between " << harness.position(left) << " and " << harness.position(right) << " is unsampled";
   }
 }
@@ -216,5 +217,34 @@ TEST(AdaptiveScan1D, SamplesAroundTheOneSigmaCrossing) {
         ++nearby;
 
     EXPECT_GE(nearby, 2) << "the 1 sigma crossing is not bracketed on side " << direction;
+  }
+}
+
+/// Points are spent where the profile is read: the 1 sigma interval is sampled
+/// finely and the tail out to the target only coarsely, rather than the other
+/// way round as a fixed rise per step would have it.
+TEST(AdaptiveScan1D, IsDenserInsideOneSigmaThanInTheTail) {
+  Harness    harness;
+  const auto profile = harness.run(asymmetric);
+
+  for (const int direction : {-1, 1}) {
+    std::vector<double> inside, outside;
+    for (auto point = profile.begin(); std::next(point) != profile.end(); ++point) {
+      const auto [left, left_value]   = *point;
+      const auto [right, right_value] = *std::next(point);
+      if (left * direction < 0 || right * direction < 0)
+        continue;
+
+      const double spacing = harness.position(right - left);
+      if (std::max(left_value, right_value) <= 1.0)
+        inside.push_back(spacing);
+      else if (std::min(left_value, right_value) >= 1.0 && std::max(left_value, right_value) <= harness.settings.target)
+        outside.push_back(spacing);
+    }
+
+    ASSERT_GE(inside.size(), 3u) << "the 1 sigma interval is not resolved on side " << direction;
+    ASSERT_FALSE(outside.empty());
+    EXPECT_LT(*std::ranges::max_element(inside), *std::ranges::max_element(outside))
+        << "the tail is sampled more finely than the 1 sigma interval on side " << direction;
   }
 }

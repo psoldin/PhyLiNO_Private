@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 namespace ana::ic {
 
@@ -26,7 +27,11 @@ namespace ana::ic {
       R   gamma_2;    // broken PL only
       R   log_ebreak; // broken PL only: log(E_break)
       R   pivot;      // broken PL only: the 100 TeV renormalisation
-      int broken;     // 0 = single power law, 1 = broken power law
+      int broken;     // 0 = single power law (+ extension below), 1 = broken power law
+      R   curvature;  // log-parabola only: AstroParabolaB / ln(10)
+      R   log_epivot; // log-parabola only: log(1e5), NNMFit's fixed 100 TeV anchor
+      R   inv_ecut;   // cutoff only: 1 / E_cut
+      int extended;   // 1 = log-parabola or cutoff factor on top of the single power law
     };
 
     // One group per *chunk* of the CSR-sorted sample (see ICSample's chunk
@@ -38,6 +43,7 @@ namespace ana::ic {
       struct PowerlawParams {
         float eff_norm; float log_eref; float exponent; int write_pe;
         float gamma_2; float log_ebreak; float pivot; int broken;
+        float curvature; float log_epivot; float inv_ecut; int extended;
       };
 
       kernel void powerlaw_hist(
@@ -64,6 +70,11 @@ namespace ana::ic {
             const float shape = exp(-(lx < 0.0f ? p.exponent : p.gamma_2) * lx);
             const float undo  = e * 1.0e-5f;
             w = baseline[i] * p.pivot * shape * undo * undo;
+          } else if (p.extended) {
+            // Log-parabola (curvature) or cutoff (inv_ecut) on top of the single
+            // power law; the unused one of the two is zero.
+            const float lp = loge - p.log_epivot;
+            w = baseline[i] * exp(p.exponent * (loge - p.log_eref) - p.curvature * lp * lp - e_true[i] * p.inv_ecut);
           } else {
             w = baseline[i] * exp(p.exponent * (loge - p.log_eref));
           }
@@ -93,6 +104,7 @@ namespace ana::ic {
       struct PowerlawParams {
         real eff_norm; real log_eref; real exponent; int write_pe;
         real gamma_2; real log_ebreak; real pivot; int broken;
+        real curvature; real log_epivot; real inv_ecut; int extended;
       };
 
       extern "C" __global__ void powerlaw_hist(
@@ -120,6 +132,9 @@ namespace ana::ic {
             const real shape = REXP(-(lx < 0.0 ? p.exponent : p.gamma_2) * lx);
             const real undo  = e * (real)1.0e-5;
             w = baseline[i] * p.pivot * shape * undo * undo;
+          } else if (p.extended) {
+            const real lp = loge - p.log_epivot;
+            w = baseline[i] * REXP(p.exponent * (loge - p.log_eref) - p.curvature * lp * lp - e_true[i] * p.inv_ecut);
           } else {
             w = baseline[i] * REXP(p.exponent * (loge - p.log_eref));
           }
@@ -285,6 +300,57 @@ namespace ana::ic {
     }
   }
 
+  // The single power law times NNMFit's log-parabola or cutoff factor, both
+  // folded into the one exp:
+  //   (E/1e5)^(-b log10(E/1e5)) == exp(-(b / ln 10) * (log E - log 1e5)^2)
+  //   exp(-E / E_cut)           == exp(-E * inv_ecut)
+  // `curvature` = b / ln 10 and `inv_ecut` = 1 / E_cut; the model not in use
+  // passes 0 for its own term. Kept apart from recalculate_cpu_SPL so the plain
+  // power law's loop, the default and most-used model, is left as it was.
+  inline void recalculate_cpu_SPL_extended(const io::ic::ICSample& sample,
+                                           const double eff_norm,
+                                           const double exponent,
+                                           const double Eref,
+                                           const double curvature,
+                                           const double inv_ecut,
+                                           std::span<double> shape_histogram,
+                                           std::span<double> PerEventWeight,
+                                           const bool use_multithreading) noexcept {
+
+    const auto& off      = sample.bin_offsets;
+    const auto& baseline = sample.astro_baseline;
+    const auto& e_true   = sample.e_true;
+    const auto& log_e    = sample.log_e_true;
+    const int n_bins     = static_cast<int>(shape_histogram.size());
+    const double log_eref   = std::log(Eref);
+    const double log_epivot = std::log(1.0e5);
+
+    #pragma omp parallel for schedule(guided) if (use_multithreading)
+    for (int bin = 0; bin < n_bins; ++bin) {
+      double acc = 0.0;
+      for (std::size_t i = off[bin], n = off[bin + 1]; i < n; ++i) {
+        const double lp = log_e[i] - log_epivot;
+        const double w  = baseline[i] * std::exp(exponent * (log_e[i] - log_eref) - curvature * lp * lp
+                                                 - e_true[i] * inv_ecut);
+        acc += w;
+        PerEventWeight[i] = eff_norm * w;
+      }
+      shape_histogram[bin] = acc;
+    }
+  }
+
+  // The two scalars recalculate_cpu_SPL_extended and the GPU kernel's extended
+  // branch take, for the given model: {curvature, inv_ecut}.
+  inline std::pair<double, double> extension_terms(const io::ic::AstroModel  model,
+                                                   const ParameterWrapper&   parameter) noexcept {
+    using namespace params::ic;
+    if (model == io::ic::AstroModel::LogParabola)
+      return {parameter[AstroParabolaB] / std::log(10.0), 0.0};
+    if (model == io::ic::AstroModel::PowerlawCutoff)
+      return {0.0, std::pow(10.0, -parameter[AstroLogECut])};
+    return {0.0, 0.0};
+  }
+
   inline void recalculate_cpu_BPL(const io::ic::ICSample& sample,
                                   const double eff_norm,
                                   const double g1,
@@ -372,6 +438,21 @@ namespace ana::ic {
                             m_UseMultiThreading);
         break;
       }
+      case io::ic::AstroModel::LogParabola:
+      case io::ic::AstroModel::PowerlawCutoff: {
+        const auto [curvature, inv_ecut] = extension_terms(m_Model, parameter);
+
+        recalculate_cpu_SPL_extended(m_Sample,
+                                     eff_norm,
+                                     m_ReferenceIndex - parameter[SpectralIndex],
+                                     m_ERef,
+                                     curvature,
+                                     inv_ecut,
+                                     m_ShapeHistogram,
+                                     m_PerEventWeight,
+                                     m_UseMultiThreading);
+        break;
+      }
       default:
         return;
     }
@@ -404,6 +485,12 @@ namespace ana::ic {
                               : std::pow(1.0e5 / e_break, g2);
     }
 
+    // Log-parabola / cutoff: the single power law's scalars plus one extension
+    // term, again evaluated in double on the host.
+    const bool extended = m_Model == io::ic::AstroModel::LogParabola ||
+                          m_Model == io::ic::AstroModel::PowerlawCutoff;
+    const auto [curvature, inv_ecut] = extension_terms(m_Model, parameter);
+
     // Fill either a float or a double params struct from the double host
     // scalars, matching the kernel's `real` precision. The kernel reuses
     // `exponent` as gamma_1 in broken-power-law mode.
@@ -417,14 +504,19 @@ namespace ana::ic {
       p.log_ebreak = static_cast<R>(std::log(e_break));
       p.pivot      = static_cast<R>(pivot);
       p.broken     = broken ? 1 : 0;
+      p.curvature  = static_cast<R>(curvature);
+      p.log_epivot = static_cast<R>(std::log(1.0e5));
+      p.inv_ecut   = static_cast<R>(inv_ecut);
+      p.extended   = extended ? 1 : 0;
     };
 
     // Metal-only df64 path for the single-power-law model: same math as the
     // plain-FP32 dispatch below, but through the double-float kernel (see
     // Df64.h / kKernelMetalBodySplDf64) that keeps baseline and logE at close
     // to their source double precision instead of truncating both to a single
-    // float32 mantissa. BPL falls through to the FP32 path unchanged.
-    if (!broken && m_Gpu->language() == GpuLanguage::Metal) {
+    // float32 mantissa. BPL, log-parabola and cutoff fall through to the FP32
+    // path unchanged.
+    if (m_Model == io::ic::AstroModel::Powerlaw && m_Gpu->language() == GpuLanguage::Metal) {
       PowerlawParamsDf64 p{};
       p.exponent             = static_cast<float>(m_ReferenceIndex - gamma);
       const df64::Df32 logeref = df64::df_from_double(std::log(m_ERef));
@@ -483,14 +575,26 @@ namespace ana::ic {
   bool PowerlawFlux::check_and_recalculate(const ParameterWrapper& parameter) {
     using namespace params::ic;
     // Watch exactly the parameters the active model reads: SpectralIndex is
-    // unused in broken-power-law mode, and the three AstroBPL parameters are
-    // unused in single-power-law mode.
+    // unused in broken-power-law mode, the three AstroBPL parameters are
+    // unused in single-power-law mode, and each extended mode adds its one
+    // parameter to the single power law's.
 
     using enum io::ic::AstroModel;
 
-    const bool shape_changed = (m_Model == BrokenPowerlaw)
-                                   ? check_BPL_shape_parameter(parameter)
-                                   : check_SPL_shape_parameter(parameter);
+    bool shape_changed = false;
+    switch (m_Model) {
+      case BrokenPowerlaw:
+        shape_changed = check_BPL_shape_parameter(parameter);
+        break;
+      case LogParabola:
+        shape_changed = check_SPL_shape_parameter(parameter) || parameter.check_parameter_changed(AstroParabolaB);
+        break;
+      case PowerlawCutoff:
+        shape_changed = check_SPL_shape_parameter(parameter) || parameter.check_parameter_changed(AstroLogECut);
+        break;
+      default:
+        shape_changed = check_SPL_shape_parameter(parameter);
+    }
     const bool norm_changed  = parameter.check_parameter_changed(AstroNorm);
 
     if (!m_Seeded) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ICParameter.h"  // params::ic::nBarrParams
+#include "ResponseMatrix.h"
 
 #include <algorithm>
 #include <array>
@@ -70,6 +71,32 @@ namespace io::ic {
     // --- Bin assignment, filled at load time ---
     // bin_idx[i] = flat index in the sample's own Binning, -1 if out of range.
     std::vector<int> bin_idx;
+
+    // --- Forward-folding columns (populated only when the sample's config
+    // carries a "Response" block; empty otherwise) ---
+    //
+    // The response centres and widths, in the coordinates the response is
+    // Gaussian in: log10 of the true energy in dex, the true zenith in radians,
+    // and one width per axis. They are reordered with every other per-event
+    // column so the matrix below, which is built after the sort, indexes the
+    // sorted events. Kept after the build rather than freed: they are 26 MB on
+    // the largest sample and are what any check of the response has to read.
+    std::vector<double> response_truth_log_e;
+    std::vector<double> response_truth_zenith;
+    std::vector<double> response_sigma_log_e;
+    std::vector<double> response_sigma_zenith;
+
+    // Extra reco columns named by the sample's "Categories" list, in that order,
+    // reordered with every other per-event column. Diagnostic only: nothing in
+    // the fit reads them.
+    std::vector<std::string>         category_names;
+    std::vector<std::vector<double>> categories;
+
+    // Per-event detector response projected onto the MC binning, built at load
+    // after sort_into_bins(). With it present the flux histograms are the fold
+    // sum_i w_i f_ib rather than the scatter into bin_idx; see
+    // io::ic::ResponseMatrix.
+    ResponseMatrix response;
 
     // Fraction of this bin's nominal MC weight that survived the sample's
     // topology cut, one entry per MC bin; empty when the sample has no cut.
@@ -148,6 +175,11 @@ namespace io::ic {
       for (auto& grad : barr_conv) reorder(grad);
       for (auto& coefficient : veto_conv) reorder(coefficient);
       for (auto& coefficient : veto_prompt) reorder(coefficient);
+      for (auto& column : categories) reorder(column);
+      reorder(response_truth_log_e);
+      reorder(response_truth_zenith);
+      reorder(response_sigma_log_e);
+      reorder(response_sigma_zenith);
       reorder(bin_idx);
 
       // CSR prefix sum over the now-sorted, valid events.

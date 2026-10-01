@@ -1,5 +1,6 @@
 #include "CudaBackend.h"
 #include "DetectorSystematics.h"
+#include "ICBlinding.h"
 #include "ICComponentBreakdown.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICDataBase.h"
@@ -118,6 +119,24 @@ TEST(BinningTest, NonUniformAxisIndex) {
   ASSERT_TRUE(threw);
 }
 
+// A failed reconstruction is stored as -1 in the parquet, so the energy axis sees
+// log10(-1) == NaN. NaN compares false against everything, so a naive range check
+// lets it through to the truncating cast, which piles it into bin 0.
+TEST(BinningTest, NonFiniteValueIsOutOfRange) {
+  const Axis uniform     = io::ic::parse_axis("Log10Energy", "(2.5, 7.0, 45)");
+  const Axis non_uniform = io::ic::parse_axis("CosZenith", "[-1.0, -0.5, 0.0, 1.0]");
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  ASSERT_TRUE(uniform.index(-1.0) == -1);  // log10(-1) == NaN
+  ASSERT_TRUE(uniform.index(0.0) == -1);   // log10(0)  == -inf
+  ASSERT_TRUE(uniform.index(nan) == -1);
+  ASSERT_TRUE(non_uniform.index(nan) == -1);
+
+  const Binning binning({uniform, io::ic::parse_axis("CosZenith", "(-1.0, 0.0872, 33)")});
+  const double  reco[2] = {-1.0, 2.0};
+  ASSERT_TRUE(binning.bin_index(reco) == -1);
+}
+
 // A binning may mix a uniform energy axis with an explicit-edge zenith axis: that
 // is exactly the cscd_cascade grid (21 x 7 = 147 bins). cscd_muon is one bin.
 TEST(BinningTest, MixedCascadeGrid) {
@@ -144,7 +163,7 @@ TEST(BinningTest, MixedCascadeGrid) {
 // count and the two contiguous blocks components index into.
 TEST(ICParameterTest, Layout) {
   using namespace params::ic;
-  ASSERT_TRUE(number_of_parameters() == 23);
+  ASSERT_TRUE(number_of_parameters() == 25);
   ASSERT_TRUE(nBarrParams == 4);
   ASSERT_TRUE(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -159,6 +178,9 @@ TEST(ICParameterTest, Layout) {
   // Broken-power-law block (NNMFit AstroBPL), contiguous after the galactic norms.
   ASSERT_TRUE(AstroGamma2 == AstroGamma1 + 1);
   ASSERT_TRUE(AstroEBreak == AstroGamma2 + 1);
+  // Log-parabola curvature and cutoff energy follow, one per extended model.
+  ASSERT_TRUE(AstroParabolaB == AstroEBreak + 1);
+  ASSERT_TRUE(AstroLogECut == AstroParabolaB + 1);
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -517,6 +539,92 @@ TEST(SampleConfigTest, ParsesAndValidatesTopology) {
   ASSERT_TRUE(throws(cut + R"(, "Gradients": { "File": "g.txt" })"));
   ASSERT_TRUE(throws(cut + R"(, "DataCounts": "counts.txt")"));
   ASSERT_TRUE(!throws(R"(, "Gradients": { "File": "g.txt" })"));  // without the cut: fine
+}
+
+// "Cuts": { "<name>": { "Branch": ..., "Min": ..., "Max": ... } } is a separate
+// mechanism from the topology cut: thresholds on a continuous column, several
+// at once, and legal alongside a Topology block. Pre-binned inputs still have to
+// be re-exported, but here the config can say so instead of being refused.
+TEST(SampleConfigTest, ParsesAndValidatesEventCuts) {
+  static constexpr char kTemplate[] = R"JSON(
+{
+  "IceCube": {
+    "Binnings": {
+      "grid": {
+        "axes": "Log10Energy, CosZenith",
+        "Log10Energy": "(2.5, 7.0, 45)",
+        "CosZenith": "(-1.0, 0.0872, 33)"
+      }
+    },
+    "Samples": {
+      "s": { "binning": "grid", "parquet": "s.parquet", "components": "astro"EXTRA }
+    }
+  }
+}
+)JSON";
+
+  auto parse_with = [](const std::string& extra) {
+    std::string json(kTemplate);
+    json.replace(json.find("EXTRA"), std::strlen("EXTRA"), extra);
+    boost::property_tree::ptree pt;
+    std::istringstream          iss(json);
+    boost::property_tree::read_json(iss, pt);
+    return io::ic::parse_samples(pt.get_child("IceCube"));
+  };
+
+  auto throws = [&parse_with](const std::string& extra) {
+    try {
+      static_cast<void>(parse_with(extra));
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // No "Cuts" block: no cut.
+  ASSERT_TRUE(!parse_with("")[0].filters_events());
+
+  const auto cut = parse_with(R"(, "Cuts": { "ants": { "Branch": "ANTSCORE", "Min": 0.9 } })");
+  ASSERT_TRUE(cut[0].filters_events());
+  ASSERT_TRUE(cut[0].cuts.size() == 1);
+  ASSERT_TRUE(cut[0].cuts[0].name == "ants");
+  ASSERT_TRUE(cut[0].cuts[0].branch == "ANTSCORE");
+  ASSERT_TRUE(cut[0].cuts[0].min == 0.9);
+  // An unset bound is infinite, so a one-sided cut really is one-sided.
+  ASSERT_TRUE(cut[0].cuts[0].max == std::numeric_limits<double>::infinity());
+
+  // Both bounds are exclusive, matching the `score > cut` the exports apply.
+  ASSERT_TRUE(!cut[0].cuts[0].keeps(0.9));
+  ASSERT_TRUE(cut[0].cuts[0].keeps(0.90001));
+  // A NaN was never scored, so no threshold on that score can keep it.
+  ASSERT_TRUE(!cut[0].cuts[0].keeps(std::numeric_limits<double>::quiet_NaN()));
+
+  // Several cuts are an intersection, and they are independent of Topology.
+  const auto both = parse_with(
+      R"(, "Topology": { "Branch": "c", "Values": "1" })"
+      R"(, "Cuts": { "a": { "Branch": "s1", "Min": 0.5 }, "b": { "Branch": "s2", "Max": 2.0 } })");
+  ASSERT_TRUE(both[0].filters_topology());
+  ASSERT_TRUE(both[0].cuts.size() == 2);
+  ASSERT_TRUE(both[0].cuts[1].branch == "s2");
+  ASSERT_TRUE(both[0].cuts[1].max == 2.0);
+  ASSERT_TRUE(both[0].cuts[1].min == -std::numeric_limits<double>::infinity());
+
+  // A cut that cannot select anything, or selects everything, is a config error
+  // rather than a silent no-op in either direction.
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "s" } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Min": 0.5 } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "", "Min": 0.5 } })"));
+  ASSERT_TRUE(throws(R"(, "Cuts": { "a": { "Branch": "s", "Min": 2.0, "Max": 1.0 } })"));
+
+  // Pre-binned inputs must be re-exported under the cut; the config asserts that
+  // with CutsMatchInputs, which is meaningless (and so refused) without a cut.
+  const std::string ants   = R"(, "Cuts": { "a": { "Branch": "ANTSCORE", "Min": 0.9 } })";
+  const std::string grads  = R"(, "Gradients": { "File": "g.txt" })";
+  ASSERT_TRUE(throws(ants + grads));
+  ASSERT_TRUE(!throws(ants + grads + R"(, "CutsMatchInputs": true)"));
+  ASSERT_TRUE(throws(R"(, "CutsMatchInputs": true)"));
+  // DataCounts are not filtered by this framework at all, so no flag excuses them.
+  ASSERT_TRUE(throws(ants + R"(, "DataCounts": "counts.txt", "CutsMatchInputs": true)"));
 }
 
 // A sample whose analysis binning carries an RA axis keeps a second, RA-free
@@ -1070,6 +1178,55 @@ TEST(SampleLikelihoodTest, AsimovIsMinimum) {
   // nonzero value. The Poisson term does subtract it; that zero is asserted
   // by LikelihoodParityTest.PoissonAsimovIsExactlyZero.
   ASSERT_TRUE(llh_nominal < llh_perturbed);
+}
+
+// The per-bin -2lnL the results writers report must sum back to the sample's
+// own partial_llh(). It is computed by a separate loop (result::ic::bin_likelihood
+// walks the analysis bins; the likelihood collapses each RA slice instead), so a
+// term dropped on one side -- the saturated Poisson subtraction, say, which SAY
+// does not apply and Poisson does -- would leave the sum silently offset while
+// every bin still looked reasonable.
+TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning binning = synthetic_binning();
+  const io::ic::ICSample sample = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "unit_test_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  const std::vector<double> nominal_values = nominal_parameter_values();
+  ParameterWrapper nominal(params::ic::number_of_parameters());
+  nominal.reset_parameter(nominal_values.data());
+
+  // Away from the Asimov point, so the sum is a nonzero number that an offset
+  // could not hide in.
+  std::vector<double> perturbed_values = nominal_values;
+  perturbed_values[params::ic::AstroNorm] *= 1.5;
+  ParameterWrapper perturbed(params::ic::number_of_parameters());
+  perturbed.reset_parameter(perturbed_values.data());
+
+  for (const bool use_say : {false, true}) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say);
+    likelihood.generate_asimov(nominal);
+
+    const double llh = likelihood.partial_llh(perturbed);
+    ASSERT_TRUE(std::isfinite(llh));
+
+    const std::vector<double> bins = result::ic::bin_likelihood(likelihood, use_say);
+    ASSERT_EQ(bins.size(), binning.total_bins());
+
+    double sum = 0.0;
+    for (const double v : bins)
+      sum += v;
+
+    // Same terms, different summation order, so this is a float-comparison
+    // tolerance and not a physics one.
+    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say;
+  }
 }
 
 // The conventional/prompt split the results writers report must decompose the
@@ -1942,6 +2099,180 @@ TEST(PowerlawFluxTest, SinglePowerLawUnchanged) {
   ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
 }
 
+// NNMFit LogParabola = Powerlaw + SpectralIndex + LogEnergyIndex
+// (parameters/logenergy_index.py): the single power law times
+// (E/1e5)^(-b log10(E/1e5)), anchored at a fixed 100 TeV. Checked against the
+// NNMFit formula evaluated by hand with pow() rather than against the exp form
+// the component uses.
+TEST(PowerlawFluxTest, LogParabola) {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e5, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 5.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  const double norm = 1.6, gamma = 2.5, b = 0.3;
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]      = norm;
+  values[params::ic::SpectralIndex]  = gamma;
+  values[params::ic::AstroParabolaB] = b;
+  values[params::ic::AstroLogECut]   = 3.0;  // read only in cutoff mode: must not matter here
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::LogParabola);
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  double expected = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double x = sample.e_true[i] / 1.0e5;
+    expected += sample.astro_baseline[i] * 0.5 * norm * std::pow(x, 2.0 - gamma) *
+                std::pow(x, -b * std::log10(x));
+  }
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+
+  // The curvature must bite, and only the log-parabola's own parameter triggers
+  // a recalculation: moving the cutoff energy changes nothing in this mode. The
+  // same wrapper is reset, since its change flags compare against its own
+  // previous values (a fresh one would report every non-zero entry as changed).
+  values[params::ic::AstroLogECut] = 5.0;
+  parameter.reset_parameter(values.data());
+  ASSERT_FALSE(flux.check_and_recalculate(parameter));
+
+  values[params::ic::AstroParabolaB] = 0.0;
+  ParameterWrapper flat(params::ic::number_of_parameters());
+  flat.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(flat));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) > 1e-6 * expected);
+
+  // b = 0 is the single power law.
+  PowerlawFlux spl(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
+  ASSERT_TRUE(spl.check_and_recalculate(flat));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - spl.histogram()[0]) < 1e-14 * spl.histogram()[0]);
+}
+
+// NNMFit Powerlaw + SpectralIndex + Cutoff (parameters/cutoff.py): the single
+// power law times exp(-E / 10^cutoff_pos).
+TEST(PowerlawFluxTest, PowerlawCutoff) {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e5, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 5.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  const double norm = 1.6, gamma = 2.2, log_ecut = 5.5;
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]      = norm;
+  values[params::ic::SpectralIndex]  = gamma;
+  values[params::ic::AstroLogECut]   = log_ecut;
+  values[params::ic::AstroParabolaB] = 0.7;  // read only in log-parabola mode
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::PowerlawCutoff);
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  double expected = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double e = sample.e_true[i];
+    expected += sample.astro_baseline[i] * 0.5 * norm * std::pow(e / 1.0e5, 2.0 - gamma) *
+                std::exp(-e / std::pow(10.0, log_ecut));
+  }
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+
+  // Same wrapper, so its change flags see only this step (see LogParabola).
+  values[params::ic::AstroParabolaB] = -0.4;
+  parameter.reset_parameter(values.data());
+  ASSERT_FALSE(flux.check_and_recalculate(parameter));
+
+  // A cutoff far above every event is the single power law.
+  values[params::ic::AstroLogECut] = 30.0;
+  ParameterWrapper far(params::ic::number_of_parameters());
+  far.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(far));
+  PowerlawFlux spl(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
+  ASSERT_TRUE(spl.check_and_recalculate(far));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - spl.histogram()[0]) < 1e-12 * spl.histogram()[0]);
+}
+
+// The GPU kernels' extended branch must reproduce the CPU oracle for both new
+// models, through the full SampleLikelihood (histogram and SAY ssq).
+TEST(PowerlawFluxTest, GpuLogParabolaAndCutoffMatchCpu) {
+  using ana::ic::AstroModel;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "gpu_extended_astro_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  for (const AstroModel model : {AstroModel::LogParabola, AstroModel::PowerlawCutoff}) {
+    SCOPED_TRACE(model == AstroModel::LogParabola ? "LogParabola" : "PowerlawCutoff");
+    ana::ic::GlobalFluxSettings settings = synthetic_settings();
+    settings.astro_model                 = model;
+
+    std::vector<double> values = nominal_parameter_values();
+    values[params::ic::AstroParabolaB] = 0.2;
+    values[params::ic::AstroLogECut]   = 5.5;
+    ParameterWrapper nominal(params::ic::number_of_parameters());
+    nominal.reset_parameter(values.data());
+
+    values[params::ic::SpectralIndex]  = 2.6;
+    values[params::ic::AstroParabolaB] = 0.35;
+    values[params::ic::AstroLogECut]   = 5.0;
+    ParameterWrapper perturbed(params::ic::number_of_parameters());
+    perturbed.reset_parameter(values.data());
+
+    SampleLikelihood cpu(sample, cfg, settings, /*gpu=*/nullptr, /*use_say=*/true);
+    cpu.generate_asimov(nominal);
+    const double llh_cpu = cpu.partial_llh(perturbed);
+    ASSERT_TRUE(std::isfinite(llh_cpu));
+
+    for (const GpuBackendCase& backend_case : backends) {
+      SCOPED_TRACE(backend_case.name);
+      const auto       backend = backend_case.make();
+      SampleLikelihood gpu(sample, cfg, settings, backend->create_session(), /*use_say=*/true);
+      gpu.generate_asimov(nominal);
+
+      const double llh_gpu   = gpu.partial_llh(perturbed);
+      const double tolerance = backend_case.fp64 ? 1.0e-12 : 1.0e-4;
+      ASSERT_TRUE(std::isfinite(llh_gpu));
+      ASSERT_LT(std::fabs(llh_cpu - llh_gpu) / std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0}),
+                tolerance);
+
+      const auto pred_cpu = cpu.predicted();
+      const auto pred_gpu = gpu.predicted();
+      for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
+        const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
+        ASSERT_LT(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale, tolerance) << "bin " << b;
+      }
+    }
+  }
+}
+
 // The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
 //   e  = rescale * 10^p - anchor        (both 100 GeV in the combined config)
 //   PF = 10^(a + b*e + c*e^2)           per event, per component
@@ -2092,6 +2423,76 @@ TEST(TemplateFluxTest, RatesAndFluctuations) {
     threw = true;
   }
   std::remove(bad.c_str());
+  ASSERT_TRUE(threw);
+}
+
+// A sample may fit a sub-grid of the binning its pre-binned inputs were exported
+// in -- dropping the zenith bins that reach above the horizon, say. The template
+// is then read whole and gathered down, so no re-export is needed. Rebinning is
+// not on offer: a target bin that splits or merges source bins is rejected.
+TEST(TemplateFluxTest, SubGridFileBinning) {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+
+  const Binning source({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                        io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 4)")});
+  const Binning target({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                        io::ic::parse_axis("CosZenith", "(-1.0, 0.0, 2)")});
+
+  const io::ic::BinMap map = io::ic::make_bin_map(source, target);
+  ASSERT_TRUE(!map.identity());
+  ASSERT_TRUE(map.source_bins == 8);
+  const int expected[4] = {0, 1, 4, 5};
+  for (int b = 0; b < 4; ++b) ASSERT_TRUE(map.index[b] == expected[b]);
+
+  // Identical grids cost the loaders nothing.
+  ASSERT_TRUE(io::ic::make_bin_map(source, source).identity());
+
+  // Half a source bin cannot be gathered, only rebinned.
+  bool split_rejected = false;
+  try {
+    io::ic::make_bin_map(source, Binning({io::ic::parse_axis("Log10Energy", "(2.0, 4.0, 2)"),
+                                          io::ic::parse_axis("CosZenith", "(-1.0, 0.25, 5)")}));
+  } catch (const std::runtime_error&) {
+    split_rejected = true;
+  }
+  ASSERT_TRUE(split_rejected);
+
+  const std::string path = "ictests_template_subgrid.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 8\n";
+    for (int b = 0; b < 8; ++b) out << (b + 1) * 1.0e-7 << ' ' << (b + 1) * 1.0e-8 << '\n';
+  }
+
+  const double livetime = 1.0e8;
+  const double norm     = 2.0;
+  TemplateFlux flux(target, path, params::ic::MuonGunNorm, livetime, map);
+
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::MuonGunNorm] = norm;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  ASSERT_TRUE(flux.histogram().size() == 4);
+  for (int b = 0; b < 4; ++b) {
+    const double rate  = (expected[b] + 1) * 1.0e-7;
+    const double sigma = (expected[b] + 1) * 1.0e-8;
+    const double mu    = norm * rate * livetime;
+    const double ssq   = (norm * sigma * livetime) * (norm * sigma * livetime);
+    ASSERT_TRUE(std::abs(flux.histogram()[b] - mu) < 1e-9 * mu);
+    ASSERT_TRUE(std::abs(flux.fluctuation()[b] - ssq) < 1e-9 * ssq);
+  }
+
+  // Without the map the same file is a plain bin-count mismatch, as before.
+  bool threw = false;
+  try {
+    TemplateFlux unmapped(target, path, params::ic::MuonGunNorm, livetime);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  std::remove(path.c_str());
   ASSERT_TRUE(threw);
 }
 
@@ -2644,14 +3045,21 @@ namespace {
     ASSERT_TRUE(sink->Close().ok());
   }
 
-  // The four standard-mask columns, all passing, as the typed columns
-  // ICDataBase::standard_mask expects (uint8 flags, int32 fit statuses).
+  // The four standard-mask columns, all passing. The NNMFit datasets store them
+  // as uint8 flags and int32 fit statuses; other producers (the ANTS export)
+  // write all four as int64, so the reader must handle either width.
   void append_passing_mask_columns(std::vector<std::shared_ptr<arrow::Field>>& fields,
                                    std::vector<std::shared_ptr<arrow::Array>>& arrays,
-                                   const std::string& reco_energy, int64_t n_rows) {
-    auto flag = [n_rows](bool is_uint8) {
+                                   const std::string& reco_energy, int64_t n_rows,
+                                   bool as_int64 = false) {
+    auto flag = [n_rows, as_int64](bool is_exists) {
       std::shared_ptr<arrow::Array> array;
-      if (is_uint8) {
+      const int64_t                 value = is_exists ? 1 : 0;
+      if (as_int64) {
+        arrow::Int64Builder builder;
+        EXPECT_TRUE(builder.AppendValues(std::vector<int64_t>(n_rows, value)).ok());
+        EXPECT_TRUE(builder.Finish(&array).ok());
+      } else if (is_exists) {
         arrow::UInt8Builder builder;
         EXPECT_TRUE(builder.AppendValues(std::vector<uint8_t>(n_rows, 1)).ok());
         EXPECT_TRUE(builder.Finish(&array).ok());
@@ -2663,13 +3071,18 @@ namespace {
       return array;
     };
 
-    for (const auto& [name, is_uint8] : std::vector<std::pair<std::string, bool>>{
+    auto type = [as_int64](bool is_exists) {
+      if (as_int64) return arrow::int64();
+      return is_exists ? arrow::uint8() : arrow::int32();
+    };
+
+    for (const auto& [name, is_exists] : std::vector<std::pair<std::string, bool>>{
              {reco_energy + "_exists", true},
              {reco_energy + "_fit_status", false},
              {"reco_dir_exists", true},
              {"reco_dir_fit_status", false}}) {
-      fields.push_back(arrow::field(name, is_uint8 ? arrow::uint8() : arrow::int32()));
-      arrays.push_back(flag(is_uint8));
+      fields.push_back(arrow::field(name, type(is_exists)));
+      arrays.push_back(flag(is_exists));
     }
   }
 
@@ -2777,6 +3190,158 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   std::remove(data_path.c_str());
 }
 
+// The event cut has to reach the MC and the data, and has to compose with a
+// topology cut rather than replace it: the two select on different columns and a
+// sample may want both.
+TEST(ICDataBaseTest, EventCutsApplyToMcAndData) {
+  const std::string mc_path   = "ictests_eventcut_mc.parquet";
+  const std::string data_path = "ictests_eventcut_data.parquet";
+
+  // Six MC events in the binning below. The NaN score was never scored, so no
+  // threshold may keep it.
+  const std::vector<double> score{0.10, 0.50, 0.90, 0.95, 0.99,
+                                  std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> classification{1.0, 1.0, 2.0, 2.0, 1.0, 1.0};
+  const std::vector<double> reco_energy{1.0e3, 3.0e3, 1.0e4, 3.0e4, 1.0e5, 3.0e5};  // log10 in [2, 7)
+  const std::vector<double> reco_zenith{2.0, 2.0, 2.0, 2.0, 2.0, 2.0};  // cos = -0.416, in range
+
+  write_parquet(mc_path, {{"energy_truncated", reco_energy},
+                          {"zenith_MPEFit", reco_zenith},
+                          {"MCPrimaryEnergy", {1.0e3, 2.0e3, 3.0e3, 4.0e3, 5.0e3, 6.0e3}},
+                          {"powerlaw", {1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8}},
+                          {"ANTSCORE", score},
+                          {"classification", classification}});
+
+  // Data: four events, same columns, two above a 0.5 threshold.
+  {
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : std::vector<std::pair<std::string, std::vector<double>>>{
+             {"energy_truncated", {1.0e3, 3.0e3, 1.0e4, 3.0e4}},
+             {"zenith_MPEFit", {2.0, 2.0, 2.0, 2.0}},
+             {"ANTSCORE", {0.10, 0.90, 0.95, std::numeric_limits<double>::quiet_NaN()}},
+             {"classification", {1.0, 1.0, 2.0, 1.0}}}) {
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(double_array(values));
+    }
+    append_passing_mask_columns(fields, arrays, "energy_truncated", 4);
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 4).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto load = [&](const std::vector<io::ic::EventCut>& cuts, const std::vector<int>& labels) {
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet         = mc_path;
+    cfg.data_path       = data_path;
+    cfg.components      = {"astro"};
+    cfg.cuts            = cuts;
+    cfg.topology_branch = labels.empty() ? "" : "classification";
+    cfg.topology_values = labels;
+    return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
+  };
+
+  auto data_total = [](const io::ic::ICDataBase& db) {
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    return total;
+  };
+
+  const io::ic::EventCut above_half{.name = "ants", .branch = "ANTSCORE", .min = 0.5};
+
+  const auto unfiltered = load({}, {});
+  ASSERT_TRUE(unfiltered.sample(0).size() == 6);
+  ASSERT_TRUE(data_total(unfiltered) == 4.0);
+
+  // MC and data are cut by the same rule; the bound is exclusive, so the 0.50
+  // event goes, and the NaN goes with it.
+  const auto cut = load({above_half}, {});
+  ASSERT_TRUE(cut.sample(0).size() == 3);
+  ASSERT_TRUE(data_total(cut) == 2.0);
+
+  // The kept events must be the high-scoring ones, not merely the right count:
+  // a mask applied at the wrong offset would keep the same number of rows.
+  ASSERT_TRUE(cut.sample(0).e_true[0] == 3.0e3);
+  ASSERT_TRUE(cut.sample(0).e_true[1] == 4.0e3);
+  ASSERT_TRUE(cut.sample(0).e_true[2] == 5.0e3);
+
+  // An upper bound cuts from the other side, and two cuts intersect.
+  const io::ic::EventCut below_096{.name = "hi", .branch = "ANTSCORE", .max = 0.96};
+  ASSERT_TRUE(load({below_096}, {}).sample(0).size() == 4);              // 0.10, 0.50, 0.90, 0.95
+  ASSERT_TRUE(load({above_half, below_096}, {}).sample(0).size() == 2);  // 0.90, 0.95
+
+  // Composes with the topology cut instead of replacing it: class 1 AND > 0.5
+  // leaves the 0.99 event alone. Both sides of the likelihood see it.
+  const auto both = load({above_half}, {1});
+  ASSERT_TRUE(both.sample(0).size() == 1);
+  ASSERT_TRUE(both.sample(0).e_true[0] == 5.0e3);
+  ASSERT_TRUE(data_total(both) == 1.0);
+
+  std::remove(mc_path.c_str());
+  std::remove(data_path.c_str());
+}
+
+// The standard-mask flags are uint8/int32 in the NNMFit datasets but int64 in
+// others. Casting the chunk to one fixed Arrow type reinterprets the buffer
+// instead of converting it: an int64 1 is a uint8 1 followed by seven 0s, so
+// only every eighth row passes and 87.5% of the data vanishes with no error.
+TEST(ICDataBaseTest, StandardMaskAcceptsWiderFlagTypes) {
+  const std::string mc_path = "ictests_maskwidth_mc.parquet";
+
+  // Sixteen rows, so a byte-wise misread keeps exactly two of them.
+  constexpr int64_t     kRows = 16;
+  std::vector<double>   reco_energy(kRows, 1.0e4);
+  std::vector<double>   reco_zenith(kRows, 2.0);  // cos = -0.416, in range
+
+  write_parquet(mc_path, {{"energy_truncated", {1.0e4}},
+                          {"zenith_MPEFit", {2.0}},
+                          {"MCPrimaryEnergy", {1.0e3}},
+                          {"powerlaw", {1.0e-8}}});
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto data_total = [&](bool as_int64) {
+    const std::string data_path = "ictests_maskwidth_data.parquet";
+    {
+      std::vector<std::shared_ptr<arrow::Field>> fields{
+          arrow::field("energy_truncated", arrow::float64()),
+          arrow::field("zenith_MPEFit", arrow::float64())};
+      std::vector<std::shared_ptr<arrow::Array>> arrays{double_array(reco_energy),
+                                                        double_array(reco_zenith)};
+      append_passing_mask_columns(fields, arrays, "energy_truncated", kRows, as_int64);
+
+      const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+      auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+      EXPECT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, kRows).ok());
+      EXPECT_TRUE(sink->Close().ok());
+    }
+
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet   = mc_path;
+    cfg.data_path = data_path;
+    cfg.components = {"astro"};
+    const io::ic::ICDataBase db{std::vector<io::ic::SampleConfig>{cfg}};
+
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    std::remove(data_path.c_str());
+    return total;
+  };
+
+  // Every row passes the mask, so every row must reach the histogram whichever
+  // integer width the producer chose.
+  ASSERT_TRUE(data_total(false) == static_cast<double>(kRows));
+  ASSERT_TRUE(data_total(true) == static_cast<double>(kRows));
+
+  std::remove(mc_path.c_str());
+}
+
 // A topology column that is not stored as a double would be reinterpreted by
 // the unchecked DoubleArray cast in get_double_column, silently filtering on
 // garbage. It must fail the load instead.
@@ -2815,4 +3380,212 @@ TEST(ICDataBaseTest, RejectsNonDoubleTopologyColumn) {
 
   EXPECT_THROW(io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg}), std::runtime_error);
   std::remove(path.c_str());
+}
+
+// Some reconstruction branches are stored single-precision. Those must load and
+// widen exactly, not be rejected alongside the integer columns above and not be
+// reinterpreted by an unchecked DoubleArray cast.
+TEST(ICDataBaseTest, ReadsFloatColumns) {
+  const std::string path = "ictests_float_columns.parquet";
+
+  // Exactly representable in float32, so the widened values compare equal.
+  const std::vector<float> reco_energy{1.0e3F, 3.0e4F};
+  const std::vector<float> reco_zenith{2.0F, 2.0F};
+  const std::vector<float> true_energy{1.5e3F, 2.5e3F};
+  {
+    auto float_array = [](const std::vector<float>& values) {
+      arrow::FloatBuilder           builder;
+      std::shared_ptr<arrow::Array> array;
+      EXPECT_TRUE(builder.AppendValues(values).ok());
+      EXPECT_TRUE(builder.Finish(&array).ok());
+      return array;
+    };
+
+    std::vector<std::shared_ptr<arrow::Field>> fields{
+        arrow::field("energy_truncated", arrow::float32()),
+        arrow::field("zenith_MPEFit", arrow::float32()),
+        arrow::field("MCPrimaryEnergy", arrow::float32()),
+        arrow::field("powerlaw", arrow::float64())};
+    std::vector<std::shared_ptr<arrow::Array>> arrays{
+        float_array(reco_energy), float_array(reco_zenith), float_array(true_energy),
+        double_array({1.0e-8, 1.0e-8})};
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 2).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning        binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                                Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+  io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+  cfg.parquet    = path;
+  cfg.components = {"astro"};
+
+  const io::ic::ICDataBase db(std::vector<io::ic::SampleConfig>{cfg});
+  const auto&              sample = db.sample(0);
+  ASSERT_TRUE(sample.size() == 2);
+  EXPECT_DOUBLE_EQ(sample.e_true[0], 1.5e3);
+  EXPECT_DOUBLE_EQ(sample.e_true[1], 2.5e3);
+
+  std::remove(path.c_str());
+}
+
+// --- Blinding ---------------------------------------------------------------
+//
+// The whole point of --blind is that the written file cannot be used to recover
+// the signal, so what it hides is worth pinning: an off-by-one on the energy
+// axis leaks the first bin above the threshold, and the leak would look like a
+// perfectly ordinary result.
+
+TEST(BlindingTest, HidesTheSignalParametersOnly) {
+  for (const std::string& name : {"AstroNorm", "SpectralIndex", "PromptNorm", "AstroGamma1",
+                                  "AstroGamma2", "AstroEBreak", "AstroParabolaB", "AstroLogECut"})
+    EXPECT_TRUE(result::ic::is_blinded_parameter(name)) << name;
+
+  for (const std::string& name : {"ConvNorm", "BarrH", "BarrW", "BarrY", "BarrZ", "CRGrad",
+                                  "DeltaGamma", "MuonNorm", "MuonGunNorm", "VetoThreshold",
+                                  "DOMEff", "IceAbs", "IceScat", "HoleIceP0", "HoleIceP1",
+                                  "GalacticNorm0", "GalacticNorm1"})
+    EXPECT_FALSE(result::ic::is_blinded_parameter(name)) << name;
+}
+
+TEST(BlindingTest, HidesTheAstroComponentOnly) {
+  EXPECT_TRUE(result::ic::is_blinded_component("astro"));
+
+  // The rest of the breakdown stays: it is what a blinded result is inspected for.
+  for (const std::string& name : {"atmospheric", "atmospheric_veto", "atmospheric_conv",
+                                  "atmospheric_prompt", "template", "systematicsDelta",
+                                  "galactic"})
+    EXPECT_FALSE(result::ic::is_blinded_component(name)) << name;
+}
+
+TEST(BlindingTest, ZeroesEveryBinAboveTheThreshold) {
+  // 2.8 to 7.0 in steps of 0.2: the threshold (log10 1e4 = 4.0) is an exact
+  // edge, so the first six energy bins survive.
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.8, 7.0, 21},
+                         Axis{Axis::Kind::CosZenith, -1.0, 1.0, 7}});
+  EXPECT_EQ(result::ic::visible_bins(binning), 6u * 7u);
+
+  std::vector<double> bins(static_cast<std::size_t>(binning.total_bins()), 1.0);
+  result::ic::blind_bins(binning, bins);
+  for (std::size_t i = 0; i < bins.size(); ++i)
+    EXPECT_DOUBLE_EQ(bins[i], i < 6u * 7u ? 1.0 : 0.0) << "bin " << i;
+}
+
+TEST(BlindingTest, HidesTheBinStraddlingTheThreshold) {
+  // A bin that reaches above 1e4 GeV is hidden whole, however little of it does.
+  const Binning straddling({Axis{Axis::Kind::Log10Energy, 2.6, 4.8, 1},
+                            Axis{Axis::Kind::CosZenith, -1.0, 1.0, 1}});
+  EXPECT_EQ(result::ic::visible_bins(straddling), 0u);
+
+  const Binning edges({Axis{Axis::Kind::Log10Energy, 2.0, 5.0, 3, {2.0, 3.0, 4.5, 5.0}},
+                       Axis{Axis::Kind::CosZenith, -1.0, 1.0, 2}});
+  EXPECT_EQ(result::ic::visible_bins(edges), 1u * 2u);
+
+  // A binning that does not start with an energy axis is not one this knows how
+  // to blind, so it hides everything instead of guessing.
+  const Binning no_energy({Axis{Axis::Kind::CosZenith, -1.0, 1.0, 4}});
+  EXPECT_EQ(result::ic::visible_bins(no_energy), 0u);
+}
+
+// --- The parameter explorer's stack -------------------------------------------
+//
+// These two need a built prediction, so they live here with the synthetic sample
+// fixtures rather than in ExplorerModelTests.cpp, whose projection tests need no
+// sample at all.
+
+// The explorer stacks four curves by default -- astro, atmospheric, template,
+// galactic -- and drops systematicsDelta, which is a signed correction rather
+// than a component. That choice is only honest if the four plus the correction
+// reconstruct the prediction the likelihood actually used. If they do not, the
+// plot is missing a contribution and nothing else would say so.
+TEST(ICExplorerStackTest, DefaultStackPlusSystematicsDeltaIsThePrediction) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "explorer_stack_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  std::vector<double> values     = nominal_parameter_values();
+  values[params::ic::ConvNorm]   = 1.3;
+  values[params::ic::PromptNorm] = 0.7;
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  likelihood.generate_asimov(parameter);
+  ASSERT_TRUE(std::isfinite(likelihood.partial_llh(parameter)));
+
+  const auto components = result::ic::component_breakdown(likelihood, parameter);
+
+  const auto bins_of = [&](const std::string& key) -> const std::vector<double>& {
+    for (const auto& [name, bins] : components)
+      if (name == key) return bins;
+    throw std::logic_error("missing component " + key);
+  };
+
+  // The explorer's default keys, plus the entry it deliberately leaves out.
+  const std::vector<std::string> stack = {"astro", "atmospheric", "template", "galactic",
+                                          "systematicsDelta"};
+
+  const std::span<const double> predicted = likelihood.predicted();
+  ASSERT_TRUE(predicted.size() == static_cast<std::size_t>(binning.total_bins()));
+
+  for (std::size_t b = 0; b < predicted.size(); ++b) {
+    double sum = 0.0;
+    for (const std::string& key : stack) {
+      const auto& bins = bins_of(key);
+      // A component the sample does not declare is empty, which is how the
+      // explorer decides not to draw it.
+      if (!bins.empty())
+        sum += bins[b];
+    }
+
+    const double scale = std::max(std::fabs(predicted[b]), 1.0e-300);
+    ASSERT_TRUE(std::fabs(sum - predicted[b]) / scale < 1.0e-12)
+        << "bin " << b << ": stack " << sum << " vs prediction " << predicted[b];
+  }
+}
+
+// The explorer re-evaluates on every slider move and expects the same parameters
+// to give the same answer -- otherwise a plot would drift while the user changes
+// nothing. Caching inside the flux components is what makes this worth pinning:
+// the second evaluation at an unchanged point takes a different path through
+// check_and_recalculate() than the first.
+TEST(ICExplorerStackTest, RepeatedEvaluationAtOnePointIsStable) {
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const Binning              binning = synthetic_binning();
+  const io::ic::ICSample     sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+  const io::ic::SampleConfig cfg{.name       = "explorer_stability_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, /*use_say=*/true);
+
+  std::vector<double> values = nominal_parameter_values();
+  ParameterWrapper    parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+  likelihood.generate_asimov(parameter);
+
+  const double first  = likelihood.partial_llh(parameter);
+  const double second = likelihood.partial_llh(parameter);
+  ASSERT_TRUE(std::isfinite(first));
+  ASSERT_TRUE(first == second) << "unchanged parameters gave " << first << " then " << second;
+
+  // And a moved parameter has to actually move the answer, or a slider would
+  // look dead.
+  values[params::ic::AstroNorm] *= 1.5;
+  parameter.reset_parameter(values.data());
+  const double moved = likelihood.partial_llh(parameter);
+  ASSERT_TRUE(std::isfinite(moved));
+  ASSERT_TRUE(moved != first) << "AstroNorm moved but -2lnL stayed at " << first;
 }
