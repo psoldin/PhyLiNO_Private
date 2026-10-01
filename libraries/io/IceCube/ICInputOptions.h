@@ -8,8 +8,29 @@
 
 namespace io::ic {
 
+  // SAY is L_Eff of arXiv:1901.04645 (gamma shape mu^2/sigma^2 + 1, mode at mu);
+  // SAYMean is its L_Mean (shape mu^2/sigma^2, mean at mu). Both use the same
+  // per-bin sigma^2.
   enum class LikelihoodType { Poisson,
-                              SAY };
+                              SAY,
+                              SAYMean };
+
+  [[nodiscard]] constexpr bool uses_say(const LikelihoodType t) noexcept {
+    return t == LikelihoodType::SAY || t == LikelihoodType::SAYMean;
+  }
+
+  /** Offset c in the SAY gamma shape alpha = mu^2/sigma^2 + c (0 outside SAY). */
+  [[nodiscard]] constexpr double say_alpha_offset(const LikelihoodType t) noexcept {
+    return t == LikelihoodType::SAY ? 1.0 : 0.0;
+  }
+
+  [[nodiscard]] constexpr const char* likelihood_name(const LikelihoodType t) noexcept {
+    switch (t) {
+      case LikelihoodType::SAY: return "SAY";
+      case LikelihoodType::SAYMean: return "SAYMean";
+      default: return "Poisson";
+    }
+  }
 
   // Compute backend for the per-event flux histograms.
   //   Cpu   - OMP+SIMD reference path, available everywhere.

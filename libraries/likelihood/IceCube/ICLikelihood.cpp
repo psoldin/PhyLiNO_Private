@@ -21,8 +21,9 @@ namespace ana::ic {
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(std::move(gpu_backend))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
-    const bool use_say = input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
-    std::cout << "ICLikelihood: using " << (use_say ? "SAY" : "Poisson") << " likelihood\n";
+    const io::ic::LikelihoodType likelihood_type = input_options.likelihood_type();
+    const bool                   use_say         = io::ic::uses_say(likelihood_type);
+    std::cout << "ICLikelihood: using " << io::ic::likelihood_name(likelihood_type) << " likelihood\n";
 
     const GlobalFluxSettings settings{
         .e_ref_gev                = input_options.e_ref_gev(),
@@ -59,7 +60,8 @@ namespace ana::ic {
       // uploaded MC columns stay shared behind the sessions.
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
           m_DataBase->sample(k), cfg, settings,
-          m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say));
+          m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say,
+          io::ic::say_alpha_offset(likelihood_type)));
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");

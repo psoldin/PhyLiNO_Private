@@ -16,9 +16,11 @@ namespace io::ic {
       m_LikelihoodType = LikelihoodType::Poisson;
     } else if (likelihood_str == "SAY") {
       m_LikelihoodType = LikelihoodType::SAY;
+    } else if (likelihood_str == "SAYMean") {
+      m_LikelihoodType = LikelihoodType::SAYMean;
     } else {
       throw std::runtime_error(
-          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson' or 'SAY')");
+          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson', 'SAY' or 'SAYMean')");
     }
 
     const std::string backend_str = ic.get<std::string>("Backend", "cpu");

@@ -51,7 +51,8 @@ namespace ana::ic {
                      const io::ic::SampleConfig& cfg,
                      const GlobalFluxSettings&   settings,
                      std::shared_ptr<GpuSession> gpu,
-                     bool                        use_say);
+                     bool                        use_say,
+                     double                      say_alpha_offset = 1.0);
 
     /** Recompute prediction for the current parameters; return this sample's -2lnL (no pulls). */
     [[nodiscard]] double partial_llh(const ParameterWrapper& parameter);
@@ -74,6 +75,9 @@ namespace ana::ic {
     /** Per-bin sigma^2 in the analysis binning (SAY only; zero under Poisson).
         Materialised on demand, like predicted(). */
     [[nodiscard]] std::span<const double> ssq() const noexcept;
+
+    /** Gamma-shape offset of the SAY term: 1 for L_Eff (SAY), 0 for L_Mean (SAYMean). */
+    [[nodiscard]] double say_alpha_offset() const noexcept { return m_SayAlphaOffset; }
 
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
@@ -123,6 +127,7 @@ namespace ana::ic {
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
     bool                        m_UseSAY;
+    double                      m_SayAlphaOffset;
     bool                        m_UseMultiThreading;
 
     // Only the components the config declares are constructed; the parquet

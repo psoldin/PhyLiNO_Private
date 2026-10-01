@@ -111,7 +111,7 @@ namespace result::ic {
 
       msg.set_data_total(data_total);
       msg.set_pred_total(pred_total);
-      msg.set_likelihood((info.likelihood_type() == io::ic::LikelihoodType::SAY) ? "SAY" : "Poisson");
+      msg.set_likelihood(io::ic::likelihood_name(info.likelihood_type()));
 
       return msg;
     }

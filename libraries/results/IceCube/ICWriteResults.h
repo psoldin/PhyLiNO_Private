@@ -53,7 +53,7 @@ namespace result::ic {
     double data_total = 0.0;
     double pred_total = 0.0;
 
-    const bool use_say = info.likelihood_type() == io::ic::LikelihoodType::SAY;
+    const bool use_say = io::ic::uses_say(info.likelihood_type());
 
     j["samples"] = nlohmann::json::array();
     for (std::size_t s = 0; s < llh.n_samples(); ++s) {
@@ -136,7 +136,7 @@ namespace result::ic {
     // Summed over all samples (what the single-sample output used to report).
     j["dataTotal"]  = data_total;
     j["predTotal"]  = pred_total;
-    j["likelihood"] = (info.likelihood_type() == io::ic::LikelihoodType::SAY) ? "SAY" : "Poisson";
+    j["likelihood"] = io::ic::likelihood_name(info.likelihood_type());
 
     return j;
   }

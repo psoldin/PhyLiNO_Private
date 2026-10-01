@@ -190,10 +190,12 @@ namespace ana::ic {
                                      const io::ic::SampleConfig& cfg,
                                      const GlobalFluxSettings&   settings,
                                      std::shared_ptr<GpuSession> gpu,
-                                     const bool                  use_say)
+                                     const bool                  use_say,
+                                     const double                say_alpha_offset)
     : m_Sample(sample)
     , m_Config(cfg)
     , m_UseSAY(use_say)
+    , m_SayAlphaOffset(say_alpha_offset)
     , m_UseMultiThreading(settings.use_multi_threading) {
     // Folding reads the per-event weights, which the components only keep when
     // asked; SAY is the other reason to ask.
@@ -689,7 +691,7 @@ namespace ana::ic {
             for (int r = 0; r < n_ra; ++r) {
               const std::size_t bin = base + static_cast<std::size_t>(r);
               const double      mu  = std::max(0.0, value + galactic_sum[bin]);
-              acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin]);
+              acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin], m_SayAlphaOffset);
             }
             return acc;
           }
@@ -706,7 +708,7 @@ namespace ana::ic {
           if (ssq_clipped <= 0.0)
             return m_GroupDataSum[b] * std::log(mu) - ra_scale * mu - m_GroupLogGammaSum[b];
 
-          const double alpha        = mu * mu / ssq_clipped + 1.0;
+          const double alpha        = mu * mu / ssq_clipped + m_SayAlphaOffset;
           const double beta         = mu / ssq_clipped;
           const double log_beta     = std::log(beta);
           const double log1p_beta   = std::log1p(beta);

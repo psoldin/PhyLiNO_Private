@@ -24,4 +24,15 @@ namespace ana::ic {
   [[nodiscard]] double say_bin_log_likelihood(double k, double mu, double ssq,
                                               double lgamma_k_plus_1) noexcept;
 
+  /**
+   * The same term with the gamma shape alpha = mu^2/ssq + alpha_offset.
+   *
+   * alpha_offset = 1 is L_Eff (the overloads above): the gamma's mode sits at mu
+   * and its mean at mu + ssq/mu. alpha_offset = 0 is L_Mean of arXiv:1901.04645:
+   * mean mu, variance mu + ssq. beta = mu/ssq in both.
+   */
+  [[nodiscard]] double say_bin_log_likelihood(double k, double mu, double ssq,
+                                              double lgamma_k_plus_1,
+                                              double alpha_offset) noexcept;
+
 }  // namespace ana::ic

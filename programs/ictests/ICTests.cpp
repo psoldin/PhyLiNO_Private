@@ -1209,8 +1209,9 @@ TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
   ParameterWrapper perturbed(params::ic::number_of_parameters());
   perturbed.reset_parameter(perturbed_values.data());
 
-  for (const bool use_say : {false, true}) {
-    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say);
+  // Poisson, SAY (L_Eff, offset 1) and SAYMean (L_Mean, offset 0).
+  for (const auto& [use_say, offset] : {std::pair{false, 1.0}, std::pair{true, 1.0}, std::pair{true, 0.0}}) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say, offset);
     likelihood.generate_asimov(nominal);
 
     const double llh = likelihood.partial_llh(perturbed);
@@ -1225,7 +1226,36 @@ TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
 
     // Same terms, different summation order, so this is a float-comparison
     // tolerance and not a physics one.
-    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say;
+    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say << " offset = " << offset;
+  }
+}
+
+// L_Mean (SAYMean) is a negative binomial with mean mu and variance mu + ssq;
+// L_Eff (SAY) has mean mu + ssq/mu. Summing the per-bin probability over k checks
+// normalisation and both moments, and offset 1 must be the plain SAY overload.
+TEST(LikelihoodParityTest, SayMeanIsMeanMatchedNegativeBinomial) {
+  using ana::ic::say_bin_log_likelihood;
+
+  for (const auto& [mu, ssq] : {std::pair{2.0, 1.2}, std::pair{0.7, 0.3}, std::pair{15.0, 40.0}}) {
+    for (const double offset : {0.0, 1.0}) {
+      double norm = 0.0, mean = 0.0, second = 0.0;
+      for (int k = 0; k < 2000; ++k) {
+        const double p = std::exp(say_bin_log_likelihood(k, mu, ssq, std::lgamma(k + 1.0), offset));
+        norm += p;
+        mean += k * p;
+        second += static_cast<double>(k) * k * p;
+      }
+      const double expected_mean = mu + offset * ssq / mu;
+      const double alpha         = mu * mu / ssq + offset;
+      const double beta          = mu / ssq;
+      // Negative binomial variance alpha/beta * (1 + 1/beta).
+      const double expected_var = alpha / beta * (1.0 + 1.0 / beta);
+      EXPECT_NEAR(norm, 1.0, 1e-10) << "mu=" << mu << " offset=" << offset;
+      EXPECT_NEAR(mean, expected_mean, 1e-8) << "mu=" << mu << " offset=" << offset;
+      EXPECT_NEAR(second - mean * mean, expected_var, 1e-7) << "mu=" << mu << " offset=" << offset;
+    }
+    EXPECT_NEAR(say_bin_log_likelihood(3.0, mu, ssq, std::lgamma(4.0), 1.0),
+                say_bin_log_likelihood(3.0, mu, ssq), 1e-14);
   }
 }
 

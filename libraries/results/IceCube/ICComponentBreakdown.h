@@ -7,6 +7,7 @@
 #include "ParameterWrapper.h"
 
 // STL includes
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,9 +98,11 @@ namespace result::ic {
       return out;
     }
 
-    const auto ssq = sample.ssq();
+    const auto   ssq    = sample.ssq();
+    const double offset = sample.say_alpha_offset();
     for (std::size_t b = 0; b < data.size(); ++b)
-      out[b] = -2.0 * ana::ic::say_bin_log_likelihood(data[b], pred[b], ssq[b]);
+      out[b] = -2.0 * ana::ic::say_bin_log_likelihood(data[b], pred[b], ssq[b],
+                                                      std::lgamma(data[b] + 1.0), offset);
     return out;
   }
 
