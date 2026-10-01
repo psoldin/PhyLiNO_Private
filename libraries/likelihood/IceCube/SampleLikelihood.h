@@ -119,14 +119,10 @@ namespace ana::ic {
     /** Replace the Asimov expectation with measured counts (UseData). */
     void set_data(std::span<const double> counts);
 
-    /** Swap the SAY term for the Barlow-Beeston light one (needs use_say). */
-    void set_barlow_beeston(bool on) noexcept { m_UseBB = on; }
-
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
     bool                        m_UseSAY;
-    bool                        m_UseBB = false;  ///< Barlow-Beeston light on the SAY sigma^2
     bool                        m_UseMultiThreading;
 
     // Only the components the config declares are constructed; the parquet
@@ -244,7 +240,6 @@ namespace ana::ic {
     /** -2 lnL over the analysis bins, reading the prediction group by group. */
     [[nodiscard]] double poisson_llh() const;
     [[nodiscard]] double say_llh() const;
-    [[nodiscard]] double bb_llh() const;
 
     /** Recompute the per-bin constants derived from m_Data. Call after every
         write to m_Data and nowhere else. */

@@ -46,23 +46,4 @@ namespace ana::ic {
                                : poisson_bin_log_likelihood(k, mu, lgamma_k_plus_1);
   }
 
-  double bb_bin_log_likelihood(const double k, const double mu, const double ssq,
-                               const double lgamma_k_plus_1) noexcept {
-
-    if (mu <= 0.0)
-      return (k > 0.0) ? (-690.0 * k) : 0.0;
-    if (ssq <= 0.0)
-      return poisson_bin_log_likelihood(k, mu, lgamma_k_plus_1);
-
-    // beta^2 + (mu d^2 - 1) beta - k d^2 = 0, with mu d^2 = ssq / mu.
-    const double d2   = ssq / (mu * mu);
-    const double a    = 1.0 - ssq / mu;
-    const double beta = 0.5 * (a + std::sqrt(a * a + 4.0 * k * d2));
-
-    double llh = -beta * mu - lgamma_k_plus_1 - 0.5 * square(beta - 1.0) / d2;
-    if (k > 0.0)
-      llh += k * std::log(beta * mu);
-    return llh;
-  }
-
 }  // namespace ana::ic

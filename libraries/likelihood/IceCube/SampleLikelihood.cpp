@@ -725,32 +725,6 @@ namespace ana::ic {
     return -2.0 * llh;
   }
 
-  double SampleLikelihood::bb_llh() const {
-    const int    n_ra        = m_RaBins;
-    const double ra_scale    = static_cast<double>(n_ra);
-    const double ssq_divisor = ra_scale * ra_scale;
-    const bool   galactic    = !m_Galactic.empty();
-    const auto   galactic_sum = std::span<const double>(m_GalacticTotal);
-
-    // Prototype: one beta per analysis bin, so no group collapse.
-    const double llh = sum_over_groups(
-        m_McTotal.size(), static_cast<std::size_t>(n_ra), m_UseMultiThreading, m_Partial,
-        [&](const std::size_t b) {
-          const double      value = m_McTotal[b] / ra_scale;
-          const double      ssq   = m_McSsq[b] / ssq_divisor;
-          const std::size_t base  = b * static_cast<std::size_t>(n_ra);
-          double            acc   = 0.0;
-          for (int r = 0; r < n_ra; ++r) {
-            const std::size_t bin = base + static_cast<std::size_t>(r);
-            const double      mu  = std::max(0.0, value + (galactic ? galactic_sum[bin] : 0.0));
-            acc += bb_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin]);
-          }
-          return acc;
-        });
-
-    return -2.0 * llh;
-  }
-
   void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
     assemble_prediction(nominal);
     std::ranges::copy(predicted(), m_Data.begin());
@@ -771,7 +745,7 @@ namespace ana::ic {
     if (m_UseSAY) {
       if (change.ssq)
         assemble_fluctuation(change.per_event);
-      return m_UseBB ? bb_llh() : say_llh();
+      return say_llh();
     }
 
     return poisson_llh();

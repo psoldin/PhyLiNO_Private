@@ -24,18 +24,4 @@ namespace ana::ic {
   [[nodiscard]] double say_bin_log_likelihood(double k, double mu, double ssq,
                                               double lgamma_k_plus_1) noexcept;
 
-  /**
-   * Barlow-Beeston "light" bin term (Conway): one nuisance beta scales the
-   * bin's prediction and is constrained by a Gaussian of relative width
-   * sqrt(ssq)/mu. For fixed mu and ssq the optimal beta solves a quadratic,
-   * so it is profiled out per bin and adds no fit parameter:
-   *   log L = k log(beta mu) - beta mu - lgamma(k + 1) - (beta - 1)^2 / (2 d^2),
-   *   d^2 = ssq / mu^2.
-   * The Gaussian normalisation is dropped, as in HistFactory. On Asimov data
-   * (k == mu) beta == 1 and the term reduces to the Poisson one.
-   * Returns log L for one bin (not -2 log L).
-   */
-  [[nodiscard]] double bb_bin_log_likelihood(double k, double mu, double ssq,
-                                             double lgamma_k_plus_1) noexcept;
-
 }  // namespace ana::ic
