@@ -24,13 +24,15 @@ namespace result::ic {
 
   /**
    * The signal parameters a blinded result omits: the astrophysical flux (the
-   * single power law and the broken-power-law parameters that replace it) plus
+   * single power law, the broken-power-law parameters that replace it and the
+   * log-parabola / cutoff parameters that extend it) plus
    * the prompt normalization, which the analysis treats as signal-like because it
    * is what the astrophysical flux is measured against.
    */
   [[nodiscard]] inline bool is_blinded_parameter(std::string_view name) noexcept {
     return name == "AstroNorm" || name == "SpectralIndex" || name == "PromptNorm" ||
-           name == "AstroGamma1" || name == "AstroGamma2" || name == "AstroEBreak";
+           name == "AstroGamma1" || name == "AstroGamma2" || name == "AstroEBreak" ||
+           name == "AstroParabolaB" || name == "AstroLogECut";
   }
 
   /**

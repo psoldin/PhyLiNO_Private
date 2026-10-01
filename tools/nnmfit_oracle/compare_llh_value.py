@@ -69,6 +69,8 @@ NAME_MAP = {
     "AstroGamma1": "gamma_1",
     "AstroGamma2": "gamma_2",
     "AstroEBreak": "e_break",
+    "AstroParabolaB": "astro_parabola_b",
+    "AstroLogECut": "cutoff_pos",
     "GalacticNorm0": "cringefits_norm",
     "GalacticNorm1": "cringefits_norm",
 }

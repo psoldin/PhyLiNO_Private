@@ -53,9 +53,13 @@ namespace io::ic {
       m_AstroModel = AstroModel::Powerlaw;
     } else if (astro_model_str == "BrokenPowerlaw") {
       m_AstroModel = AstroModel::BrokenPowerlaw;
+    } else if (astro_model_str == "LogParabola") {
+      m_AstroModel = AstroModel::LogParabola;
+    } else if (astro_model_str == "PowerlawCutoff") {
+      m_AstroModel = AstroModel::PowerlawCutoff;
     } else {
-      throw std::runtime_error(
-          "ICInputOptions: unknown AstroModel '" + astro_model_str + "' (expected 'Powerlaw' or 'BrokenPowerlaw')");
+      throw std::runtime_error("ICInputOptions: unknown AstroModel '" + astro_model_str +
+                               "' (expected 'Powerlaw', 'BrokenPowerlaw', 'LogParabola' or 'PowerlawCutoff')");
     }
 
     m_ERefGeV             = ic.get<double>("ERefGeV", m_ERefGeV);

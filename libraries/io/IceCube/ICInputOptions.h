@@ -30,9 +30,14 @@ namespace io::ic {
 
   // Astrophysical spectral model. Powerlaw is NNMFit's Powerlaw + SpectralIndex;
   // BrokenPowerlaw is its AstroBPL (astro_norm, gamma_1, gamma_2, e_break), the
-  // model the final analysis configuration uses.
+  // model the final analysis configuration uses. LogParabola is NNMFit's
+  // LogParabola flux (Powerlaw + SpectralIndex + LogEnergyIndex, parameter
+  // astro_parabola_b) and PowerlawCutoff its Powerlaw + SpectralIndex + Cutoff
+  // (parameter cutoff_pos = log10(E_cut / GeV)).
   enum class AstroModel { Powerlaw,
-                          BrokenPowerlaw };
+                          BrokenPowerlaw,
+                          LogParabola,
+                          PowerlawCutoff };
 
   /**
    * @brief Input options of the IceCube diffuse-flux experiment.

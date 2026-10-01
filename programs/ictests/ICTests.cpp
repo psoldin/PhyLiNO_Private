@@ -163,7 +163,7 @@ TEST(BinningTest, MixedCascadeGrid) {
 // count and the two contiguous blocks components index into.
 TEST(ICParameterTest, Layout) {
   using namespace params::ic;
-  ASSERT_TRUE(number_of_parameters() == 23);
+  ASSERT_TRUE(number_of_parameters() == 25);
   ASSERT_TRUE(nBarrParams == 4);
   ASSERT_TRUE(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -178,6 +178,9 @@ TEST(ICParameterTest, Layout) {
   // Broken-power-law block (NNMFit AstroBPL), contiguous after the galactic norms.
   ASSERT_TRUE(AstroGamma2 == AstroGamma1 + 1);
   ASSERT_TRUE(AstroEBreak == AstroGamma2 + 1);
+  // Log-parabola curvature and cutoff energy follow, one per extended model.
+  ASSERT_TRUE(AstroParabolaB == AstroEBreak + 1);
+  ASSERT_TRUE(AstroLogECut == AstroParabolaB + 1);
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -2096,6 +2099,180 @@ TEST(PowerlawFluxTest, SinglePowerLawUnchanged) {
   ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
 }
 
+// NNMFit LogParabola = Powerlaw + SpectralIndex + LogEnergyIndex
+// (parameters/logenergy_index.py): the single power law times
+// (E/1e5)^(-b log10(E/1e5)), anchored at a fixed 100 TeV. Checked against the
+// NNMFit formula evaluated by hand with pow() rather than against the exp form
+// the component uses.
+TEST(PowerlawFluxTest, LogParabola) {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e5, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 5.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  const double norm = 1.6, gamma = 2.5, b = 0.3;
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]      = norm;
+  values[params::ic::SpectralIndex]  = gamma;
+  values[params::ic::AstroParabolaB] = b;
+  values[params::ic::AstroLogECut]   = 3.0;  // read only in cutoff mode: must not matter here
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::LogParabola);
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  double expected = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double x = sample.e_true[i] / 1.0e5;
+    expected += sample.astro_baseline[i] * 0.5 * norm * std::pow(x, 2.0 - gamma) *
+                std::pow(x, -b * std::log10(x));
+  }
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+
+  // The curvature must bite, and only the log-parabola's own parameter triggers
+  // a recalculation: moving the cutoff energy changes nothing in this mode. The
+  // same wrapper is reset, since its change flags compare against its own
+  // previous values (a fresh one would report every non-zero entry as changed).
+  values[params::ic::AstroLogECut] = 5.0;
+  parameter.reset_parameter(values.data());
+  ASSERT_FALSE(flux.check_and_recalculate(parameter));
+
+  values[params::ic::AstroParabolaB] = 0.0;
+  ParameterWrapper flat(params::ic::number_of_parameters());
+  flat.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(flat));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) > 1e-6 * expected);
+
+  // b = 0 is the single power law.
+  PowerlawFlux spl(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
+  ASSERT_TRUE(spl.check_and_recalculate(flat));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - spl.histogram()[0]) < 1e-14 * spl.histogram()[0]);
+}
+
+// NNMFit Powerlaw + SpectralIndex + Cutoff (parameters/cutoff.py): the single
+// power law times exp(-E / 10^cutoff_pos).
+TEST(PowerlawFluxTest, PowerlawCutoff) {
+  using ana::ic::AstroModel;
+  using ana::ic::PowerlawFlux;
+  using ana::ParameterWrapper;
+
+  io::ic::ICSample sample;
+  sample.e_true         = {1.0e3, 1.0e5, 1.0e6};
+  sample.astro_baseline = {2.0e-9, 5.0e-9, 3.0e-9};
+  sample.bin_idx        = {0, 0, 0};
+  sample.sort_into_bins(1);
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 7.0, 1)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+
+  const double norm = 1.6, gamma = 2.2, log_ecut = 5.5;
+  std::vector<double> values(params::ic::number_of_parameters(), 0.0);
+  values[params::ic::AstroNorm]      = norm;
+  values[params::ic::SpectralIndex]  = gamma;
+  values[params::ic::AstroLogECut]   = log_ecut;
+  values[params::ic::AstroParabolaB] = 0.7;  // read only in log-parabola mode
+  ParameterWrapper parameter(params::ic::number_of_parameters());
+  parameter.reset_parameter(values.data());
+
+  PowerlawFlux flux(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::PowerlawCutoff);
+  ASSERT_TRUE(flux.check_and_recalculate(parameter));
+
+  double expected = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double e = sample.e_true[i];
+    expected += sample.astro_baseline[i] * 0.5 * norm * std::pow(e / 1.0e5, 2.0 - gamma) *
+                std::exp(-e / std::pow(10.0, log_ecut));
+  }
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - expected) < 1e-12 * expected);
+
+  // Same wrapper, so its change flags see only this step (see LogParabola).
+  values[params::ic::AstroParabolaB] = -0.4;
+  parameter.reset_parameter(values.data());
+  ASSERT_FALSE(flux.check_and_recalculate(parameter));
+
+  // A cutoff far above every event is the single power law.
+  values[params::ic::AstroLogECut] = 30.0;
+  ParameterWrapper far(params::ic::number_of_parameters());
+  far.reset_parameter(values.data());
+  ASSERT_TRUE(flux.check_and_recalculate(far));
+  PowerlawFlux spl(sample, binning, 1.0e5, 2.0, false, nullptr, false, AstroModel::Powerlaw);
+  ASSERT_TRUE(spl.check_and_recalculate(far));
+  ASSERT_TRUE(std::abs(flux.histogram()[0] - spl.histogram()[0]) < 1e-12 * spl.histogram()[0]);
+}
+
+// The GPU kernels' extended branch must reproduce the CPU oracle for both new
+// models, through the full SampleLikelihood (histogram and SAY ssq).
+TEST(PowerlawFluxTest, GpuLogParabolaAndCutoffMatchCpu) {
+  using ana::ic::AstroModel;
+  using ana::ic::SampleLikelihood;
+  using ana::ParameterWrapper;
+
+  const auto backends = available_gpu_backends();
+  if (backends.empty()) {
+    GTEST_SKIP() << "no GPU backend is available";
+  }
+
+  const Binning          binning = synthetic_binning();
+  const io::ic::ICSample sample  = synthetic_sample(binning, /*with_atmospheric=*/true);
+
+  const io::ic::SampleConfig cfg{.name       = "gpu_extended_astro_sample",
+                                 .binning    = binning,
+                                 .mc_binning = binning,
+                                 .components = {"astro", "conventional", "prompt"}};
+
+  for (const AstroModel model : {AstroModel::LogParabola, AstroModel::PowerlawCutoff}) {
+    SCOPED_TRACE(model == AstroModel::LogParabola ? "LogParabola" : "PowerlawCutoff");
+    ana::ic::GlobalFluxSettings settings = synthetic_settings();
+    settings.astro_model                 = model;
+
+    std::vector<double> values = nominal_parameter_values();
+    values[params::ic::AstroParabolaB] = 0.2;
+    values[params::ic::AstroLogECut]   = 5.5;
+    ParameterWrapper nominal(params::ic::number_of_parameters());
+    nominal.reset_parameter(values.data());
+
+    values[params::ic::SpectralIndex]  = 2.6;
+    values[params::ic::AstroParabolaB] = 0.35;
+    values[params::ic::AstroLogECut]   = 5.0;
+    ParameterWrapper perturbed(params::ic::number_of_parameters());
+    perturbed.reset_parameter(values.data());
+
+    SampleLikelihood cpu(sample, cfg, settings, /*gpu=*/nullptr, /*use_say=*/true);
+    cpu.generate_asimov(nominal);
+    const double llh_cpu = cpu.partial_llh(perturbed);
+    ASSERT_TRUE(std::isfinite(llh_cpu));
+
+    for (const GpuBackendCase& backend_case : backends) {
+      SCOPED_TRACE(backend_case.name);
+      const auto       backend = backend_case.make();
+      SampleLikelihood gpu(sample, cfg, settings, backend->create_session(), /*use_say=*/true);
+      gpu.generate_asimov(nominal);
+
+      const double llh_gpu   = gpu.partial_llh(perturbed);
+      const double tolerance = backend_case.fp64 ? 1.0e-12 : 1.0e-4;
+      ASSERT_TRUE(std::isfinite(llh_gpu));
+      ASSERT_LT(std::fabs(llh_cpu - llh_gpu) / std::max({std::fabs(llh_cpu), std::fabs(llh_gpu), 1.0}),
+                tolerance);
+
+      const auto pred_cpu = cpu.predicted();
+      const auto pred_gpu = gpu.predicted();
+      for (std::size_t b = 0; b < pred_cpu.size(); ++b) {
+        const double bin_scale = std::max({std::fabs(pred_cpu[b]), std::fabs(pred_gpu[b]), 1.0e-30});
+        ASSERT_LT(std::fabs(pred_cpu[b] - pred_gpu[b]) / bin_scale, tolerance) << "bin " << b;
+      }
+    }
+  }
+}
+
 // The veto reweight is NNMFit's VetoThreshold parameter (parameters/veto_threshold.py):
 //   e  = rescale * 10^p - anchor        (both 100 GeV in the combined config)
 //   PF = 10^(a + b*e + c*e^2)           per event, per component
@@ -3253,7 +3430,7 @@ TEST(ICDataBaseTest, ReadsFloatColumns) {
 
 TEST(BlindingTest, HidesTheSignalParametersOnly) {
   for (const std::string& name : {"AstroNorm", "SpectralIndex", "PromptNorm", "AstroGamma1",
-                                  "AstroGamma2", "AstroEBreak"})
+                                  "AstroGamma2", "AstroEBreak", "AstroParabolaB", "AstroLogECut"})
     EXPECT_TRUE(result::ic::is_blinded_parameter(name)) << name;
 
   for (const std::string& name : {"ConvNorm", "BarrH", "BarrW", "BarrY", "BarrZ", "CRGrad",

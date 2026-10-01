@@ -46,9 +46,21 @@ namespace ana::ic {
    * 1e-18 cancels and only the (E/1e5)^2 remains. That 1e5 is a property of the
    * MC column, NOT the configurable ERefGeV, and must not be replaced by it.
    *
+   * AstroModel::LogParabola and AstroModel::PowerlawCutoff keep the single power
+   * law above and multiply one more factor onto it, as NNMFit's LogEnergyIndex
+   * (parameters/logenergy_index.py) and Cutoff (parameters/cutoff.py) do:
+   *
+   *   LogParabola:    x (E_true_i / 1e5)^(-b * log10(E_true_i / 1e5)),  b = AstroParabolaB
+   *   PowerlawCutoff: x exp(-E_true_i / 10^AstroLogECut)
+   *
+   * The log-parabola's 1e5 is NNMFit's fixed 100 TeV anchor, not ERefGeV. Both
+   * factors are 1 at b = 0 and at AstroLogECut -> infinity, where the models
+   * reduce to the single power law.
+   *
    * Recalculates when the parameters the active model uses changed (AstroNorm
    * and SpectralIndex; AstroNorm, AstroGamma1, AstroGamma2 and AstroEBreak in
-   * broken-power-law mode). When a GpuSession is supplied the per-event loop
+   * broken-power-law mode; plus AstroParabolaB or AstroLogECut in the two
+   * extended modes). When a GpuSession is supplied the per-event loop
    * runs on the GPU; otherwise the CPU OMP+SIMD path is used (and serves as the
    * validation oracle).
    */

@@ -63,7 +63,8 @@ namespace {
         {"HoleIceP0", HoleIceP0},         {"HoleIceP1", HoleIceP1},
         {"GalacticNorm0", GalacticNorm0}, {"GalacticNorm1", GalacticNorm1},
         {"AstroGamma1", AstroGamma1},     {"AstroGamma2", AstroGamma2},
-        {"AstroEBreak", AstroEBreak},
+        {"AstroEBreak", AstroEBreak},       {"AstroParabolaB", AstroParabolaB},
+        {"AstroLogECut", AstroLogECut},
     };
     return map;
   }
