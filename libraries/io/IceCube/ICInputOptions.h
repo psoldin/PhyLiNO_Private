@@ -9,7 +9,8 @@
 namespace io::ic {
 
   enum class LikelihoodType { Poisson,
-                              SAY };
+                              SAY,
+                              BBLite };
 
   // Compute backend for the per-event flux histograms.
   //   Cpu   - OMP+SIMD reference path, available everywhere.
