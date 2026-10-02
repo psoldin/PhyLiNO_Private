@@ -30,6 +30,7 @@
 
 #include "AdaptiveGrid.h"
 #include "AdaptiveScan1D.h"
+#include "CrossingScan1D.h"
 #include "IceCube/ICBlinding.h"
 #include "IceCube/ICWriteResultsProto.h"
 #include "ScanSeeds.h"
@@ -706,6 +707,82 @@ std::optional<Lattice> stored_lattice(const std::string& path) {
   return Lattice{stored["anchor"].get<double>(), stored["unit"].get<double>()};
 }
 
+/// Where a 1D scan of one parameter puts its points, and the free fit it is
+/// anchored on.
+struct Axis1D {
+  SeedFit seed;
+  double  anchor      = 0.0;  ///< Physical value of node 0, the best fit.
+  double  unit        = 0.0;  ///< Physical distance between two neighbouring nodes.
+  int     lower_limit = -(1 << 24);  ///< Configured LowerBound in lattice units.
+  int     upper_limit = 1 << 24;     ///< Configured UpperBound in lattice units.
+};
+
+/**
+ * @brief Runs or reads back the free fit of a 1D scan and lays its lattice.
+ *
+ * Shared by the walk (perform_1d_scan_walk) and the crossing search
+ * (perform_1d_crossing): both anchor node 0 on the best fit and space their
+ * nodes by the fitted error, so a parameter gets the same lattice whichever
+ * of them runs.
+ *
+ * @param grid_path Descriptor of an earlier run in this directory; its lattice
+ *                  is reused so resumed point files keep their meaning.
+ */
+Axis1D anchor_1d_axis(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name, int index, const FixedParameters& extra_fixed, const std::string& label, const std::string& grid_path, bool warm_start, scanseed::Store<int>& seeds) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& format           = options->inputOptions().output_format();
+  const auto& parameter        = input_parameters.parameters()[index];
+
+  Axis1D axis;
+
+  // The free fit is both the reference the rise is measured from and the point
+  // the scan starts at. Saved to disk as BestFit_<label> so analysis can
+  // reference the true unfixed minimum instead of the lowest sampled point.
+  axis.seed = bootstrap_seed_fit(options, module, "BestFit_" + label, input_parameters, format, warm_start, seeds,
+                                 [&](ROOT::Math::Minimizer& min) { apply_extra_fixed(min, extra_fixed); });
+  const auto& seed = axis.seed;
+
+  double& anchor = axis.anchor;
+  double& unit   = axis.unit;
+
+  if (const auto known = stored_lattice(grid_path)) {
+    anchor = known->anchor;
+    unit   = known->unit;
+  } else if (!seed.parameters.empty()) {
+    anchor = seed.parameters[index];
+
+    // The lattice has to resolve the profile, and the profile's own width is
+    // the only honest statement of that scale. StepWidth is the fallback for a
+    // fit that produced no error: it is the config's guess at the same thing,
+    // and can be off by the factor the walk exists to stop mattering -- so it
+    // decides the spacing only, never how far the walk goes.
+    const double scale = index < static_cast<int>(seed.errors.size()) && seed.errors[index] > 0.0 ? seed.errors[index]
+                                                                                                  : parameter.uncertainty();
+    unit               = scale / kUnitsPerStepWidth;
+  } else {
+    // No fitted position to start from: the walk would otherwise anchor on
+    // whatever the config happens to start at and quietly scan around a point
+    // that is not the best fit.
+    throw std::runtime_error("Best fit of '" + label + "' produced no parameter values; the 1D scan has nothing to start from");
+  }
+
+  if (!(unit > 0.0))
+    throw std::runtime_error("Parameter '" + parameter_name + "' has neither a fitted error nor a positive StepWidth; the 1D scan has no scale to space its points on");
+
+  if (!seed.from_store)
+    std::cout << "Seed fit: " << parameter_name << " = " << anchor << (seed.converged ? "" : " (did not converge)")
+              << ", scanning in steps of " << unit << '\n';
+
+  // Configured bounds become hard stops. A bound the scan never reaches costs
+  // nothing.
+  if (const auto& lower = parameter.lower_bound())
+    axis.lower_limit = std::max(axis.lower_limit, static_cast<int>(std::ceil((*lower - anchor) / unit)));
+  if (const auto& upper = parameter.upper_bound())
+    axis.upper_limit = std::min(axis.upper_limit, static_cast<int>(std::floor((*upper - anchor) / unit)));
+
+  return axis;
+}
+
 /**
  * @brief Profiles the likelihood along a single configured parameter.
  *
@@ -741,7 +818,6 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
   const auto& input_parameters = options->inputOptions().input_parameters();
   const auto& names            = input_parameters.names();
   const auto& format           = options->inputOptions().output_format();
-  const auto& parameter        = input_parameters.parameters()[index];
 
   const std::string label = tag + parameter_name;
 
@@ -752,44 +828,12 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
   scanseed::Store<int> seeds;
   seeds.set_fallback(seed_from_values(options));
 
-  // The free fit is both the reference the rise is measured from and the point
-  // the walk starts at. Saved to disk as BestFit_<label> so analysis can
-  // reference the true unfixed minimum instead of the lowest sampled point.
-  const auto seed = bootstrap_seed_fit(options, module, "BestFit_" + label, input_parameters, format, warm_start, seeds,
-                                       [&](ROOT::Math::Minimizer& min) { apply_extra_fixed(min, extra_fixed); });
-
   const std::string grid_path = "scan_grid_" + label + ".json";
 
-  double anchor = 0.0;
-  double unit   = 0.0;
-
-  if (const auto known = stored_lattice(grid_path)) {
-    anchor = known->anchor;
-    unit   = known->unit;
-  } else if (!seed.parameters.empty()) {
-    anchor = seed.parameters[index];
-
-    // The lattice has to resolve the profile, and the profile's own width is
-    // the only honest statement of that scale. StepWidth is the fallback for a
-    // fit that produced no error: it is the config's guess at the same thing,
-    // and can be off by the factor the walk exists to stop mattering -- so it
-    // decides the spacing only, never how far the walk goes.
-    const double scale = index < static_cast<int>(seed.errors.size()) && seed.errors[index] > 0.0 ? seed.errors[index]
-                                                                                                  : parameter.uncertainty();
-    unit               = scale / kUnitsPerStepWidth;
-  } else {
-    // No fitted position to start from: the walk would otherwise anchor on
-    // whatever the config happens to start at and quietly scan around a point
-    // that is not the best fit.
-    throw std::runtime_error("Best fit of '" + label + "' produced no parameter values; the 1D scan has nothing to start from");
-  }
-
-  if (!(unit > 0.0))
-    throw std::runtime_error("Parameter '" + parameter_name + "' has neither a fitted error nor a positive StepWidth; the 1D scan has no scale to space its points on");
-
-  if (!seed.from_store)
-    std::cout << "Seed fit: " << parameter_name << " = " << anchor << (seed.converged ? "" : " (did not converge)")
-              << ", scanning in steps of " << unit << '\n';
+  const Axis1D axis   = anchor_1d_axis(options, module, parameter_name, index, extra_fixed, label, grid_path, warm_start, seeds);
+  const auto&  seed   = axis.seed;
+  const double anchor = axis.anchor;
+  const double unit   = axis.unit;
 
   scan1d::Settings settings;
   settings.start_step = kUnitsPerStepWidth;
@@ -797,12 +841,8 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
   // One point per worker per direction, so a round keeps the whole pool busy.
   settings.batch = scan_workers;
 
-  // Configured bounds become hard stops of the walk. A bound the walk never
-  // reaches costs nothing.
-  if (const auto& lower = parameter.lower_bound())
-    settings.lower_limit = std::max(settings.lower_limit, static_cast<int>(std::ceil((*lower - anchor) / unit)));
-  if (const auto& upper = parameter.upper_bound())
-    settings.upper_limit = std::min(settings.upper_limit, static_cast<int>(std::floor((*upper - anchor) / unit)));
+  settings.lower_limit = axis.lower_limit;
+  settings.upper_limit = axis.upper_limit;
 
   auto position    = [&](int node) { return anchor + node * unit; };
   auto distance    = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
@@ -1001,6 +1041,155 @@ void perform_nm1_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana:
   }
 }
 
+namespace {
+
+  const char* status_name(scan1d::crossing::Status status) {
+    using enum scan1d::crossing::Status;
+    switch (status) {
+      case converged: return "converged";
+      case at_limit: return "at_limit";
+      case failed: return "failed";
+      case exhausted: return "exhausted";
+    }
+    return "unknown";
+  }
+
+}  // namespace
+
+/**
+ * @brief Finds the 1 sigma interval of a single parameter without mapping its profile.
+ *
+ * The cheap counterpart of perform_1d_scan_walk for when only the interval is
+ * wanted: same free fit, same lattice, same per-point profile fits, but the
+ * points go only where the profile crosses --crossingLevel (1 by default) on
+ * either side of the best fit -- a handful of fits instead of the walk's
+ * several dozen. See CrossingScan1D.h for the search.
+ *
+ * Its point files are Crossing_<label>_<node> and its descriptor
+ * crossing_grid_<label>.json, kept apart from the walk's so a directory can
+ * hold both without either reading the other's points. BestFit_<label> is
+ * shared: it is the same free fit.
+ *
+ * Writes Crossing_<label>.json with the interval, the status of each side and
+ * the points it fitted.
+ *
+ * Selected via --scanMode 1d-crossing, for every non-fixed parameter
+ * (perform_1d_crossing_all) or, with --scanParameter, just this one.
+ *
+ * @return The content written to Crossing_<label>.json.
+ */
+nlohmann::json perform_1d_crossing(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const std::string& parameter_name, int index) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& format           = options->inputOptions().output_format();
+
+  const std::string& label = parameter_name;
+
+  const int scan_workers = std::max(1, options->inputOptions().scan_workers());
+
+  const bool warm_start = resolve_warm_start(options);
+
+  scanseed::Store<int> seeds;
+  seeds.set_fallback(seed_from_values(options));
+
+  const std::string grid_path = "crossing_grid_" + label + ".json";
+
+  const Axis1D axis   = anchor_1d_axis(options, module, parameter_name, index, {}, label, grid_path, warm_start, seeds);
+  const double anchor = axis.anchor;
+  const double unit   = axis.unit;
+
+  scan1d::crossing::Settings settings;
+  settings.level       = options->inputOptions().crossing_level();
+  settings.start_step  = kUnitsPerStepWidth;
+  settings.lower_limit = axis.lower_limit;
+  settings.upper_limit = axis.upper_limit;
+
+  // The two sides share the pool: half the workers each.
+  settings.batch = std::max(1, scan_workers / 2);
+
+  auto position    = [&](double node) { return anchor + node * unit; };
+  auto distance    = [](int a, int b) { return std::abs(static_cast<double>(a - b)); };
+  auto apply_fixed = [&](ROOT::Math::Minimizer& min, int node) {
+    min.SetVariableValue(index, position(node));
+    min.FixVariable(index);
+  };
+
+  {
+    nlohmann::json grid;
+    grid["anchor"]       = anchor;
+    grid["unit"]         = unit;
+    grid[parameter_name] = {{"lower_limit", settings.lower_limit}, {"upper_limit", settings.upper_limit}};
+    grid["level"]        = settings.level;
+
+    write_or_check_grid(grid_path, grid, "crossing search", "Crossing_" + label + "_i");
+  }
+
+  int fits_performed = 0;
+
+  auto evaluate = [&](const std::vector<int>& nodes, scan1d::Profile& profile) {
+    run_scan_batch(nodes, profile, options, module, input_parameters, format, warm_start, seeds, scan_workers,
+                   [&](int node) { return "Crossing_" + label + "_" + std::to_string(node); }, apply_fixed, distance, fits_performed);
+  };
+
+  auto report = [](int round, std::size_t proposed, std::size_t points) {
+    if (round > 0)
+      std::cout << "Round " << round << ": " << proposed << " points proposed (" << points << " points so far)\n";
+  };
+
+  const auto result = scan1d::crossing::search(settings, axis.seed.llh, evaluate, report);
+
+  const double best  = result.undercut ? position(result.minimum) : anchor;
+  const double lower = position(result.sides[0].crossing);
+  const double upper = position(result.sides[1].crossing);
+
+  nlohmann::json summary;
+  summary["parameter"]      = parameter_name;
+  summary["level"]          = settings.level;
+  summary["best_fit"]       = best;
+  summary["lower"]          = lower;
+  summary["upper"]          = upper;
+  summary["minus"]          = best - lower;
+  summary["plus"]           = upper - best;
+  summary["lower_status"]   = status_name(result.sides[0].status);
+  summary["upper_status"]   = status_name(result.sides[1].status);
+  summary["undercut"]       = result.undercut;
+  summary["fits"]           = result.profile.size();
+  summary["fits_performed"] = fits_performed;
+  for (const auto& [node, value] : result.profile)
+    summary["points"].push_back({{"value", position(node)}, {"delta_chi2", value - result.reference}});
+
+  std::ofstream("Crossing_" + label + ".json") << summary.dump(2) << '\n';
+
+  std::cout << label << " = " << best << " -" << best - lower << " +" << upper - best << " (delta chi2 = " << settings.level << ", "
+            << result.profile.size() << " points, " << fits_performed << " fitted in this run; sides "
+            << status_name(result.sides[0].status) << '/' << status_name(result.sides[1].status) << ")\n";
+
+  if (result.undercut)
+    std::cout << "Warning: a scan point of " << label << " came out " << axis.seed.llh - result.reference
+              << " below the free fit; the free fit missed its minimum and this interval is not trustworthy."
+                 " Rerun with --seedFrom that point.\n";
+
+  return summary;
+}
+
+/// --scanMode 1d-crossing without --scanParameter: the interval of every
+/// non-fixed parameter, collected into crossings.json.
+void perform_1d_crossing_all(std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module) {
+  const auto& input_parameters = options->inputOptions().input_parameters();
+  const auto& names            = input_parameters.names();
+  const bool  blind            = options->inputOptions().blind();
+
+  nlohmann::json all;
+  for (std::size_t i = 0; i < input_parameters.size(); ++i) {
+    if (input_parameters.fixed(static_cast<int>(i)) || (blind && result::ic::is_blinded_parameter(names[i])))
+      continue;
+
+    std::cout << "Searching the crossings of " << names[i] << "...\n";
+    all[names[i]] = perform_1d_crossing(options, module, names[i], static_cast<int>(i));
+  }
+
+  std::ofstream("crossings.json") << all.dump(2) << '\n';
+}
+
 /**
  * Runs a 1D scan over every non-fixed parameter in the config.
  *
@@ -1155,7 +1344,7 @@ int main(int argc, char** argv) {
       const std::string& scan_parameter = options->inputOptions().scan_parameter();
       const int          scan_points    = options->inputOptions().scan_points();
 
-      if (options->inputOptions().blind() && (scan_mode == "1d" || scan_mode == "1d-regular") &&
+      if (options->inputOptions().blind() && (scan_mode == "1d" || scan_mode == "1d-regular" || scan_mode == "1d-crossing") &&
           result::ic::is_blinded_parameter(scan_parameter))
         throw std::invalid_argument("--blind does not scan the signal parameters; --scanParameter " + scan_parameter + " is one of them");
 
@@ -1168,6 +1357,11 @@ int main(int argc, char** argv) {
           perform_1d_scan_all(options, module, false, scan_points);
         else
           perform_1d_scan(options, module, scan_parameter);
+      } else if (scan_mode == "1d-crossing") {
+        if (scan_parameter.empty())
+          perform_1d_crossing_all(options, module);
+        else
+          perform_1d_crossing(options, module, scan_parameter, parameter_index(options->inputOptions().input_parameters(), scan_parameter));
       } else if (scan_mode == "nm1") {
         if (scan_parameter.empty())
           throw std::invalid_argument("--scanMode nm1 needs --scanParameter to say which parameter's sensitivity is being measured");
@@ -1178,7 +1372,7 @@ int main(int argc, char** argv) {
         else
           perform_1d_scan_regular(options, module, scan_parameter, scan_points);
       } else {
-        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 1d, 1d-regular, nm1");
+        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 1d, 1d-regular, 1d-crossing, nm1");
       }
     }
   } catch (const std::exception& e) {
