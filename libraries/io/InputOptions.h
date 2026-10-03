@@ -143,14 +143,24 @@ namespace io {
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
 
     /**
-     * Tolerance of the per-point fits of a scan (--scanTolerance, default 0.5,
-     * i.e. EDM < 1e-3). A scan point only has to be at its minimum to well
-     * within the delta chi2 the scan resolves, which is orders of magnitude
-     * looser than what the free fit -- whose parameters and errors are reported
-     * -- is held to by --tolerance. Holding every point to the free fit's
-     * tolerance is what made Migrad restart on points that stopped at EDM 2e-4.
+     * Tolerance of the per-point fits of a scan (--scanTolerance). A scan
+     * point only has to sit at its minimum to well within the delta chi2 the
+     * scan resolves (0.02 for the crossing search), which is far looser than
+     * what the free fit -- whose parameters and errors are reported -- is held
+     * to by --tolerance.
+     *
+     * Whether a loose tolerance delivers that depends on how honest the
+     * minimizer's EDM is. NewtonMinimizer rebuilds its model at every iterate,
+     * and its stops at EDM < 1e-3 (tolerance 0.5) were measured within 1e-3 of
+     * the minimum. Migrad's EDM comes from its quasi-Newton metric, and on the
+     * IceCube tracks Asimov it stopped 0.1-0.3 above the minimum at EDM 5e-4
+     * -- with or without the analytic gradient. So the default (-1) picks 0.5
+     * for Newton and --tolerance for Minuit2; an explicit value is used as is.
      */
-    [[nodiscard]] double scan_tolerance() const noexcept { return m_ScanTolerance; }
+    [[nodiscard]] double scan_tolerance() const noexcept {
+      if (m_ScanTolerance > 0.0) return m_ScanTolerance;
+      return m_Minimizer == "Newton" ? 0.5 : m_Tolerance;
+    }
 
     /**
      * How often a Migrad that reported failure is restarted, each time on a
@@ -250,7 +260,7 @@ namespace io {
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     bool   m_Blind{false};          /**< Keep the signal out of the written results. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
-    double m_ScanTolerance{0.5}; /**< The tolerance of the per-point fits of a scan. */
+    double m_ScanTolerance{-1.0}; /**< The tolerance of the per-point fits of a scan; <= 0 picks by minimizer. */
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
     std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */

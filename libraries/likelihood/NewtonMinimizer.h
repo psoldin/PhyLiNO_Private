@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Math/BasicMinimizer.h>
+#include <RVersion.h>
 
 #include <functional>
 #include <span>
@@ -65,9 +66,17 @@ namespace ana {
     // vtable does not reference the base versions, which libMathCore may
     // export under a different std::span than this build sees (see Fit.cpp).
     // The Hessian goes through set_hessian().
+#if ROOT_VERSION_CODE >= ROOT_VERSION(6, 34, 0)
     void SetHessianFunction(std::function<bool(std::span<const double>, double*)> hessian) override;
     bool SetCovarianceDiag(std::span<const double>, unsigned int) override { return false; }
     bool SetCovariance(std::span<const double>, unsigned int) override { return false; }
+#else
+    void SetHessianFunction(std::function<bool(const std::vector<double>&, double*)> hessian) override {
+      m_Hessian = [hessian = std::move(hessian), this](const double* x, double* out) {
+        return hessian(std::vector<double>(x, x + NDim()), out);
+      };
+    }
+#endif
 
    private:
     /** Errors and covariance from Hessian `h` at X() (see Hesse()). */

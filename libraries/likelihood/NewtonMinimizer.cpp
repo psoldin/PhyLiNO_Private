@@ -47,12 +47,14 @@ namespace ana {
 
   }  // namespace
 
+#if ROOT_VERSION_CODE >= ROOT_VERSION(6, 34, 0)
   void NewtonMinimizer::SetHessianFunction(std::function<bool(std::span<const double>, double*)> hessian) {
     const unsigned int n = NDim();
     m_Hessian            = [hessian = std::move(hessian), n](const double* x, double* out) {
       return hessian(std::span<const double>(x, n), out);
     };
   }
+#endif
 
   double NewtonMinimizer::CovMatrix(const unsigned int i, const unsigned int j) const {
     const std::size_t n = NDim();

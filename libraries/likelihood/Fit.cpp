@@ -17,6 +17,7 @@
 
 #include <Minuit2/FCNGradAdapter.h>
 #include <Minuit2/Minuit2Minimizer.h>
+#include <RVersion.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -55,6 +56,9 @@ namespace ana {
         const_cast<Adapter*>(fcn)->SetHessianFunction(std::move(hessian));
       }
 
+#if ROOT_VERSION_CODE >= ROOT_VERSION(6, 34, 0)
+      // ROOT 6.34 switched these to std::span (and added the covariance
+      // setters); before that there is nothing span-typed to override.
       void SetHessianFunction(std::function<bool(std::span<const double>, double*)> hessian) override {
         set_hessian([hessian = std::move(hessian)](const std::vector<double>& x, double* out) {
           return hessian(std::span<const double>(x.data(), x.size()), out);
@@ -69,6 +73,7 @@ namespace ana {
         std::cerr << "Fit: setting Minuit2's initial covariance is not supported in this build\n";
         return false;
       }
+#endif
     };
 
   }  // namespace

@@ -59,7 +59,7 @@ namespace io {
 	("scanPoints", po::value<int>(&m_ScanPoints)->default_value(30), "Grid points per axis for --scanMode 2d-regular/1d-regular")
 	("crossingLevel", po::value<double>(&m_CrossingLevel)->default_value(1.0), "Delta chi2 whose crossings --scanMode 1d-crossing searches for: 1 for 1 sigma, 4 for 2 sigma, 2.71 for 90 %")
 	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
-	("scanTolerance", po::value<double>(&m_ScanTolerance)->default_value(0.5), "Fit tolerance of the per-point fits of every scan (the free fit a scan starts from keeps --tolerance). Minuit2 stops at EDM < 0.002 * tolerance, so the default 0.5 is EDM < 1e-3 -- far below the 0.02 in delta chi2 the crossing search resolves")
+	("scanTolerance", po::value<double>(&m_ScanTolerance)->default_value(-1.0), "Fit tolerance of the per-point fits of every scan (the free fit a scan starts from keeps --tolerance); both minimizers stop at EDM < 0.002 * tolerance. Default (-1): 0.5 with --minimizer Newton, whose EDM tracks the true distance to the minimum, and --tolerance with Minuit2, whose EDM was measured to understate it by up to ~300x at scan points")
 	("fitRetries", po::value<int>(&m_FitRetries)->default_value(3), "Times a stalled Migrad is restarted from its own last point before the fit is given up on")
 	("minuitStrategy", po::value<int>(&m_MinuitStrategy)->default_value(1), "Minuit2 strategy: 0 fast, 1 default, 2 more accurate derivatives and Hessian updates")
 	("minimizerAlgo", po::value<std::string>(&m_MinimizerAlgo)->default_value("Migrad"), "Minuit2 algorithm: Migrad, Combined (Migrad, then Simplex and Migrad again on failure), Simplex or Fumili")

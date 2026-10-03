@@ -154,7 +154,7 @@ The IceCube likelihood differentiates itself analytically: one sweep over the MC
 | `--gradient` | `true` | Hand the minimizer the analytic gradient (likelihoods that have one; currently IceCube). `false` restores Minuit2's numerical derivatives. |
 | `--hessian` | `gn` | `gn`: the Gauss-Newton Hessian is Migrad's metric (Minuit2 strategy is raised to 2 so the whole matrix seeds it), and the reported errors come from a final Hesse on the exact Hessian (central differences of the analytic gradient). `none`: Minuit2's numerical second derivatives. |
 | `--minimizer` | `Minuit2` | `Newton`: projected trust-region (Levenberg-Marquardt) Newton on the gradient and Gauss-Newton Hessian, with bounds handled by an active set instead of Minuit2's internal transformation. Needs `--gradient true --hessian gn`. |
-| `--scanTolerance` | `0.5` | Tolerance of the per-point fits of every scan (EDM < 1e-3); the free fit a scan starts from keeps `--tolerance`. |
+| `--scanTolerance` | auto | Tolerance of the per-point fits of every scan; the free fit a scan starts from keeps `--tolerance`. By default 0.5 (EDM < 1e-3) with `--minimizer Newton`, whose stops were measured within 1e-3 of the minimum, and `--tolerance` with Minuit2, whose EDM was measured to understate the distance to the minimum by up to ~300x at scan points. |
 
 The derivative kernels exist for every backend: CUDA in the backend's precision (`GpuPrecision`), Metal in FP32 (derivatives only steer the minimizer; the likelihood value keeps the backend's precision), and the CPU loop, which is the reference the GPU kernels are tested against.
 
