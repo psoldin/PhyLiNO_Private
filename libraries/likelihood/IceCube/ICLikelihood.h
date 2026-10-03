@@ -87,6 +87,7 @@ namespace ana::ic {
     void evaluate_derivatives(const double* parameter, bool want_hessian);
 
     void                 initialize_data(bool use_data, io::ic::AsimovMode asimov_mode);
+    void                 check_parameter_layout() const;
     void                 setup_pulls();
     [[nodiscard]] double calculate_pulls(const ParameterWrapper& parameter) const noexcept;
   };

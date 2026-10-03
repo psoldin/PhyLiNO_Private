@@ -24,6 +24,18 @@ namespace ana::ic {
    * second), so the livetime scaling mirrors what ICDataBase does to the
    * per-event weights.
    *
+   * Shape modes (PhyLiNO only, no NNMFit counterpart). A file whose header has
+   * "# template modes <M>" carries M more columns d_j, rates like the others,
+   * each the 1-sigma shift of the template along one direction of its own
+   * correlated uncertainty. The template then is
+   *
+   *   template_b(theta) = max(template_b + sum_j theta_j * d_jb, 0),
+   *   theta_j = parameter MuonTmplMode1 + j  (Gaussian-constrained in the config),
+   *
+   * and mu_b = norm * template_b(theta) * livetime; the fluctuation column is not
+   * affected. Only MuonNorm's template may carry modes: the mode parameters are
+   * global, and a second template reading them would tie two unrelated shapes.
+   *
    * O(nBins) work: CPU only, no GPU path.
    */
   class TemplateFlux {
@@ -49,8 +61,23 @@ namespace ana::ic {
     /** sigma^2 contribution per analysis bin (zero if the file carried no fluctuations). */
     [[nodiscard]] std::span<const double> fluctuation() const noexcept { return m_Fluctuation; }
 
-    /** The norm-free template, rate * livetime per bin: d histogram() / d norm. */
-    [[nodiscard]] std::span<const double> rates() const noexcept { return m_Template; }
+    /**
+     * The norm-free template at the current mode values, rate * livetime per bin:
+     * d histogram() / d norm. Without modes, the template as read.
+     */
+    [[nodiscard]] std::span<const double> rates() const noexcept { return m_Shaped; }
+
+    /** Number of mode columns the file carried (0 for a plain template). */
+    [[nodiscard]] int mode_count() const noexcept { return static_cast<int>(m_Modes.size()); }
+
+    /** Parameter index of mode j. */
+    [[nodiscard]] static int mode_index(int j) noexcept;
+
+    /**
+     * d histogram() / d theta_j per bin, added to `out`: norm * d_jb * livetime where
+     * the shaped template is positive, 0 where the clip at 0 holds it.
+     */
+    void add_mode_derivative(int j, double norm, std::span<double> out) const;
 
     /** The norm-free fluctuation, sigma * livetime per bin: fluctuation() = (norm * sigmas())^2. */
     [[nodiscard]] std::span<const double> sigmas() const noexcept { return m_Sigma; }
@@ -61,6 +88,9 @@ namespace ana::ic {
    private:
     int                 m_NormIndex;
     std::vector<double> m_Template;     // rate * livetime, per bin
+    std::vector<std::vector<double>> m_Modes;       // d_j * livetime, per mode and bin
+    std::vector<double>              m_ModeValues;  // theta_j the shaped template was built at
+    std::vector<double> m_Shaped;       // max(m_Template + sum_j theta_j m_Modes[j], 0)
     std::vector<double> m_Sigma;        // fluctuation rate * livetime, per bin
     std::vector<double> m_Histogram;    // norm * m_Template
     std::vector<double> m_Fluctuation;  // (norm * m_Sigma)^2

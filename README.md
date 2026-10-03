@@ -172,3 +172,23 @@ Away from the minimum the relative differences should be at the level of the `fd
 Asimov data sets every bin's count to the prediction at the truth, `k = mu`. That is the maximum of a Poisson term but not of a SAY term: SAY's derivative carries `psi(k + alpha)`, which is curved in `k`, so wherever the MC variance is large compared with `mu` (a few-event muon template, say) an Asimov fit under `SAY` or `SAYMean` moves away from the truth. Plain-Asimov sensitivities under SAY are then not what pseudo-experiments give.
 
 `"AsimovMode": "Expected"` in the `IceCube` block averages each bin's SAY term over the counts SAY expects at the truth, a negative binomial of mean `mu` and variance `mu + sigma^2`. The averaged likelihood is stationary at the truth, so an Asimov fit recovers it under `SAYMean`. Under `SAY` (L_Eff) it is not, because L_Eff's mean is `mu + sigma^2/mu`, and the shift that remains is L_Eff's own bias. Counts below 8 are summed exactly. Above that, every band of a factor 4 in `k` gets an 8-point Gauss rule, so a bin costs about 8 to 40 `lgamma` per evaluation instead of 1. The default `"Mean"` keeps `k = mu`. The option has no effect with `UseData: true`, and under `Poisson`, whose term is linear in `k`, the two modes are the same fit.
+
+## Muon-template shape modes (`MuonTmplMode1`)
+
+The Corsika muon template is a smoothed histogram of a few hundred effective MC events, so its uncertainty is correlated across many bins: resampling the events moves whole regions of the template together. The per-bin variance that SAY and SAYMean use cannot describe that, and fits then undercover in MuonNorm. A template file can instead carry the leading directions of that uncertainty, each controlled by one Gaussian-constrained nuisance parameter:
+
+```
+template_b(theta) = max(template_b + MuonTmplMode1 * d_b, 0),    MuonTmplMode1 ~ N(0, 1)
+```
+
+`d` is the template's 1-sigma shift along the mode, a rate per bin like the template itself. It goes in a third column, declared in the header:
+
+```
+# template bins 1650
+# template modes 1
+<template_rate> <fluctuation_rate> <mode1_rate>      (one row per bin, all per second)
+```
+
+To use it, set `MuonTmplMode1` free in the config with `"Constrained": true, "PriorValue": 0.0, "PriorWidth": 1.0`. The fluctuation column is not affected by the mode. Only MuonNorm's template may carry modes, and a free `MuonTmplMode1` with no mode column is rejected. At `MuonTmplMode1 = 0` the fit is identical to one without the mode, and Asimov data stays stationary there under every likelihood. With the mode in place, use `Poisson`: SAYMean's per-bin variance would count part of the same uncertainty twice.
+
+The parameter is the last entry of the IceCube layout (index 25, after `AstroLogECut`). The config's `Parameter` array is read by position, so `ICLikelihood` now rejects an array whose names do not match the layout in count and order; a config written before this parameter existed needs the entry appended (`"Fixed": true` keeps the old fit).

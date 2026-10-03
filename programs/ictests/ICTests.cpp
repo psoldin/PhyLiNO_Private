@@ -163,7 +163,7 @@ TEST(BinningTest, MixedCascadeGrid) {
 // count and the two contiguous blocks components index into.
 TEST(ICParameterTest, Layout) {
   using namespace params::ic;
-  ASSERT_TRUE(number_of_parameters() == 25);
+  ASSERT_TRUE(number_of_parameters() == 26);
   ASSERT_TRUE(nBarrParams == 4);
   ASSERT_TRUE(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -181,6 +181,20 @@ TEST(ICParameterTest, Layout) {
   // Log-parabola curvature and cutoff energy follow, one per extended model.
   ASSERT_TRUE(AstroParabolaB == AstroEBreak + 1);
   ASSERT_TRUE(AstroLogECut == AstroParabolaB + 1);
+  // Muon-template shape modes close the layout.
+  ASSERT_TRUE(MuonTmplMode1 == AstroLogECut + 1);
+  ASSERT_TRUE(MuonTmplMode1 + nTemplateModes == number_of_parameters());
+
+  // parameter_names() is what configs are checked against: one name per index,
+  // spelled as the enum.
+  const auto names = parameter_names();
+  ASSERT_TRUE(static_cast<int>(names.size()) == number_of_parameters());
+  EXPECT_EQ(names[AstroNorm], "AstroNorm");
+  EXPECT_EQ(names[MuonNorm], "MuonNorm");
+  EXPECT_EQ(names[HoleIceP1], "HoleIceP1");
+  EXPECT_EQ(names[GalacticNorm1], "GalacticNorm1");
+  EXPECT_EQ(names[AstroLogECut], "AstroLogECut");
+  EXPECT_EQ(names[MuonTmplMode1], "MuonTmplMode1");
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -2526,6 +2540,101 @@ TEST(TemplateFluxTest, SubGridFileBinning) {
   ASSERT_TRUE(threw);
 }
 
+// Shape modes: a template file may carry extra columns d_j, and the template
+// becomes max(T + theta_j d_j, 0) with theta_j = MuonTmplMode1 + j. The fluctuation
+// does not move, the clip at zero holds, and the derivative is zero where it does.
+TEST(TemplateFluxTest, ShapeModes) {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+  using namespace params::ic;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  const double rates[3]  = {1.0e-6, 2.0e-6, 4.0e-6};
+  const double sigmas[3] = {2.0e-7, 3.0e-7, 5.0e-7};
+  const double modes[3]  = {-5.0e-7, 1.0e-6, 2.0e-6};
+
+  const std::string path = "ictests_template_modes.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 3\n# template modes 1\n";
+    out << "# columns: template_rate fluctuation_rate mode1_rate\n";
+    for (int b = 0; b < 3; ++b) out << rates[b] << ' ' << sigmas[b] << ' ' << modes[b] << '\n';
+    out << "\n";  // a trailing blank line is not a row
+  }
+  const double livetime = 3.0e8;
+  TemplateFlux flux(binning, path, MuonNorm, livetime);
+  ASSERT_EQ(flux.mode_count(), 1);
+  ASSERT_EQ(TemplateFlux::mode_index(0), MuonTmplMode1);
+
+  std::vector<double> values(number_of_parameters(), 0.0);
+  ParameterWrapper    parameter(number_of_parameters());
+  auto at = [&](const double norm, const double theta) {
+    values[MuonNorm]      = norm;
+    values[MuonTmplMode1] = theta;
+    parameter.reset_parameter(values.data());
+    flux.check_and_recalculate(parameter);
+  };
+
+  // theta = 0: the plain template.
+  at(2.0, 0.0);
+  for (int b = 0; b < 3; ++b) EXPECT_NEAR(flux.histogram()[b], 2.0 * rates[b] * livetime, 1e-9 * rates[b] * livetime);
+
+  // theta = 1.5 moves the template, not the fluctuation, and is picked up even
+  // though the norm did not change.
+  at(2.0, 1.5);
+  for (int b = 0; b < 3; ++b) {
+    const double mu  = 2.0 * (rates[b] + 1.5 * modes[b]) * livetime;
+    const double ssq = (2.0 * sigmas[b] * livetime) * (2.0 * sigmas[b] * livetime);
+    EXPECT_NEAR(flux.histogram()[b], mu, 1e-9 * std::abs(mu));
+    EXPECT_NEAR(flux.rates()[b], mu / 2.0, 1e-9 * std::abs(mu));
+    EXPECT_NEAR(flux.fluctuation()[b], ssq, 1e-9 * ssq);
+  }
+  std::vector<double> d(3, 0.0);
+  flux.add_mode_derivative(0, 2.0, d);
+  for (int b = 0; b < 3; ++b) EXPECT_NEAR(d[b], 2.0 * modes[b] * livetime, 1e-9 * std::abs(modes[b]) * livetime);
+
+  // theta = 3: bin 0 would go negative (1e-6 - 1.5e-6), so it clips at zero and
+  // its derivative vanishes; the others keep theirs.
+  at(2.0, 3.0);
+  EXPECT_EQ(flux.histogram()[0], 0.0);
+  EXPECT_GT(flux.histogram()[1], 0.0);
+  std::ranges::fill(d, 0.0);
+  flux.add_mode_derivative(0, 2.0, d);
+  EXPECT_EQ(d[0], 0.0);
+  EXPECT_NEAR(d[1], 2.0 * modes[1] * livetime, 1e-9 * modes[1] * livetime);
+
+  // Back to theta = 0 restores the template exactly.
+  at(2.0, 0.0);
+  for (int b = 0; b < 3; ++b) EXPECT_NEAR(flux.histogram()[b], 2.0 * rates[b] * livetime, 1e-9 * rates[b] * livetime);
+
+  // Only MuonNorm's template may carry modes: the mode parameters are global.
+  EXPECT_THROW(TemplateFlux(binning, path, MuonGunNorm, livetime), std::runtime_error);
+  std::remove(path.c_str());
+
+  // A row with the wrong column count for the declared modes is an error, not a
+  // silent shift of every later bin; so is a mode count the layout cannot hold.
+  auto rejects = [&](const std::string& body) {
+    const std::string bad = "ictests_template_modes_bad.txt";
+    {
+      std::ofstream out(bad);
+      out << body;
+    }
+    bool threw = false;
+    try {
+      TemplateFlux broken(binning, bad, MuonNorm, livetime);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    std::remove(bad.c_str());
+    return threw;
+  };
+  EXPECT_TRUE(rejects("# template bins 3\n# template modes 1\n1 0.1 0.2\n2 0.2\n3 0.3 0.1\n"));
+  EXPECT_TRUE(rejects("# template bins 3\n1 0.1 0.2\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_TRUE(rejects("# template bins 3\n# template modes 2\n1 0.1 0.2 0.1\n2 0.2 0.1 0.1\n3 0.3 0.1 0.1\n"));
+  EXPECT_FALSE(rejects("# template bins 3\n1 0.1\n\n2 0.2\n3 0.3\n"));
+}
+
 // SnowStorm gradients are a histogram-level additive perturbation of mu and
 // sigma^2 (NNMFit snowstorm_gradient.make_graph, external_gradients: True so the
 // histogram-gradient covariance is excluded):
@@ -3476,7 +3585,7 @@ TEST(BlindingTest, HidesTheSignalParametersOnly) {
   for (const std::string& name : {"ConvNorm", "BarrH", "BarrW", "BarrY", "BarrZ", "CRGrad",
                                   "DeltaGamma", "MuonNorm", "MuonGunNorm", "VetoThreshold",
                                   "DOMEff", "IceAbs", "IceScat", "HoleIceP0", "HoleIceP1",
-                                  "GalacticNorm0", "GalacticNorm1"})
+                                  "GalacticNorm0", "GalacticNorm1", "MuonTmplMode1"})
     EXPECT_FALSE(result::ic::is_blinded_parameter(name)) << name;
 }
 

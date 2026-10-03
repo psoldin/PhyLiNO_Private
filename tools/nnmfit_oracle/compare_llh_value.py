@@ -71,6 +71,9 @@ NAME_MAP = {
     "AstroEBreak": "e_break",
     "AstroParabolaB": "astro_parabola_b",
     "AstroLogECut": "cutoff_pos",
+    # PhyLiNO-only: the muon template's shape mode. NNMFit has no such parameter,
+    # so it is skipped below -- and only a point at 0 is comparable at all.
+    "MuonTmplMode1": "phylino_muon_template_mode_1",
     "GalacticNorm0": "cringefits_norm",
     "GalacticNorm1": "cringefits_norm",
 }
@@ -161,6 +164,9 @@ def to_nnmfit_names(point, known, what):
     unmapped = sorted(set(point) - set(NAME_MAP))
     if unmapped:
         raise SystemExit(f"no NNMFit name known for: {unmapped} (extend NAME_MAP)")
+    if point.get("MuonTmplMode1", 0.0) != 0.0:
+        raise SystemExit(f"{what}: MuonTmplMode1 = {point['MuonTmplMode1']}, but NNMFit has no muon-template "
+                         "shape mode; only a point with MuonTmplMode1 = 0 can be compared")
 
     translated = {}
     skipped = []

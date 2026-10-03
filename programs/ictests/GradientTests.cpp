@@ -109,6 +109,19 @@ namespace {
     return path;
   }
 
+  /// write_template() plus one shape-mode column. Every fifth bin's mode is
+  /// -5x its rate, so at MuonTmplMode1 = 0.4 it is clipped at zero.
+  std::string write_template_with_mode(const std::string& path, const int bins, const double scale) {
+    std::ofstream out(path);
+    out << "# template bins " << bins << "\n# template modes 1\n";
+    for (int b = 0; b < bins; ++b) {
+      const double rate = scale * (1.0 + 0.3 * b);
+      const double mode = b % 5 == 3 ? -5.0 * rate : 0.4 * rate * std::sin(0.9 * b + 0.2);
+      out << rate << ' ' << 0.1 * scale * (1.0 + 0.2 * b) << ' ' << mode << '\n';
+    }
+    return path;
+  }
+
   /// Writes a SnowStorm gradient file over `bins` bins; removed by the caller.
   std::string write_gradients(const std::string& path, const int bins) {
     static const char* kNames[5] = {"DOMEfficiency", "IceAbsorption", "IceScattering", "HoleIceForward_p0",
@@ -158,6 +171,7 @@ namespace {
     v[P::AstroEBreak]    = 4.3;
     v[P::AstroParabolaB] = 0.15;
     v[P::AstroLogECut]   = 5.5;
+    v[P::MuonTmplMode1]  = 0.4;
     return v;
   }
 
@@ -508,6 +522,61 @@ TEST(AnalyticGradientTest, GaussNewtonHessian) {
   }
   std::remove(tmpl.c_str());
   std::remove(grads.c_str());
+}
+
+/// The muon template's shape mode: d mu / d MuonTmplMode1 = MuonNorm * d where the
+/// template is not clipped, under every likelihood, with the clip active in some
+/// bins at the evaluation point. Under Poisson at data = prediction the
+/// Gauss-Newton Hessian is exact, so its mode rows must match finite differences
+/// of the gradient.
+TEST(AnalyticGradientTest, MuonTemplateShapeMode) {
+  const Binning          binning = gradient_binning();
+  const io::ic::ICSample sample  = gradient_sample(binning, 12, false);
+  const std::string      tmpl    = write_template_with_mode("ictests_grad_template_mode.txt", binning.total_bins(), 15.0);
+
+  auto config = [&] {
+    io::ic::SampleConfig cfg{.name = "mode", .binning = binning, .mc_binning = binning};
+    cfg.components          = {"astro", "conventional", "prompt", "muontemplate"};
+    cfg.template_file       = tmpl;
+    cfg.template_norm_index = P::MuonNorm;
+    return cfg;
+  };
+
+  for (const LikelihoodCase& lc : kLikelihoods) {
+    SCOPED_TRACE(lc.name);
+    SampleLikelihood likelihood(sample, config(), gradient_settings(AstroModel::Powerlaw), nullptr, lc.say,
+                                lc.alpha_offset);
+    ASSERT_EQ(likelihood.template_modes(), 1);
+    prepare_data(likelihood);
+    const std::vector<double> x = perturbed_values();
+    std::vector<int>          used = flux_parameters(AstroModel::Powerlaw, false);
+    used.push_back(P::MuonNorm);
+    used.push_back(P::MuonTmplMode1);
+    expect_gradients_agree(analytic_gradient(likelihood, x), numerical_gradient(likelihood, x), used, 2.0e-5);
+  }
+
+  SampleLikelihood likelihood(sample, config(), gradient_settings(AstroModel::Powerlaw), nullptr, false);
+  const std::vector<double> x = perturbed_values();
+  ParameterWrapper          at_x(kNPar);
+  at_x.reset_parameter(x.data());
+  likelihood.generate_asimov(at_x);
+
+  std::vector<double> hessian;
+  const std::vector<double> g = analytic_gradient(likelihood, x, &hessian);
+  EXPECT_NEAR(g[P::MuonTmplMode1], 0.0, 1e-8);  // stationary at the Asimov point
+  for (const int i : {P::MuonNorm, P::MuonTmplMode1}) {
+    const double        h  = 1.0e-5 * std::max(1.0, std::fabs(x[i]));
+    std::vector<double> up = x, down = x;
+    up[i] += h;
+    down[i] -= h;
+    const std::vector<double> g_up   = analytic_gradient(likelihood, up);
+    const std::vector<double> g_down = analytic_gradient(likelihood, down);
+    for (const int j : {P::AstroNorm, P::ConvNorm, P::MuonNorm, P::MuonTmplMode1}) {
+      const double fd = (g_up[j] - g_down[j]) / (2.0 * h);
+      EXPECT_NEAR(hessian[i * kNPar + j], fd, 1e-5 * std::max(1.0, std::fabs(fd))) << i << ' ' << j;
+    }
+  }
+  std::remove(tmpl.c_str());
 }
 
 /// The per-bin derivatives in every branch say_llh() takes -- ordinary,

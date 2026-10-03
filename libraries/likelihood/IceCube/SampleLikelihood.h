@@ -148,6 +148,8 @@ namespace ana::ic {
     [[nodiscard]] std::span<const double> template_histogram() const noexcept {
       return m_Template ? m_Template->histogram() : std::span<const double>{};
     }
+    /** Shape-mode columns of this sample's muon template (0 without one). */
+    [[nodiscard]] int template_modes() const noexcept { return m_Template ? m_Template->mode_count() : 0; }
     /** Summed per-bin prediction of this sample's galactic templates (analysis binning). */
     [[nodiscard]] std::span<const double> galactic_histogram() const noexcept { return m_GalacticTotal; }
     [[nodiscard]] std::span<const double> systematics_mu_delta() const noexcept {

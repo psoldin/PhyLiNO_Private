@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <string_view>
+
 namespace params::ic {
 
   /**
@@ -35,6 +38,11 @@ namespace params::ic {
    *   AstroParabolaB, AstroLogECut -> NNMFit's LogEnergyIndex (astro_parabola_b) and
    *     Cutoff (cutoff_pos), multiplied onto the single power law when IceCube.AstroModel
    *     is "LogParabola" or "PowerlawCutoff" respectively. Fixed in every other config.
+   *   MuonTmplMode1 -> shape mode of the Corsika muon template: the template becomes
+   *     max(T + MuonTmplMode1 * d, 0) for the per-bin pattern d the template file
+   *     carries as a third column (TemplateFlux). A Gaussian-constrained nuisance
+   *     (prior 0 +- 1) for the template's own correlated MC uncertainty. No NNMFit
+   *     counterpart; Fixed at 0 in a config whose template has no mode column.
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -87,7 +95,12 @@ namespace params::ic {
     // their single-power-law meaning there. Fixed in every other config. ---
     AstroParabolaB,  // "LogParabola": NNMFit astro_parabola_b, x (E/1e5)^(-b log10(E/1e5))
     AstroLogECut,    // "PowerlawCutoff": NNMFit cutoff_pos = log10(E_cut / GeV), x exp(-E/E_cut)
-    _last_of_General_
+
+    // --- shape modes of the muon template (MuonNorm's template only), in the
+    // order of the template file's mode columns ---
+    MuonTmplMode1,
+    _last_of_TemplateModes_,
+    _last_of_General_ = _last_of_TemplateModes_
   };
 
   inline constexpr int nBarrParams =
@@ -95,6 +108,9 @@ namespace params::ic {
 
   inline constexpr int nDetSysParams =
     static_cast<int>(_last_of_DetSys_) - static_cast<int>(DOMEff);  // = 5
+
+  inline constexpr int nTemplateModes =
+    static_cast<int>(_last_of_TemplateModes_) - static_cast<int>(MuonTmplMode1);  // = 1
 
   constexpr int number_of_general_parameters() noexcept {
     return static_cast<int>(_last_of_General_);
@@ -107,9 +123,24 @@ namespace params::ic {
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
   static_assert(nDetSysParams == 5,
     "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
-  static_assert(number_of_parameters() == 25,
+  static_assert(number_of_parameters() == 26,
     "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms "
-    "+ 3 astro broken-power-law params + log-parabola curvature + cutoff energy. "
-    "Update every config's Parameter array and this if the layout changes.");
+    "+ 3 astro broken-power-law params + log-parabola curvature + cutoff energy + 1 muon-template mode. "
+    "Update every config's Parameter array, parameter_names() and this if the layout changes.");
+
+  /**
+   * The config "Name" of every parameter, in layout order. The config's Parameter
+   * array is read by position, so ICLikelihood checks it against this list: a config
+   * written for a different layout would otherwise assign every later value to the
+   * wrong parameter, or read past its end.
+   */
+  inline constexpr std::array<std::string_view, number_of_parameters()> parameter_names() noexcept {
+    return {"AstroNorm",     "SpectralIndex", "ConvNorm",      "PromptNorm",     "BarrH",
+            "BarrW",         "BarrY",         "BarrZ",         "CRGrad",         "DeltaGamma",
+            "MuonNorm",      "MuonGunNorm",   "VetoThreshold", "DOMEff",         "IceAbs",
+            "IceScat",       "HoleIceP0",     "HoleIceP1",     "GalacticNorm0",  "GalacticNorm1",
+            "AstroGamma1",   "AstroGamma2",   "AstroEBreak",   "AstroParabolaB", "AstroLogECut",
+            "MuonTmplMode1"};
+  }
 
 }  // namespace params::ic

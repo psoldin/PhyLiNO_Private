@@ -22,6 +22,8 @@ namespace ana::ic {
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(std::move(gpu_backend))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
+    check_parameter_layout();
+
     const io::ic::LikelihoodType likelihood_type = input_options.likelihood_type();
     const bool                   use_say         = io::ic::uses_say(likelihood_type);
     std::cout << "ICLikelihood: using " << io::ic::likelihood_name(likelihood_type) << " likelihood\n";
@@ -67,8 +69,37 @@ namespace ana::ic {
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");
 
+    // A free mode parameter that no template reads has a zero gradient and a zero
+    // row in the Hessian; Migrad would wander along it and Hesse would fail.
+    const auto& fixed = m_Options->inputOptions().input_parameters().fixed();
+    for (int j = 0; j < params::ic::nTemplateModes; ++j) {
+      const int  index = params::ic::MuonTmplMode1 + j;
+      const bool used  = std::ranges::any_of(m_Samples, [&](const auto& s) { return s->template_modes() > j; });
+      if (!fixed[static_cast<std::size_t>(index)] && !used)
+        throw std::runtime_error("ICLikelihood: " + std::string(params::ic::parameter_names()[index]) +
+                                 " is free, but no sample's muon template carries mode column " +
+                                 std::to_string(j + 1) + "; fix it or use a template file with modes");
+    }
+
     setup_pulls();
     initialize_data(input_options.use_data(), input_options.asimov_mode());
+  }
+
+  void ICLikelihood::check_parameter_layout() const {
+    const auto& names    = m_Options->inputOptions().input_parameters().names();
+    const auto  expected = params::ic::parameter_names();
+    std::string problem;
+    if (names.size() != expected.size())
+      problem = "it lists " + std::to_string(names.size()) + " parameters, the layout has " +
+                std::to_string(expected.size());
+    for (std::size_t i = 0; problem.empty() && i < expected.size(); ++i)
+      if (names[i] != expected[i])
+        problem = "entry " + std::to_string(i) + " is '" + names[i] + "', the layout expects '" +
+                  std::string(expected[i]) + "'";
+    if (!problem.empty())
+      throw std::runtime_error("ICLikelihood: the config's Parameter array does not match the IceCube parameter "
+                               "layout (params::ic): " + problem +
+                               ". The array is read by position; append any missing parameters in layout order.");
   }
 
   void ICLikelihood::setup_pulls() {

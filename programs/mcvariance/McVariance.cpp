@@ -64,7 +64,7 @@ namespace {
         {"GalacticNorm0", GalacticNorm0}, {"GalacticNorm1", GalacticNorm1},
         {"AstroGamma1", AstroGamma1},     {"AstroGamma2", AstroGamma2},
         {"AstroEBreak", AstroEBreak},       {"AstroParabolaB", AstroParabolaB},
-        {"AstroLogECut", AstroLogECut},
+        {"AstroLogECut", AstroLogECut},     {"MuonTmplMode1", MuonTmplMode1},
     };
     return map;
   }

@@ -170,6 +170,9 @@ namespace ana::ic {
         col.dmu[b] += rates[b];
         col.dssq[b] += 2.0 * norm * sigmas[b] * sigmas[b];
       }
+      // The shape modes move the template, not its fluctuation: no dssq.
+      for (int j = 0; j < m_Template->mode_count(); ++j)
+        m_Template->add_mode_derivative(j, norm, column(TemplateFlux::mode_index(j)).dmu);
     }
 
     if (m_Systematics) {
