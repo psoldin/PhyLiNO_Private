@@ -30,6 +30,14 @@ namespace ana {
 
     bool minimize();
 
+    /**
+     * Override the --tolerance this fit converges to. The scans set their
+     * per-point fits to --scanTolerance this way. Kept on the Fit rather than
+     * set on the minimizer alone because a restart builds a fresh minimizer,
+     * which would otherwise fall back to --tolerance.
+     */
+    void set_tolerance(double tolerance);
+
     [[nodiscard]] double time_duration() const;
 
     [[nodiscard]] bool converged() const;
@@ -46,6 +54,8 @@ namespace ana {
 
     bool m_Converged;
     bool m_FitPerformed;
+
+    double m_Tolerance;
 
     std::shared_ptr<ROOT::Math::Minimizer> m_Minimizer;
 

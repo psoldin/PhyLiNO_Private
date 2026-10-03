@@ -30,6 +30,7 @@ namespace result::ic {
     double                        llh       = 0.0;
     double                        edm       = 0.0;  ///< Estimated distance to the minimum, in -2 log L units.
     std::map<std::string, double> parameter_values;  ///< Fitted value, keyed by config name.
+    std::map<std::string, double> parameter_errors;  ///< Fitted error, keyed by config name.
   };
 
   /// Reads back a point an earlier run already fitted with --output-format

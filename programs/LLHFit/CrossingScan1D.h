@@ -39,7 +39,7 @@
  *    shrinking even where the profile bends.
  *
  * A side is done once a fitted point lies within `tolerance` of the level, once
- * the bracket is down to neighbouring lattice nodes, or once it runs into a
+ * the bracket is down to `bracket_width` lattice nodes, or once it runs into a
  * configured bound below the level. The reported crossing is the interpolation
  * in z between the bracketing points, which is far more precise than the
  * tolerance on the point itself.
@@ -89,6 +89,14 @@ namespace scan1d::crossing {
     /// Interpolated points are kept at least this fraction of the bracket away
     /// from either end, so a bracket on a bending profile still shrinks.
     double margin = 0.05;
+    /// A side is also done once its bracket is down to this many lattice units.
+    /// The crossing is the interpolation in z between the two bracketing
+    /// points, and z is close to linear over a bracket this narrow (with the
+    /// default lattice of 64 units per Hesse error, 4 units are 1/16 of a sigma),
+    /// so tightening it further buys nothing but fits. Before this, a point that
+    /// missed `tolerance` by a hair was followed by a fit at every lattice node
+    /// until two adjacent ones bracketed the level. 1 restores that behaviour.
+    int bracket_width = 4;
 
     /// Safety cap on the points of one side.
     int max_points = 30;
@@ -99,7 +107,7 @@ namespace scan1d::crossing {
   };
 
   enum class Status {
-    converged,  ///< A point lies within tolerance of the level, or the bracket is down to one lattice unit.
+    converged,  ///< A point lies within tolerance of the level, or the bracket is down to bracket_width lattice units.
     at_limit,   ///< The profile stays below the level up to the configured bound; the crossing is the bound.
     failed,     ///< Fits next to the last usable point produced no likelihood.
     exhausted,  ///< max_points used without convergence.
@@ -218,7 +226,7 @@ namespace scan1d::crossing {
       auto near_level = [&](int node) { return std::abs(profile.at(node) - reference - settings.level) <= settings.tolerance; };
 
       if (side.outer) {
-        if (near_level(b) || near_level(*side.outer) || std::abs(*side.outer - b) <= 1) {
+        if (near_level(b) || near_level(*side.outer) || std::abs(*side.outer - b) <= std::max(1, settings.bracket_width)) {
           result.crossing = estimate(profile, reference, side, target_z);
           result.status   = Status::converged;
           return result;

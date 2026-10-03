@@ -143,6 +143,16 @@ namespace io {
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
 
     /**
+     * Tolerance of the per-point fits of a scan (--scanTolerance, default 0.5,
+     * i.e. EDM < 1e-3). A scan point only has to be at its minimum to well
+     * within the delta chi2 the scan resolves, which is orders of magnitude
+     * looser than what the free fit -- whose parameters and errors are reported
+     * -- is held to by --tolerance. Holding every point to the free fit's
+     * tolerance is what made Migrad restart on points that stopped at EDM 2e-4.
+     */
+    [[nodiscard]] double scan_tolerance() const noexcept { return m_ScanTolerance; }
+
+    /**
      * How often a Migrad that reported failure is restarted, each time on a
      * freshly built minimizer seeded where the previous attempt stopped
      * (--fitRetries, default 3). See Fit::minimize() for the measurements.
@@ -218,6 +228,7 @@ namespace io {
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     bool   m_Blind{false};          /**< Keep the signal out of the written results. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
+    double m_ScanTolerance{0.5}; /**< The tolerance of the per-point fits of a scan. */
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
     std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */

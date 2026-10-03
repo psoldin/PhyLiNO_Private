@@ -23,7 +23,8 @@ namespace ana {
     , m_Module(std::move(module))
     , m_FitDuration(0)
     , m_Converged(false)
-    , m_FitPerformed(false) {
+    , m_FitPerformed(false)
+    , m_Tolerance(m_Options->inputOptions().tolerance()) {
 #ifdef _OPENMP
     // Process-wide: OpenMP has no per-object thread pool, unlike the
     // std::async sample-level concurrency in ICLikelihood, which is gated
@@ -89,7 +90,7 @@ namespace ana {
     m_Minimizer->SetPrintLevel(silent || input_options.blind() ? 0 : 2);
 
     m_Minimizer->SetFunction(*m_Functor);
-    m_Minimizer->SetTolerance(input_options.tolerance());
+    m_Minimizer->SetTolerance(m_Tolerance);
     m_Minimizer->SetStrategy(input_options.minuit_strategy());
 
     // Minuit2's own default budget is 200 + 100*n + 5*n^2 calls, which a fit
@@ -266,6 +267,11 @@ namespace ana {
     m_FitPerformed = true;
 
     return m_Converged;
+  }
+
+  void Fit::set_tolerance(const double tolerance) {
+    m_Tolerance = tolerance;
+    m_Minimizer->SetTolerance(tolerance);
   }
 
   double Fit::time_duration() const {

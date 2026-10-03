@@ -181,3 +181,26 @@ TEST(CrossingScan1D, BatchesKeepTheResult) {
   EXPECT_NEAR(harness.lower(result), -0.04, 1e-4);
   EXPECT_NEAR(harness.upper(result), 0.12, 1e-4);
 }
+
+/// Shaped after the AstroNorm profile of the IceCube tracks Asimov scan, in
+/// lattice units of 1/64 of the Hesse error: the upper side is three times
+/// narrower than Hesse says, the lower side about as wide. The first secant on
+/// the upper side lands a hair outside the tolerance (delta chi2 0.975), which
+/// used to cost a fit at every node until two neighbours bracketed the level.
+/// A bracket of a few nodes already pins the crossing through the
+/// interpolation in z.
+TEST(CrossingScan1D, StopsOnANarrowBracket) {
+  Harness harness;
+  harness.unit = 1.0;
+  const auto result = harness.run([](double x) {
+    const double d = x / (x < 0.0 ? 65.65 : 23.29);
+    return d * d;
+  });
+
+  EXPECT_EQ(result.sides[0].status, Status::converged);
+  EXPECT_EQ(result.sides[1].status, Status::converged);
+  EXPECT_NEAR(harness.lower(result), -65.65, 0.1);
+  EXPECT_NEAR(harness.upper(result), 23.29, 0.1);
+  // Node 0, then -64 and -66 below, 64, 23 and 25 above.
+  EXPECT_LE(harness.evaluations, 6);
+}

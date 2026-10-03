@@ -44,6 +44,11 @@ namespace {
   struct StoredFit {
     double              llh = 0.0;
     std::vector<double> parameters;  ///< Empty unless the fit is usable as a seed; see seedquality::usable().
+    /// Fitted errors in minimizer order, 0 where the file has none (e.g. a
+    /// parameter --blind dropped). Empty exactly when `parameters` is: a 1D scan
+    /// spaces its lattice by the best fit's error, so a free fit read back from
+    /// disk has to bring its errors along or the lattice would change.
+    std::vector<double> errors;
   };
 
   /// seedquality::start_vector() plus the one-off report of a partial block.
@@ -85,6 +90,7 @@ namespace {
     double                        edm       = std::numeric_limits<double>::infinity();
     double                        llh       = 0.0;
     std::map<std::string, double> values;
+    std::map<std::string, double> errors;
 
     if (format == "protobuf") {
       const auto stored = result::ic::read_ice_cube_results_protobuf(name);
@@ -95,6 +101,7 @@ namespace {
       edm       = stored->edm;
       llh       = stored->llh;
       values    = stored->parameter_values;
+      errors    = stored->parameter_errors;
     } else {
       const std::filesystem::path path = name + ".json";
       if (!std::filesystem::exists(path))
@@ -119,6 +126,8 @@ namespace {
         for (const auto& [key, parameter] : stored["parameters"].items()) {
           if (parameter.contains("value"))
             values[key] = parameter["value"].get<double>();
+          if (parameter.contains("error") && parameter["error"].is_number())
+            errors[key] = parameter["error"].get<double>();
         }
       }
     }
@@ -128,8 +137,16 @@ namespace {
 
     // A fit seeds its neighbours when it got close enough to its own minimum,
     // which EDM measures and Migrad's converged flag does not. See SeedQuality.h.
-    if (seedquality::usable(converged, edm))
+    if (seedquality::usable(converged, edm)) {
       result.parameters = start_vector(input_parameters, values);
+      if (!result.parameters.empty()) {
+        const auto& names = input_parameters.names();
+        result.errors.assign(names.size(), 0.0);
+        for (std::size_t i = 0; i < names.size(); ++i)
+          if (const auto it = errors.find(names[i]); it != errors.end() && std::isfinite(it->second))
+            result.errors[i] = it->second;
+      }
+    }
 
     return result;
   }
@@ -327,7 +344,7 @@ namespace {
   struct SeedFit {
     double              llh = std::numeric_limits<double>::infinity();
     std::vector<double> parameters;  ///< Fitted X; empty if not run, non-finite, or read back from disk.
-    std::vector<double> errors;      ///< Migrad/Hesse errors; empty unless this run fitted them itself.
+    std::vector<double> errors;      ///< Migrad/Hesse errors, fitted in this run or read back with the parameters.
     bool                converged  = false;
     bool                from_store = false;  ///< True if read back from best_fit_name instead of freshly fitted.
   };
@@ -354,6 +371,7 @@ namespace {
       SeedFit result;
       result.llh        = known->llh;
       result.parameters = known->parameters;
+      result.errors     = known->errors;
       result.from_store = true;
       if (warm_start && !known->parameters.empty())
         seeds.set_fallback(known->parameters);
@@ -396,6 +414,89 @@ namespace {
     }
 
     return result;
+  }
+
+  /// The parameters a 1D scan of every parameter would visit: the non-fixed
+  /// ones, minus the signal parameters under --blind.
+  std::vector<std::string> free_parameter_names(const std::shared_ptr<io::Options>& options) {
+    const auto& input_parameters = options->inputOptions().input_parameters();
+    const auto& names            = input_parameters.names();
+    const bool  blind            = options->inputOptions().blind();
+
+    std::vector<std::string> result;
+    for (std::size_t i = 0; i < input_parameters.size(); ++i)
+      if (!input_parameters.fixed(static_cast<int>(i)) && !(blind && result::ic::is_blinded_parameter(names[i])))
+        result.push_back(names[i]);
+    return result;
+  }
+
+  /// Extension the result writers give a file of the given --output-format.
+  std::string result_extension(const std::string& format) {
+    return format == "protobuf" ? ".pb.gz" : ".json";
+  }
+
+  /**
+   * @brief Lets a 1D scan start from the free fit a sibling scan already did.
+   *
+   * Every 1D scan of a run without extra fixed parameters starts from the same
+   * free fit -- all non-fixed parameters floating -- and only names it after
+   * the parameter it scans (`prefix` + label). Running it again per parameter
+   * repeated the most expensive fit of the whole run once per parameter. If
+   * this label has no free fit yet but a sibling's is on disk and usable, it is
+   * copied under this label's name, and the scan reads it back exactly as a
+   * resumed run would -- errors included, since they space the lattice.
+   */
+  void reuse_sibling_free_fit(const std::string& prefix, const std::string& label, const std::vector<std::string>& siblings, const io::InputParameter& input_parameters, const std::string& format) {
+    const std::string            extension = result_extension(format);
+    const std::filesystem::path  target    = prefix + label + extension;
+    if (std::filesystem::exists(target))
+      return;
+
+    for (const auto& sibling : siblings) {
+      if (sibling == label)
+        continue;
+      const std::string source = prefix + sibling;
+      const auto        stored = stored_fit(source, input_parameters, format);
+      if (!stored || stored->parameters.empty())
+        continue;
+
+      std::filesystem::copy_file(source + extension, target);
+      std::cout << "Reusing the free fit of " << sibling << " for " << label << '\n';
+      return;
+    }
+  }
+
+  /**
+   * @brief Takes node 0 of a 1D profile from the free fit instead of fitting it.
+   *
+   * Node 0 of the walk and of the crossing search sits exactly on the free
+   * fit's value of the scanned parameter, so fixing it there and minimising the
+   * rest reproduces the free fit -- at the cost of a whole fit. The free fit's
+   * own result file is copied to the node's name instead, which keeps the point
+   * on disk for plotting and for resuming, and the free fit's parameters seed
+   * the neighbours exactly as the fitted node used to.
+   *
+   * @return True if node 0 was in `nodes` and has been filled in (and removed).
+   */
+  template <typename Key>
+  bool node_zero_from_free_fit(std::vector<int>& nodes, std::map<int, double>& profile, const SeedFit& seed, const std::string& best_fit_name, const std::string& node_file, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds) {
+    const auto zero = std::ranges::find(nodes, 0);
+    if (zero == nodes.end() || !std::isfinite(seed.llh))
+      return false;
+
+    const std::string           extension = result_extension(format);
+    const std::filesystem::path source    = best_fit_name + extension;
+    const std::filesystem::path target    = node_file + extension;
+    if (!std::filesystem::exists(source))
+      return false;
+    if (!std::filesystem::exists(target))
+      std::filesystem::copy_file(source, target);
+
+    profile[0] = seed.llh;
+    if (warm_start && !seed.parameters.empty())
+      seeds.store(0, seed.parameters);
+    nodes.erase(zero);
+    return true;
   }
 
   /**
@@ -446,7 +547,10 @@ namespace {
         }
 
         ana::Fit fit(options, module, worker_index);
-        auto     min = fit.get_minimizer();
+        // A scan point only has to resolve the profile to well within the delta
+        // chi2 the scan works at, not to the free fit's --tolerance.
+        fit.set_tolerance(options->inputOptions().scan_tolerance());
+        auto min = fit.get_minimizer();
         apply_fixed(*min, node);
 
         // The scanned variable(s) are fixed above, so what warm start carries
@@ -869,6 +973,10 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
   auto evaluate = [&](const std::vector<int>& nodes, scan1d::Profile& profile) {
     std::vector<int> ordered = nodes;
 
+    node_zero_from_free_fit(ordered, profile, seed, "BestFit_" + label, node_name(label, 0), format, warm_start, seeds);
+    if (ordered.empty())
+      return;
+
     // Within a round the points nearest the current minimum come first, so an
     // interrupted run still leaves a filled-in neighbourhood of the best fit.
     if (!profile.empty()) {
@@ -1126,7 +1234,11 @@ nlohmann::json perform_1d_crossing(std::shared_ptr<io::Options> options, std::sh
   int fits_performed = 0;
 
   auto evaluate = [&](const std::vector<int>& nodes, scan1d::Profile& profile) {
-    run_scan_batch(nodes, profile, options, module, input_parameters, format, warm_start, seeds, scan_workers,
+    std::vector<int> remaining = nodes;
+    node_zero_from_free_fit(remaining, profile, axis.seed, "BestFit_" + label, "Crossing_" + label + "_0", format, warm_start, seeds);
+    if (remaining.empty())
+      return;
+    run_scan_batch(std::move(remaining), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers,
                    [&](int node) { return "Crossing_" + label + "_" + std::to_string(node); }, apply_fixed, distance, fits_performed);
   };
 
@@ -1178,11 +1290,14 @@ void perform_1d_crossing_all(std::shared_ptr<io::Options> options, std::shared_p
   const auto& names            = input_parameters.names();
   const bool  blind            = options->inputOptions().blind();
 
+  const std::vector<std::string> scanned = free_parameter_names(options);
+
   nlohmann::json all;
   for (std::size_t i = 0; i < input_parameters.size(); ++i) {
     if (input_parameters.fixed(static_cast<int>(i)) || (blind && result::ic::is_blinded_parameter(names[i])))
       continue;
 
+    reuse_sibling_free_fit("BestFit_", names[i], scanned, input_parameters, options->inputOptions().output_format());
     std::cout << "Searching the crossings of " << names[i] << "...\n";
     all[names[i]] = perform_1d_crossing(options, module, names[i], static_cast<int>(i));
   }
@@ -1223,11 +1338,16 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
     return input_parameters.fixed(static_cast<int>(i)) || (blind && result::ic::is_blinded_parameter(names[i]));
   };
 
+  const std::vector<std::string> scanned = free_parameter_names(options);
+
+  const auto& format = options->inputOptions().output_format();
+
   if (!regular) {
     for (std::size_t i = 0; i < input_parameters.size(); ++i) {
       if (skipped(i))
         continue;
 
+      reuse_sibling_free_fit("BestFit_", names[i], scanned, input_parameters, format);
       std::cout << "Scanning " << names[i] << "...\n";
       perform_1d_scan_walk(options, module, names[i], static_cast<int>(i));
     }
@@ -1292,6 +1412,7 @@ void perform_1d_scan_all(std::shared_ptr<io::Options> options, std::shared_ptr<a
                 << "] from fitted value " << value << " +- " << error << '\n';
     }
 
+    reuse_sibling_free_fit("BestFitRegular_", names[i], scanned, input_parameters, format);
     std::cout << "Scanning " << names[i] << "...\n";
     perform_1d_scan_regular_window(options, module, names[i], static_cast<int>(i), low, high, points);
   }
@@ -1353,15 +1474,19 @@ int main(int argc, char** argv) {
       } else if (scan_mode == "2d-regular") {
         perform_2d_scan_regular(options, module, scan_points, scan_points);
       } else if (scan_mode == "1d") {
-        if (scan_parameter.empty())
+        if (scan_parameter.empty()) {
           perform_1d_scan_all(options, module, false, scan_points);
-        else
+        } else {
+          reuse_sibling_free_fit("BestFit_", scan_parameter, free_parameter_names(options), options->inputOptions().input_parameters(), options->inputOptions().output_format());
           perform_1d_scan(options, module, scan_parameter);
+        }
       } else if (scan_mode == "1d-crossing") {
-        if (scan_parameter.empty())
+        if (scan_parameter.empty()) {
           perform_1d_crossing_all(options, module);
-        else
+        } else {
+          reuse_sibling_free_fit("BestFit_", scan_parameter, free_parameter_names(options), options->inputOptions().input_parameters(), options->inputOptions().output_format());
           perform_1d_crossing(options, module, scan_parameter, parameter_index(options->inputOptions().input_parameters(), scan_parameter));
+        }
       } else if (scan_mode == "nm1") {
         if (scan_parameter.empty())
           throw std::invalid_argument("--scanMode nm1 needs --scanParameter to say which parameter's sensitivity is being measured");

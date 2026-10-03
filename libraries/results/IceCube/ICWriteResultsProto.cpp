@@ -156,8 +156,10 @@ namespace result::ic {
     result.converged = msg.converged();
     result.llh       = msg.chi2();
     result.edm       = msg.edm();
-    for (const auto& [key, parameter] : msg.parameters())
+    for (const auto& [key, parameter] : msg.parameters()) {
       result.parameter_values[key] = parameter.value();
+      result.parameter_errors[key] = parameter.error();
+    }
 
     return result;
   }
