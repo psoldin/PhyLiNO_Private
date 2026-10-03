@@ -63,6 +63,8 @@ namespace io {
 	("fitRetries", po::value<int>(&m_FitRetries)->default_value(3), "Times a stalled Migrad is restarted from its own last point before the fit is given up on")
 	("minuitStrategy", po::value<int>(&m_MinuitStrategy)->default_value(1), "Minuit2 strategy: 0 fast, 1 default, 2 more accurate derivatives and Hessian updates")
 	("minimizerAlgo", po::value<std::string>(&m_MinimizerAlgo)->default_value("Migrad"), "Minuit2 algorithm: Migrad, Combined (Migrad, then Simplex and Migrad again on failure), Simplex or Fumili")
+	("gradient", po::value<bool>(&m_AnalyticGradient)->default_value(true), "Hand the minimizer the likelihood's analytic gradient where it has one (IceCube) instead of letting Minuit2 differentiate numerically")
+	("hessian", po::value<std::string>(&m_Hessian)->default_value("gn"), "Second derivatives the minimizer gets with --gradient: gn (the likelihood's Gauss-Newton Hessian as Migrad's metric, with Minuit2 strategy raised to 2 so the whole matrix seeds it, and the reported errors from the exact Hessian -- central differences of the analytic gradient) or none (Minuit2's own numerical ones)")
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")
 	("randomizeWidth", po::value<double>(&m_RandomizeWidth)->default_value(0.08), "Relative width of the randomized start values (NNMFit's default is 0.08)")
@@ -89,6 +91,9 @@ namespace io {
     notify(vm);
 
     m_GpuDeviceOfWorker = parse_gpu_devices(m_GpuDevices);
+
+    if (m_Hessian != "gn" && m_Hessian != "none")
+      throw std::invalid_argument("--hessian: expected gn or none, got \"" + m_Hessian + "\"");
 
     namespace pt = boost::property_tree;
 

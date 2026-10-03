@@ -230,6 +230,26 @@ namespace ana::ic {
                      settings.veto_rescale_energy,
                      settings.use_multi_threading);
 
+    if (m_Astro || m_Atmo) {
+      const FluxGradient::Settings gradient_settings{.has_astro           = m_Astro.has_value(),
+                                                     .has_atmo            = m_Atmo.has_value(),
+                                                     .use_veto            = cfg.wants_veto(),
+                                                     .astro_model         = settings.astro_model,
+                                                     .e_ref_gev           = settings.e_ref_gev,
+                                                     .reference_index     = settings.astro_reference_index,
+                                                     .per_type_norm       = settings.astro_per_type_norm,
+                                                     .conv_e_ref          = settings.conv_delta_gamma_e_ref,
+                                                     .prompt_e_ref        = settings.prompt_delta_gamma_e_ref,
+                                                     .veto_anchor_energy  = settings.veto_anchor_energy,
+                                                     .veto_rescale_energy = settings.veto_rescale_energy,
+                                                     .use_multi_threading = settings.use_multi_threading};
+      m_FluxGradient.emplace(sample, static_cast<std::size_t>(cfg.mc_binning.total_bins()), gradient_settings, gpu);
+      m_GradTable.assign(static_cast<std::size_t>(FluxGradient::kQuantities) * cfg.mc_binning.total_bins(), 0.0);
+      m_AstroShapeParameters = FluxGradient::astro_shape_parameters(settings.astro_model);
+      m_AstroNormFactor      = settings.astro_per_type_norm ? 1.0 : 0.5;
+      m_UseVeto              = cfg.wants_veto();
+    }
+
     if (cfg.wants_template())
       m_Template.emplace(cfg.mc_binning, cfg.template_file, cfg.template_norm_index, cfg.livetime,
                          cfg.file_bin_map);

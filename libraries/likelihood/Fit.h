@@ -38,6 +38,16 @@ namespace ana {
      */
     void set_tolerance(double tolerance);
 
+    /**
+     * Whether minimize() ends with a Hesse on the exact Hessian (default
+     * true). Only matters with --hessian gn: Migrad then runs on the
+     * Gauss-Newton Hessian, which is the right metric but not the right
+     * curvature for the reported errors, so the errors are recomputed from
+     * central differences of the analytic gradient -- 2 gradients per free
+     * parameter. Fits whose errors nobody reads (scan points) switch it off.
+     */
+    void set_exact_errors(bool exact) noexcept { m_ExactErrors = exact; }
+
     [[nodiscard]] double time_duration() const;
 
     [[nodiscard]] bool converged() const;
@@ -45,6 +55,12 @@ namespace ana {
     [[nodiscard]] const std::shared_ptr<io::Options>& options() const;
 
     auto get_minimizer() const { return m_Minimizer; }
+
+    /** Likelihood evaluations this fit made, restarts included. */
+    [[nodiscard]] std::size_t n_calls() const noexcept { return m_NCalls; }
+
+    /** Analytic gradient evaluations this fit made (0 without --gradient). */
+    [[nodiscard]] std::size_t n_gradient_calls() const noexcept { return m_NGradCalls; }
 
    private:
     std::shared_ptr<io::Options>      m_Options;
@@ -59,7 +75,20 @@ namespace ana {
 
     std::shared_ptr<ROOT::Math::Minimizer> m_Minimizer;
 
-    std::shared_ptr<ROOT::Math::Functor> m_Functor;
+    // A GradFunctor when the analytic gradient is used, a plain Functor otherwise.
+    std::shared_ptr<ROOT::Math::IMultiGenFunction> m_Functor;
+
+    bool m_UseGradient = false;  ///< --gradient and the likelihood provides one.
+    bool m_UseHessian  = false;  ///< --hessian gn on top of the gradient.
+    bool m_ExactErrors = true;   ///< Final Hesse on the exact Hessian (see set_exact_errors()).
+    bool m_ExactHessianMode = false;  ///< The Hessian callback differences the gradient instead of returning Gauss-Newton.
+
+    /** Central differences of the analytic gradient over the free parameters, row-major n x n. */
+    bool exact_hessian(const std::vector<double>& x, double* hessian);
+
+    // Likelihood and gradient evaluations of this fit, restarts included.
+    std::size_t m_NCalls     = 0;
+    std::size_t m_NGradCalls = 0;
 
     std::shared_ptr<Likelihood> m_Likelihood;
 

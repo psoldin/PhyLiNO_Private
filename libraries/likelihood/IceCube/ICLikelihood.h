@@ -37,6 +37,14 @@ namespace ana::ic {
 
     [[nodiscard]] double calculate_likelihood(const double* parameter) override;
 
+    /** Every sample type differentiates analytically (see SampleLikelihood::accumulate_gradient()). */
+    [[nodiscard]] bool has_gradient() const noexcept override { return true; }
+
+    void calculate_gradient(const double* parameter, double* gradient) override;
+
+    /** The samples' Gauss-Newton Hessians plus the pulls'. */
+    bool calculate_hessian(const double* parameter, double* hessian) override;
+
     /** Number of enabled samples this composite sums over. */
     [[nodiscard]] std::size_t n_samples() const noexcept { return m_Samples.size(); }
 
@@ -66,6 +74,17 @@ namespace ana::ic {
     // backend selection can drive this per-instance instead of only from the
     // global -m option.
     bool m_UseMultiThreading{true};
+
+    // The last point the derivatives were taken at, and what was computed
+    // there: Minuit2 asks for the gradient and then (seed, Hesse) the Hessian at
+    // the same point, and each costs a pass over the events.
+    std::vector<double> m_DerivativePoint;
+    std::vector<double> m_Gradient;
+    std::vector<double> m_Hessian;
+    bool                m_HaveHessian = false;
+
+    /** Fill m_Gradient (and m_Hessian if asked) at `parameter`, unless cached. */
+    void evaluate_derivatives(const double* parameter, bool want_hessian);
 
     void                 initialize_data(bool use_data);
     void                 setup_pulls();

@@ -90,6 +90,70 @@ namespace ana::ic {
       }
     )CUDA";
 
+    // gather_all(): one thread per (quantity, bin) instead of one group per
+    // bin. Thread idx covers quantity idx / n_bins of bin idx % n_bins, so the
+    // threads of a group read neighbouring bins' chunk offsets.
+    struct GatherAllParams {
+      int n_bins;
+      int n_chunks;
+      int n_quantities;
+    };
+
+    constexpr const char* kGatherAllMetalBody = R"METAL(
+      struct GatherAllParams { int n_bins; int n_chunks; int n_quantities; };
+
+      kernel void bin_gather_all(
+          device const float*     partial           [[buffer(0)]],
+          device const uint*      bin_chunk_offsets [[buffer(1)]],
+          constant GatherAllParams& p               [[buffer(2)]],
+          device float*           table             [[buffer(3)]],
+          uint group [[threadgroup_position_in_grid]],
+          uint tid [[thread_position_in_threadgroup]])
+      {
+        const uint idx   = group * kThreadsPerGroup + tid;
+        const uint total = (uint)p.n_bins * (uint)p.n_quantities;
+        if (idx >= total) return;
+        const uint q     = idx / (uint)p.n_bins;
+        const uint bin   = idx - q * (uint)p.n_bins;
+        const uint start = bin_chunk_offsets[bin];
+        const uint end   = bin_chunk_offsets[bin + 1];
+        const uint base  = q * (uint)p.n_chunks;
+        float acc = 0.0f;
+        float cmp = 0.0f;
+        for (uint j = start; j < end; ++j)
+          neumaier_add(acc, cmp, partial[base + j]);
+        table[idx] = acc + cmp;
+      }
+    )METAL";
+
+    constexpr const char* kGatherAllCudaBody = R"CUDA(
+      struct GatherAllParams { int n_bins; int n_chunks; int n_quantities; };
+
+      extern "C" __global__ void bin_gather_all(
+          const real*         partial,
+          const unsigned int* bin_chunk_offsets,
+          GatherAllParams     p,
+          real*               table)
+      {
+        const unsigned int idx   = blockIdx.x * blockDim.x + threadIdx.x;
+        const unsigned int total = (unsigned int)p.n_bins * (unsigned int)p.n_quantities;
+        if (idx >= total) return;
+        const unsigned int q     = idx / (unsigned int)p.n_bins;
+        const unsigned int bin   = idx - q * (unsigned int)p.n_bins;
+        const unsigned int start = bin_chunk_offsets[bin];
+        const unsigned int end   = bin_chunk_offsets[bin + 1];
+        const unsigned int base  = q * (unsigned int)p.n_chunks;
+        real acc = 0.0;
+        real cmp = 0.0;
+        for (unsigned int j = start; j < end; ++j)
+          neumaier_add(acc, cmp, partial[base + j]);
+        table[idx] = acc + cmp;
+      }
+    )CUDA";
+
+    // Must match the threadgroup width both backends dispatch with.
+    constexpr std::size_t kThreadsPerGroup = 256;
+
   }  // namespace
 
   GpuBinReduce::GpuBinReduce(std::shared_ptr<GpuSession> gpu,
@@ -135,6 +199,23 @@ namespace ana::ic {
                          .offset = static_cast<int>(q * m_NChunks)};
     const int          inputs[] = {m_hPartial, m_hBinChunkOffsets};
     m_Gpu->dispatch("bin_gather", inputs, 2, &p, sizeof(p), hist, /*per_event=*/-1, m_NBins);
+  }
+
+  void GpuBinReduce::gather_all(const int table) const {
+    if (!m_GatherAllReady) {
+      const std::string src =
+          gpu_kernel_source(m_Gpu->language(), m_Gpu->is_fp64(), kGatherAllMetalBody, kGatherAllCudaBody);
+      m_Gpu->ensure_kernel("bin_gather_all", src.c_str());
+      m_GatherAllReady = true;
+    }
+
+    const GatherAllParams p{.n_bins       = static_cast<int>(m_NBins),
+                            .n_chunks     = static_cast<int>(m_NChunks),
+                            .n_quantities = static_cast<int>(m_NQuantities)};
+    const int             inputs[] = {m_hPartial, m_hBinChunkOffsets};
+    const std::size_t     total    = m_NBins * m_NQuantities;
+    m_Gpu->dispatch("bin_gather_all", inputs, 2, &p, sizeof(p), table, /*per_event=*/-1,
+                    (total + kThreadsPerGroup - 1) / kThreadsPerGroup);
   }
 
 }  // namespace ana::ic

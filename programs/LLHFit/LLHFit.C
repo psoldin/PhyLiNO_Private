@@ -550,6 +550,8 @@ namespace {
         // A scan point only has to resolve the profile to well within the delta
         // chi2 the scan works at, not to the free fit's --tolerance.
         fit.set_tolerance(options->inputOptions().scan_tolerance());
+        // Nothing reads a scan point's errors.
+        fit.set_exact_errors(false);
         auto min = fit.get_minimizer();
         apply_fixed(*min, node);
 

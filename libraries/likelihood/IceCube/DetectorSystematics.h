@@ -56,6 +56,15 @@ namespace ana::ic {
     /** Additive contribution to sigma^2 per bin (SAY only). */
     [[nodiscard]] std::span<const double> ssq_delta() const noexcept { return m_SsqDelta; }
 
+    /**
+     * Derivatives of mu_delta() and ssq_delta() with respect to detector
+     * parameter DOMEff + k, at `parameter`:
+     *
+     *   d mu_add_b  / d p_k = lt_scale * gradient_k_b
+     *   d ssq_add_b / d p_k = 2 lt_scale * (D_k gradient_error_k_b^2 + sum_{j != k} D_j cov_kj_b)
+     */
+    void derivatives(const ParameterWrapper& parameter, int k, std::span<double> dmu, std::span<double> dssq) const;
+
    private:
     static constexpr int nPairs = params::ic::nDetSysParams * (params::ic::nDetSysParams - 1) / 2;
 

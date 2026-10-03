@@ -3,6 +3,7 @@
 #include "../../io/IceCube/ICParameter.h"
 #include "../../io/Options.h"
 
+#include <algorithm>
 #include <cmath>
 #include <future>
 #include <iostream>
@@ -199,6 +200,45 @@ namespace ana::ic {
     // (iminuit errordef = LIKELIHOOD = 0.5). Same minimum, same parameter
     // errors; only the printed scale differs.
     return std::isfinite(llh) ? llh : 1.0e25;
+  }
+
+  void ICLikelihood::evaluate_derivatives(const double* parameter, const bool want_hessian) {
+    const std::size_t n = static_cast<std::size_t>(params::ic::number_of_parameters());
+
+    const bool same_point = m_DerivativePoint.size() == n && std::equal(parameter, parameter + n, m_DerivativePoint.begin());
+    if (same_point && (m_HaveHessian || !want_hessian))
+      return;
+
+    m_Parameter.reset_parameter(parameter);
+
+    m_Gradient.assign(n, 0.0);
+    if (want_hessian)
+      m_Hessian.assign(n * n, 0.0);
+
+    for (const auto& sample : m_Samples)
+      sample->accumulate_gradient(m_Parameter, m_Gradient, want_hessian ? m_Hessian.data() : nullptr);
+
+    // d/dx ((x - cv) / sigma)^2 = 2 (x - cv) / sigma^2, and twice 1 / sigma^2.
+    for (const auto& [idx, cv, sigma] : m_Pulls) {
+      const auto i = static_cast<std::size_t>(idx);
+      m_Gradient[i] += 2.0 * (m_Parameter[idx] - cv) / (sigma * sigma);
+      if (want_hessian)
+        m_Hessian[i * n + i] += 2.0 / (sigma * sigma);
+    }
+
+    m_DerivativePoint.assign(parameter, parameter + n);
+    m_HaveHessian = want_hessian;
+  }
+
+  void ICLikelihood::calculate_gradient(const double* parameter, double* gradient) {
+    evaluate_derivatives(parameter, false);
+    std::ranges::copy(m_Gradient, gradient);
+  }
+
+  bool ICLikelihood::calculate_hessian(const double* parameter, double* hessian) {
+    evaluate_derivatives(parameter, true);
+    std::ranges::copy(m_Hessian, hessian);
+    return true;
   }
 
 }  // namespace ana::ic

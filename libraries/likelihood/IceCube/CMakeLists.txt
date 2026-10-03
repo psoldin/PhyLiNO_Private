@@ -42,6 +42,11 @@ set(files
     PoissonLikelihood.cpp
     SampleLikelihood.h
     SampleLikelihood.cpp
+    SampleLikelihoodGradient.cpp
+    FluxGradient.h
+    FluxGradient.cpp
+    Polygamma.h
+    BinTermDerivatives.h
     ICLikelihood.h
     ICLikelihood.cpp
     ICModule.h

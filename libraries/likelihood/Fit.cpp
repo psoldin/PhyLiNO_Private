@@ -4,19 +4,73 @@
 
 // STL includes
 #include <algorithm>
+#include <cmath>
 #include <random>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+#include <Minuit2/FCNGradAdapter.h>
+#include <Minuit2/Minuit2Minimizer.h>
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 namespace ana {
+
+  namespace {
+
+    /**
+     * Minuit2Minimizer with a way to attach a Hessian that does not go through
+     * ROOT::Math::Minimizer::SetHessianFunction(). That one takes a
+     * std::function over std::span, and a ROOT built in C++17 mode compiles
+     * its library against its own std::__ROOT::span while this project, built
+     * as C++23, sees the real std::span -- the same declaration naming two
+     * different std::function types on the two sides of the library boundary,
+     * which crashes on the first call. The FCN adapter's own setter stores a
+     * std::function over std::vector, identical on both sides.
+     */
+    //
+    // The same mismatch is why the three span-taking virtuals are overridden
+    // here: a subclass's vtable would otherwise reference the base versions
+    // under the C++23 std::span mangling, which libMinuit2 does not export.
+    class Minuit2 final : public ROOT::Minuit2::Minuit2Minimizer {
+     public:
+      using ROOT::Minuit2::Minuit2Minimizer::Minuit2Minimizer;
+
+      /** Attach `hessian` to the gradient adapter SetFunction() built. */
+      template <class Hessian>
+      void set_hessian(Hessian hessian) {
+        using Adapter = ROOT::Minuit2::FCNGradAdapter<ROOT::Math::IMultiGradFunction>;
+        auto* fcn     = dynamic_cast<const Adapter*>(GetFCN());
+        if (fcn == nullptr)
+          throw std::logic_error("Fit: the Hessian needs the minimizer's function to be a gradient function");
+        // SetFunction() allocated the adapter itself; it is only handed out const.
+        const_cast<Adapter*>(fcn)->SetHessianFunction(std::move(hessian));
+      }
+
+      void SetHessianFunction(std::function<bool(std::span<const double>, double*)> hessian) override {
+        set_hessian([hessian = std::move(hessian)](const std::vector<double>& x, double* out) {
+          return hessian(std::span<const double>(x.data(), x.size()), out);
+        });
+      }
+
+      bool SetCovarianceDiag(std::span<const double>, unsigned int) override { return unsupported(); }
+      bool SetCovariance(std::span<const double>, unsigned int) override { return unsupported(); }
+
+     private:
+      static bool unsupported() {
+        std::cerr << "Fit: setting Minuit2's initial covariance is not supported in this build\n";
+        return false;
+      }
+    };
+
+  }  // namespace
 
   Fit::Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module, int worker_index)
     : m_Options(std::move(options))
@@ -46,10 +100,26 @@ namespace ana {
     // the factory call in setup_minimizer(), it touches no shared ROOT state.
     m_Likelihood = m_Module->create_likelihood(m_Options, worker_index);
 
-    // Initialize the functor object
-    m_Functor = std::make_shared<ROOT::Math::Functor>(m_Likelihood.get(),
-                                                      &Likelihood::calculate_likelihood,
-                                                      n_parameter);
+    // The function the minimizer sees. With an analytic gradient Migrad needs
+    // about one evaluation per iteration for its derivatives instead of two per
+    // free parameter, and its convergence is no longer limited by the rounding
+    // of finite differences (Minuit2's "machine accuracy" stops).
+    Likelihood* const likelihood = m_Likelihood.get();
+    auto              value      = [this, likelihood](const double* x) {
+      ++m_NCalls;
+      return likelihood->calculate_likelihood(x);
+    };
+    m_UseGradient = m_Options->inputOptions().analytic_gradient() && likelihood->has_gradient();
+    m_UseHessian  = m_UseGradient && m_Options->inputOptions().hessian() == "gn";
+    if (m_UseGradient) {
+      m_Functor = std::make_shared<ROOT::Math::GradFunctor>(value, static_cast<unsigned int>(n_parameter),
+                                                            [this, likelihood](const double* x, double* gradient) {
+                                                              ++m_NGradCalls;
+                                                              likelihood->calculate_gradient(x, gradient);
+                                                            });
+    } else {
+      m_Functor = std::make_shared<ROOT::Math::Functor>(value, static_cast<unsigned int>(n_parameter));
+    }
 
     // Builds the minimizer and declares the parameters on it.
     setup_minimizer();
@@ -67,14 +137,18 @@ namespace ana {
     // when a Fit is built and on every restart, so the lock lives here rather
     // than around the constructor: scan workers build and restart their fits
     // concurrently, and everything else below is this Fit's own state.
+    //
+    // Built directly rather than through the factory: set_hessian() below needs
+    // the concrete Minuit2 type, and the factory's plugin lookup ends in this
+    // same constructor anyway. The lock is kept for whatever global state the
+    // constructor touches (default options).
+    std::shared_ptr<Minuit2> minuit;
     {
       static std::mutex mutex;
       std::unique_lock  lock{mutex};
-      m_Minimizer = std::shared_ptr<ROOT::Math::Minimizer>(
-          ROOT::Math::Factory::CreateMinimizer("Minuit2", input_options.minimizer_algo()));
+      minuit = std::make_shared<Minuit2>(input_options.minimizer_algo().c_str());
     }
-    if (!m_Minimizer)
-      throw std::runtime_error("Fit: ROOT has no Minuit2 minimizer called '" + input_options.minimizer_algo() + "'");
+    m_Minimizer = minuit;
 
     // Set here rather than in minimize(): a restart builds a *fresh* minimizer,
     // and one left at the default level 0 makes Minuit2Minimizer::Minimize()
@@ -90,8 +164,23 @@ namespace ana {
     m_Minimizer->SetPrintLevel(silent || input_options.blind() ? 0 : 2);
 
     m_Minimizer->SetFunction(*m_Functor);
+
+    // The Gauss-Newton Hessian is what Migrad seeds its metric with (strategy
+    // 2 takes the whole matrix, strategy 1 its diagonal) and what Hesse
+    // returns, in place of the numerical second derivatives that cost
+    // n(n+1)/2 evaluations each time. Only valid on a gradient function:
+    // Minuit2 attaches it to the gradient adapter.
+    if (m_UseHessian) {
+      minuit->set_hessian([this](const std::vector<double>& x, double* hessian) {
+        return m_ExactHessianMode ? exact_hessian(x, hessian) : m_Likelihood->calculate_hessian(x.data(), hessian);
+      });
+    }
     m_Minimizer->SetTolerance(m_Tolerance);
-    m_Minimizer->SetStrategy(input_options.minuit_strategy());
+    // Strategy 2 is what makes Migrad seed its metric with the full Hessian
+    // instead of its diagonal; with the Gauss-Newton Hessian that is one cheap
+    // call, and on the IceCube tracks Asimov strategy 1 does not converge from
+    // the diagonal alone. So --hessian gn raises the strategy to 2.
+    m_Minimizer->SetStrategy(m_UseHessian ? std::max(2, input_options.minuit_strategy()) : input_options.minuit_strategy());
 
     // Minuit2's own default budget is 200 + 100*n + 5*n^2 calls, which a fit
     // with every nuisance free can exhaust before it is anywhere near the
@@ -252,6 +341,14 @@ namespace ana {
       m_Converged = m_Minimizer->Minimize();
     }
 
+    // Migrad ran on the Gauss-Newton Hessian; the reported errors come from the
+    // exact one. Hesse() reaches it through the same callback.
+    if (m_UseHessian && m_ExactErrors) {
+      m_ExactHessianMode = true;
+      m_Minimizer->Hesse();
+      m_ExactHessianMode = false;
+    }
+
     const auto end   = high_resolution_clock::now();
 
     m_FitDuration = end - begin;
@@ -261,6 +358,10 @@ namespace ana {
     ss << "It took: " << m_FitDuration.count() << " seconds\n";
     ss << "Likelihood: " << m_Minimizer->MinValue() << '\n';
     ss << "EDM: " << m_Minimizer->Edm() << '\n';
+    ss << "Evaluations: " << m_NCalls;
+    if (m_UseGradient)
+      ss << " (+ " << m_NGradCalls << " analytic gradients" << (m_UseHessian ? ", Gauss-Newton Hessian" : "") << ')';
+    ss << '\n';
 
     std::cout << ss.rdbuf() << std::endl;
 
@@ -272,6 +373,93 @@ namespace ana {
   void Fit::set_tolerance(const double tolerance) {
     m_Tolerance = tolerance;
     m_Minimizer->SetTolerance(tolerance);
+  }
+
+  bool Fit::exact_hessian(const std::vector<double>& x, double* hessian) {
+    const std::size_t n          = x.size();
+    const auto&       parameters = m_Options->inputOptions().input_parameters().parameters();
+    const double*     errors     = m_Minimizer->Errors();
+
+    std::fill(hessian, hessian + n * n, 0.0);
+    std::vector<double> up(n), down(n), point(x);
+
+    for (std::size_t i = 0; i < n; ++i) {
+      if (m_Minimizer->IsFixedVariable(static_cast<unsigned int>(i)))
+        continue;
+
+      // A thousandth of the parameter's current error: far below where the
+      // likelihood stops being quadratic, far above the gradient's rounding.
+      const double error = errors != nullptr && std::isfinite(errors[i]) && errors[i] > 0.0 ? errors[i] : parameters[i].uncertainty();
+      const double h     = 1.0e-3 * error;
+
+      // One-sided next to a bound the step would cross.
+      const auto& lower    = parameters[i].lower_bound();
+      const auto& upper    = parameters[i].upper_bound();
+      const bool  can_up   = !upper || x[i] + h <= *upper;
+      const bool  can_down = !lower || x[i] - h >= *lower;
+
+      point[i] = can_up ? x[i] + h : x[i];
+      m_Likelihood->calculate_gradient(point.data(), up.data());
+      point[i] = can_down ? x[i] - h : x[i];
+      m_Likelihood->calculate_gradient(point.data(), down.data());
+      point[i] = x[i];
+
+      const double span = (can_up ? h : 0.0) + (can_down ? h : 0.0);
+      if (span == 0.0)
+        continue;
+      for (std::size_t j = 0; j < n; ++j)
+        hessian[i * n + j] = (up[j] - down[j]) / span;
+      m_NGradCalls += 2;
+    }
+
+    // Symmetrize: the two differences of each pair agree to O(h^2).
+    for (std::size_t i = 0; i < n; ++i)
+      for (std::size_t j = 0; j < i; ++j) {
+        const double mean   = 0.5 * (hessian[i * n + j] + hessian[j * n + i]);
+        hessian[i * n + j] = hessian[j * n + i] = mean;
+      }
+
+    // Minuit2 works in internal coordinates, int -> ext(int) for a bounded
+    // parameter, and its numerical Hesse measures d^2 f / d int^2 =
+    // f'' ext'^2 + f' ext''. When it is handed an external Hessian it only
+    // applies the first term (MnHesse's analytical path transforms with ext'
+    // alone), so the second is folded in here, as f' ext'' / ext'^2 on the
+    // diagonal. For a parameter well inside its bounds it is negligible; for
+    // one at its bound -- where f' does not vanish -- it is what Minuit's
+    // numerical errors have always contained, and leaving it out would change
+    // what the reported errors mean.
+    std::vector<double> gradient(n);
+    m_Likelihood->calculate_gradient(x.data(), gradient.data());
+    ++m_NGradCalls;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (m_Minimizer->IsFixedVariable(static_cast<unsigned int>(i)))
+        continue;
+      const auto& lower = parameters[i].lower_bound();
+      const auto& upper = parameters[i].upper_bound();
+      if (!lower && !upper)
+        continue;
+
+      // Minuit2's transformations (Sin-, SqrtLow-, SqrtUpParameterTransformation):
+      // the internal value of x[i] and the first two derivatives of ext(int).
+      double d1 = 1.0, d2 = 0.0;
+      if (lower && upper) {
+        const double half = 0.5 * (*upper - *lower);
+        const double yy   = std::clamp((x[i] - *lower) / half - 1.0, -1.0, 1.0);
+        const double in   = std::asin(yy);
+        d1                = half * std::cos(in);
+        d2                = -half * std::sin(in);
+      } else {
+        const double yy = lower ? x[i] - *lower + 1.0 : *upper - x[i] + 1.0;
+        const double in = yy * yy > 1.0 ? std::sqrt(yy * yy - 1.0) : 0.0;
+        const double r  = std::sqrt(in * in + 1.0);
+        d1              = (lower ? 1.0 : -1.0) * in / r;
+        d2              = (lower ? 1.0 : -1.0) / (r * r * r);
+      }
+      if (std::fabs(d1) < 1e-150)
+        continue;
+      hessian[i * n + i] += gradient[i] * d2 / (d1 * d1);
+    }
+    return true;
   }
 
   double Fit::time_duration() const {

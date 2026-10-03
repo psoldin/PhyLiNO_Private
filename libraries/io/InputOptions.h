@@ -178,6 +178,21 @@ namespace io {
      */
     [[nodiscard]] const std::string& minimizer_algo() const noexcept { return m_MinimizerAlgo; }
 
+    /**
+     * Whether a likelihood with an analytic gradient hands it to the minimizer
+     * (--gradient, default true). Minuit2's numerical gradient costs two
+     * likelihood evaluations per free parameter per iteration and is limited by
+     * the evaluation's rounding; the analytic one costs about one evaluation.
+     */
+    [[nodiscard]] bool analytic_gradient() const noexcept { return m_AnalyticGradient; }
+
+    /**
+     * Second derivatives handed to the minimizer alongside the analytic
+     * gradient (--hessian): "gn" for the likelihood's Gauss-Newton Hessian,
+     * "none" for Minuit2's numerical ones. Ignored without --gradient.
+     */
+    [[nodiscard]] const std::string& hessian() const noexcept { return m_Hessian; }
+
     /** Result output format ("json" or "protobuf"), as passed via --output-format. */
     [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
 
@@ -232,6 +247,8 @@ namespace io {
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
     std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */
+    bool        m_AnalyticGradient{true};  /**< Use the likelihood's analytic gradient when it has one. */
+    std::string m_Hessian{"gn"};           /**< Second derivatives handed to the minimizer with the gradient. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 
     std::string m_ConfigFile; /**< The configuration file path. */

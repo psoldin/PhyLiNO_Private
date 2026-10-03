@@ -5,11 +5,13 @@
 #include "../ParameterWrapper.h"
 #include "AtmosphericFlux.h"
 #include "DetectorSystematics.h"
+#include "FluxGradient.h"
 #include "GpuBackend.h"
 #include "GpuBinReduce.h"
 #include "PowerlawFlux.h"
 #include "TemplateFlux.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <span>
@@ -56,6 +58,25 @@ namespace ana::ic {
 
     /** Recompute prediction for the current parameters; return this sample's -2lnL (no pulls). */
     [[nodiscard]] double partial_llh(const ParameterWrapper& parameter);
+
+    /**
+     * Add this sample's analytic d(-2lnL)/dtheta at `parameter` to `gradient`
+     * (one entry per fit parameter) and, when `hessian` is non-null, its
+     * Gauss-Newton Hessian to `hessian` (row-major, n x n).
+     *
+     * The prediction is brought to `parameter` first, so the call needs no
+     * partial_llh() at the same point before it (and costs little extra after
+     * one). Every derivative goes through the two per-MC-bin sums the
+     * likelihood reads -- the prediction and, under SAY, its MC variance --
+     * whose derivatives come from FluxGradient (flux components) and from the
+     * bin-level components directly. The Gauss-Newton Hessian keeps the exact
+     * second derivatives of each bin's term in those two sums and drops the
+     * second derivatives of the sums themselves; that is exact where the
+     * prediction meets the data and positive semi-definite everywhere (each
+     * bin's 2x2 block is clipped to its PSD part), which is what a minimizer's
+     * metric needs.
+     */
+    void accumulate_gradient(const ParameterWrapper& parameter, std::span<double> gradient, double* hessian);
 
     /** Fill this sample's Asimov data from the nominal parameters. */
     void generate_asimov(const ParameterWrapper& nominal);
@@ -208,6 +229,22 @@ namespace ana::ic {
     // Scratch for the deterministic chunked sum in the likelihood loops, a
     // member so the loop allocates nothing per evaluation.
     mutable std::vector<double> m_Partial;
+
+    // Analytic gradient: the per-bin derivative table of the flux components
+    // (absent when the sample has neither), the parameters the astrophysical
+    // model differentiates, and scratch reused across calls.
+    std::optional<FluxGradient> m_FluxGradient;
+    std::array<int, 3>          m_AstroShapeParameters{-1, -1, -1};
+    double                      m_AstroNormFactor = 0.5;  ///< d(effective astro norm) / d AstroNorm
+    bool                        m_UseVeto        = false;  ///< the atmospheric flux carries the veto reweight
+    std::vector<double>         m_GradTable;
+    /// d McTotal / dtheta and d McSsq / dtheta of one parameter, MC binning.
+    struct GradientColumn {
+      int                 parameter = -1;
+      std::vector<double> dmu;
+      std::vector<double> dssq;
+    };
+    std::vector<GradientColumn> m_GradColumns;
 
     // SAY-on-GPU: the per-event ssq reduction runs as the say_ssq kernel over
     // the flux components' GPU-resident per-event weight buffers. Set up in the

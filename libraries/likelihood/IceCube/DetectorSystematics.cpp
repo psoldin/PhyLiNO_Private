@@ -168,4 +168,30 @@ namespace ana::ic {
     return true;
   }
 
+  void DetectorSystematics::derivatives(const ParameterWrapper& parameter, const int k, const std::span<double> dmu,
+                                        const std::span<double> dssq) const {
+    using namespace params::ic;
+    double deviation[nDetSysParams];
+    for (int j = 0; j < nDetSysParams; ++j)
+      deviation[j] = (parameter[DOMEff + j] - m_Split[j]) * m_LivetimeScale;
+
+    // Covariance pair of (k, j), in the order load() and check_and_recalculate() use.
+    int pair_of[nDetSysParams] = {};
+    for (int a = 0, pair = 0; a < nDetSysParams; ++a)
+      for (int b = a + 1; b < nDetSysParams; ++b, ++pair) {
+        if (a == k) pair_of[b] = pair;
+        if (b == k) pair_of[a] = pair;
+      }
+
+    const double lt = m_LivetimeScale;
+    for (std::size_t b = 0, n = m_MuDelta.size(); b < n; ++b) {
+      dmu[b]       = lt * m_Gradient[k][b];
+      const double e = m_GradientError[k][b];
+      double       s = deviation[k] * e * e;
+      for (int j = 0; j < nDetSysParams; ++j)
+        if (j != k) s += deviation[j] * m_Covariance[pair_of[j]][b];
+      dssq[b] = 2.0 * lt * s;
+    }
+  }
+
 }  // namespace ana::ic
