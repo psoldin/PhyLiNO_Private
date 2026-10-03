@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -523,7 +524,7 @@ namespace {
    *                       to read back from a resumed point).
    */
   template <typename Key, typename NameFn, typename ApplyFixed, typename Distance>
-  void run_scan_batch(std::vector<Key> nodes, std::map<Key, double>& surface, std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const io::InputParameter& input_parameters, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds, int scan_workers, NameFn&& name_fn, ApplyFixed&& apply_fixed, Distance&& distance, int& fits_performed) {
+  void run_scan_batch(std::vector<Key> nodes, std::map<Key, double>& surface, std::shared_ptr<io::Options> options, std::shared_ptr<ana::ExperimentModule> module, const io::InputParameter& input_parameters, const std::string& format, bool warm_start, scanseed::Store<Key>& seeds, int scan_workers, NameFn&& name_fn, ApplyFixed&& apply_fixed, Distance&& distance, int& fits_performed, std::span<const double> step_sizes = {}) {
     const int        n_nodes   = static_cast<int>(nodes.size());
     const int        n_workers = std::clamp(scan_workers, 1, std::max(n_nodes, 1));
     std::atomic<int> next_index{0};
@@ -552,6 +553,12 @@ namespace {
         fit.set_tolerance(options->inputOptions().scan_tolerance());
         // Nothing reads a scan point's errors.
         fit.set_exact_errors(false);
+        // The free fit's errors are the scale every scan point's parameters
+        // move on, which the config's StepWidths can miss by an order of
+        // magnitude; Migrad's numerical derivatives and first steps start
+        // from them. (With --hessian gn Migrad seeds from the Hessian instead.)
+        if (!step_sizes.empty())
+          fit.set_step_sizes(step_sizes);
         auto min = fit.get_minimizer();
         apply_fixed(*min, node);
 
@@ -674,7 +681,7 @@ void perform_2d_scan(std::shared_ptr<io::Options> options, std::shared_ptr<ana::
       std::ranges::sort(ordered, {}, [&](const scan::Node& node) { return distance(node, best); });
     }
 
-    run_scan_batch(std::move(ordered), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name(node); }, apply_fixed, distance, fits_performed);
+    run_scan_batch(std::move(ordered), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name(node); }, apply_fixed, distance, fits_performed, seed.errors);
   };
 
   auto report = [scan_workers](int round, std::size_t split, std::size_t cells, std::size_t points) {
@@ -780,7 +787,7 @@ void perform_2d_scan_regular(std::shared_ptr<io::Options> options, std::shared_p
   std::cout << "Regular grid: " << nodes.size() << " points (" << points_x << " x " << points_y << ")"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  run_scan_batch(std::move(nodes), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name_regular(node); }, apply_fixed, distance, fits_performed);
+  run_scan_batch(std::move(nodes), surface, options, module, input_parameters, format, warm_start, seeds, scan_workers, [](const scan::Node& node) { return node_name_regular(node); }, apply_fixed, distance, fits_performed, seed.errors);
 
   std::cout << "Regular grid scan finished: " << surface.size() << " points, " << fits_performed << " fitted in this run\n";
 }
@@ -986,7 +993,7 @@ void perform_1d_scan_walk(std::shared_ptr<io::Options> options, std::shared_ptr<
       std::ranges::sort(ordered, {}, [&](int node) { return distance(node, best); });
     }
 
-    run_scan_batch(std::move(ordered), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name(label, node); }, apply_fixed, distance, fits_performed);
+    run_scan_batch(std::move(ordered), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name(label, node); }, apply_fixed, distance, fits_performed, seed.errors);
   };
 
   auto report = [scan_workers](int round, std::size_t proposed, std::size_t points) {
@@ -1062,7 +1069,7 @@ void perform_1d_scan_regular_window(std::shared_ptr<io::Options> options, std::s
   std::cout << "Regular scan of " << parameter_name << ": " << points << " points"
             << (scan_workers > 1 ? " (" + std::to_string(scan_workers) + " workers)" : "") << '\n';
 
-  run_scan_batch(std::move(nodes), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name_regular(parameter_name, node); }, apply_fixed, distance, fits_performed);
+  run_scan_batch(std::move(nodes), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers, [&](int node) { return node_name_regular(parameter_name, node); }, apply_fixed, distance, fits_performed, seed.errors);
 
   std::cout << "Regular scan of " << parameter_name << " finished: " << profile.size() << " points, " << fits_performed
             << " fitted in this run\n";
@@ -1241,7 +1248,7 @@ nlohmann::json perform_1d_crossing(std::shared_ptr<io::Options> options, std::sh
     if (remaining.empty())
       return;
     run_scan_batch(std::move(remaining), profile, options, module, input_parameters, format, warm_start, seeds, scan_workers,
-                   [&](int node) { return "Crossing_" + label + "_" + std::to_string(node); }, apply_fixed, distance, fits_performed);
+                   [&](int node) { return "Crossing_" + label + "_" + std::to_string(node); }, apply_fixed, distance, fits_performed, axis.seed.errors);
   };
 
   auto report = [](int round, std::size_t proposed, std::size_t points) {

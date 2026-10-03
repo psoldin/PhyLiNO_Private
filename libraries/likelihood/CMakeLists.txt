@@ -1,6 +1,8 @@
 set(files
     Fit.h
     Fit.cpp
+    NewtonMinimizer.h
+    NewtonMinimizer.cpp
     ParameterWrapper.h
     ParameterWrapper.cpp
     ParameterSeeding.h

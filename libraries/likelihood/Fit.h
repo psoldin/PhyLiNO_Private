@@ -7,6 +7,7 @@
 // STL includes
 #include <chrono>
 #include <memory>
+#include <span>
 #include <vector>
 
 // ROOT includes
@@ -48,6 +49,14 @@ namespace ana {
      */
     void set_exact_errors(bool exact) noexcept { m_ExactErrors = exact; }
 
+    /**
+     * Step sizes for the free parameters in place of the config's StepWidths,
+     * one per parameter in minimizer order; entries that are not positive and
+     * finite keep the configured width. Kept across restarts, which rebuild
+     * the minimizer from the configuration otherwise.
+     */
+    void set_step_sizes(std::span<const double> steps);
+
     [[nodiscard]] double time_duration() const;
 
     [[nodiscard]] bool converged() const;
@@ -73,6 +82,8 @@ namespace ana {
 
     double m_Tolerance;
 
+    std::vector<double> m_StepSizes;  ///< Overrides of the configured StepWidths (see set_step_sizes()).
+
     std::shared_ptr<ROOT::Math::Minimizer> m_Minimizer;
 
     // A GradFunctor when the analytic gradient is used, a plain Functor otherwise.
@@ -82,6 +93,7 @@ namespace ana {
     bool m_UseHessian  = false;  ///< --hessian gn on top of the gradient.
     bool m_ExactErrors = true;   ///< Final Hesse on the exact Hessian (see set_exact_errors()).
     bool m_ExactHessianMode = false;  ///< The Hessian callback differences the gradient instead of returning Gauss-Newton.
+    bool m_MinuitTransform  = true;   ///< The minimizer works in Minuit2's internal coordinates (see exact_hessian()).
 
     /** Central differences of the analytic gradient over the free parameters, row-major n x n. */
     bool exact_hessian(const std::vector<double>& x, double* hessian);

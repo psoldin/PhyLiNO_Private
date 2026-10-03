@@ -1,5 +1,6 @@
 #include "Fit.h"
 
+#include "NewtonMinimizer.h"
 #include "ParameterSeeding.h"
 
 // STL includes
@@ -142,13 +143,20 @@ namespace ana {
     // the concrete Minuit2 type, and the factory's plugin lookup ends in this
     // same constructor anyway. The lock is kept for whatever global state the
     // constructor touches (default options).
-    std::shared_ptr<Minuit2> minuit;
-    {
+    std::shared_ptr<Minuit2>         minuit;
+    std::shared_ptr<NewtonMinimizer> newton;
+    if (input_options.minimizer() == "Newton") {
+      if (!m_UseHessian)
+        throw std::runtime_error("Fit: --minimizer Newton needs a likelihood with an analytic gradient and Hessian");
+      newton      = std::make_shared<NewtonMinimizer>();
+      m_Minimizer = newton;
+    } else {
       static std::mutex mutex;
       std::unique_lock  lock{mutex};
-      minuit = std::make_shared<Minuit2>(input_options.minimizer_algo().c_str());
+      minuit      = std::make_shared<Minuit2>(input_options.minimizer_algo().c_str());
+      m_Minimizer = minuit;
     }
-    m_Minimizer = minuit;
+    m_MinuitTransform = minuit != nullptr;
 
     // Set here rather than in minimize(): a restart builds a *fresh* minimizer,
     // and one left at the default level 0 makes Minuit2Minimizer::Minimize()
@@ -171,9 +179,15 @@ namespace ana {
     // n(n+1)/2 evaluations each time. Only valid on a gradient function:
     // Minuit2 attaches it to the gradient adapter.
     if (m_UseHessian) {
-      minuit->set_hessian([this](const std::vector<double>& x, double* hessian) {
-        return m_ExactHessianMode ? exact_hessian(x, hessian) : m_Likelihood->calculate_hessian(x.data(), hessian);
-      });
+      const std::size_t n_parameters = m_Options->inputOptions().input_parameters().size();
+      auto              hessian      = [this, n_parameters](const double* x, double* out) {
+        return m_ExactHessianMode ? exact_hessian(std::vector<double>(x, x + n_parameters), out)
+                                  : m_Likelihood->calculate_hessian(x, out);
+      };
+      if (minuit)
+        minuit->set_hessian([hessian](const std::vector<double>& x, double* out) { return hessian(x.data(), out); });
+      else
+        newton->set_hessian(hessian);
     }
     m_Minimizer->SetTolerance(m_Tolerance);
     // Strategy 2 is what makes Migrad seed its metric with the full Hessian
@@ -263,7 +277,9 @@ namespace ana {
       // unbounded one. Only the variants a parameter actually needs are used:
       // declaring a huge artificial limit instead of leaving a side open would
       // apply that transformation for nothing.
-      const double step = parameters[i].uncertainty();
+      const double step = i < m_StepSizes.size() && std::isfinite(m_StepSizes[i]) && m_StepSizes[i] > 0.0
+                              ? m_StepSizes[i]
+                              : parameters[i].uncertainty();
       if (lower && upper)
         m_Minimizer->SetLimitedVariable(static_cast<unsigned int>(i), names[i], start, step, *lower, *upper);
       else if (lower)
@@ -370,6 +386,13 @@ namespace ana {
     return m_Converged;
   }
 
+  void Fit::set_step_sizes(const std::span<const double> steps) {
+    m_StepSizes.assign(steps.begin(), steps.end());
+    for (std::size_t i = 0; i < m_StepSizes.size(); ++i)
+      if (std::isfinite(m_StepSizes[i]) && m_StepSizes[i] > 0.0)
+        m_Minimizer->SetVariableStepSize(static_cast<unsigned int>(i), m_StepSizes[i]);
+  }
+
   void Fit::set_tolerance(const double tolerance) {
     m_Tolerance = tolerance;
     m_Minimizer->SetTolerance(tolerance);
@@ -418,6 +441,9 @@ namespace ana {
         const double mean   = 0.5 * (hessian[i * n + j] + hessian[j * n + i]);
         hessian[i * n + j] = hessian[j * n + i] = mean;
       }
+
+    if (!m_MinuitTransform)
+      return true;
 
     // Minuit2 works in internal coordinates, int -> ext(int) for a bounded
     // parameter, and its numerical Hesse measures d^2 f / d int^2 =

@@ -187,6 +187,13 @@ namespace io {
     [[nodiscard]] bool analytic_gradient() const noexcept { return m_AnalyticGradient; }
 
     /**
+     * The minimizer (--minimizer): "Minuit2" (default) or "Newton", the
+     * projected trust-region Newton of ana::NewtonMinimizer. Newton needs the
+     * analytic gradient and the Gauss-Newton Hessian.
+     */
+    [[nodiscard]] const std::string& minimizer() const noexcept { return m_Minimizer; }
+
+    /**
      * Second derivatives handed to the minimizer alongside the analytic
      * gradient (--hessian): "gn" for the likelihood's Gauss-Newton Hessian,
      * "none" for Minuit2's numerical ones. Ignored without --gradient.
@@ -247,6 +254,7 @@ namespace io {
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
     std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */
+    std::string m_Minimizer{"Minuit2"};    /**< Minuit2 or Newton. */
     bool        m_AnalyticGradient{true};  /**< Use the likelihood's analytic gradient when it has one. */
     std::string m_Hessian{"gn"};           /**< Second derivatives handed to the minimizer with the gradient. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
