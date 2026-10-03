@@ -144,3 +144,25 @@ The Double Chooz regression check needs an external Double Chooz configuration a
 ## Toy configuration
 
 The supplied [`configs/config_linreg.json`](configs/config_linreg.json) selects the `LinearRegression` module, specifies the Asimov truth and sampling range, and defines the two Minuit parameters. Parameter array order is significant: the linear-regression implementation expects slope `a` first and intercept `b` second.
+
+## Analytic gradient and minimizer options
+
+The IceCube likelihood differentiates itself analytically: one sweep over the MC events yields the per-bin derivatives of the prediction and of the SAY variance (`FluxGradient`), which are chained through the SAY, SAYMean and Poisson bin terms. The fit uses this by default; the options below select how.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--gradient` | `true` | Hand the minimizer the analytic gradient (likelihoods that have one; currently IceCube). `false` restores Minuit2's numerical derivatives. |
+| `--hessian` | `gn` | `gn`: the Gauss-Newton Hessian is Migrad's metric (Minuit2 strategy is raised to 2 so the whole matrix seeds it), and the reported errors come from a final Hesse on the exact Hessian (central differences of the analytic gradient). `none`: Minuit2's numerical second derivatives. |
+| `--minimizer` | `Minuit2` | `Newton`: projected trust-region (Levenberg-Marquardt) Newton on the gradient and Gauss-Newton Hessian, with bounds handled by an active set instead of Minuit2's internal transformation. Needs `--gradient true --hessian gn`. |
+| `--scanTolerance` | `0.5` | Tolerance of the per-point fits of every scan (EDM < 1e-3); the free fit a scan starts from keeps `--tolerance`. |
+
+The derivative kernels exist for every backend: CUDA in the backend's precision (`GpuPrecision`), Metal in FP32 (derivatives only steer the minimizer; the likelihood value keeps the backend's precision), and the CPU loop, which is the reference the GPU kernels are tested against.
+
+Before trusting gradient fits on a new backend or configuration, compare the analytic gradient with finite differences of the likelihood itself:
+
+```bash
+./build/bin/GradientCheck -c config.json --silent                 # at the config's start values
+./build/bin/GradientCheck -c config.json --seedFrom Output --silent --hessianCheck
+```
+
+Away from the minimum the relative differences should be at the level of the `fd.noise` column (1e-6 or below on an FP64 backend); at the minimum the gradient vanishes and both columns are noise.
