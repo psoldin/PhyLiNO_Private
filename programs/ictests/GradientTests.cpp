@@ -8,6 +8,7 @@
 
 #include "BinTermDerivatives.h"
 #include "CudaBackend.h"
+#include "ExpectedAsimov.h"
 #include "FluxGradient.h"
 #include "IceCube/Binning.h"
 #include "IceCube/ICParameter.h"
@@ -533,7 +534,7 @@ TEST(BinTermDerivativesTest, EveryBranchMatchesFiniteDifferences) {
     const double lg  = std::lgamma(c.k + 1.0);
     auto         llh = [&](double mu, double s) { return ana::ic::say_bin_log_likelihood(c.k, mu, s, lg, c.a0); };
     auto         der = [&](double mu, double s, bool second) {
-      return say_term(mu, s, 1.0, c.k, c.a0, [&](auto&& f) { if (c.k > 0.0) f(c.k); }, second);
+      return say_term(mu, s, 1.0, c.k, c.a0, [&](auto&& f) { if (c.k > 0.0) f(c.k, 1.0); }, second);
     };
 
     const TermDerivatives d  = der(c.mu, c.s, true);
@@ -559,14 +560,14 @@ TEST(BinTermDerivativesTest, EveryBranchMatchesFiniteDifferences) {
   const double     counts[3] = {0.0, 4.0, 9.0};
   TermDerivatives  sum;
   for (const double k : counts) {
-    const TermDerivatives d = say_term(5.0, 3.0, 1.0, k, 1.0, [&](auto&& f) { if (k > 0.0) f(k); }, true);
+    const TermDerivatives d = say_term(5.0, 3.0, 1.0, k, 1.0, [&](auto&& f) { if (k > 0.0) f(k, 1.0); }, true);
     sum.mu += d.mu;
     sum.s += d.s;
     sum.mumu += d.mumu;
     sum.mus += d.mus;
     sum.ss += d.ss;
   }
-  const TermDerivatives group = say_term(5.0, 3.0, 3.0, 13.0, 1.0, [&](auto&& f) { f(4.0); f(9.0); }, true);
+  const TermDerivatives group = say_term(5.0, 3.0, 3.0, 13.0, 1.0, [&](auto&& f) { f(4.0, 1.0); f(9.0, 1.0); }, true);
   EXPECT_NEAR(group.mu, sum.mu, 1e-12 * std::fabs(sum.mu));
   EXPECT_NEAR(group.s, sum.s, 1e-12 * std::fabs(sum.s));
   EXPECT_NEAR(group.mumu, sum.mumu, 1e-12 * std::fabs(sum.mumu));
@@ -578,4 +579,174 @@ TEST(BinTermDerivativesTest, EveryBranchMatchesFiniteDifferences) {
   const double fd = (ana::ic::poisson_bin_log_likelihood(k, mu + h, lg) - ana::ic::poisson_bin_log_likelihood(k, mu - h, lg)) /
                     (2.0 * h);
   EXPECT_NEAR(poisson_derivatives(mu, 1.0, k).mu, fd, 1e-7);
+}
+
+// --- Expected-likelihood Asimov ------------------------------------------------
+
+/// The nodes integrate the count distribution: total mass, mean and variance
+/// exactly, and the expectation of psi(k + alpha) -- what the SAY score
+/// carries -- to a tiny fraction of its Jensen gap from psi(mu + alpha), the
+/// effect the expected Asimov exists for. The reference is the same
+/// distribution summed over every count of its support.
+TEST(ExpectedAsimovTest, NodesIntegrateTheCountDistribution) {
+  using ana::ic::append_expected_counts;
+  using ana::ic::polygamma::digamma_difference;
+  const double cases[][2] = {{0.3, 0.05}, {2.0, 3.0},  {2.0, 4.0},  {17.0, 280.0}, {50.0, 400.0},
+                             {100.0, 0.0}, {1.0e4, 1.0e5}, {1.0e3, 1.0e6}, {0.0, 1.0}};
+  for (const auto& [mean, ssq] : cases) {
+    SCOPED_TRACE("mean " + std::to_string(mean) + " ssq " + std::to_string(ssq));
+    std::vector<double> k, w, k_ref, w_ref;
+    append_expected_counts(mean, ssq, ana::ic::kExpectedAsimovNodes, k, w);
+    append_expected_counts(mean, ssq, 100'000'000, k_ref, w_ref);
+    EXPECT_LE(k.size(), 64U);
+
+    double m0 = 0.0, m1 = 0.0, m2 = 0.0;
+    for (std::size_t j = 0; j < k.size(); ++j) {
+      EXPECT_GE(k[j], 0.0);
+      EXPECT_GT(w[j], 0.0);
+      m0 += w[j];
+      m1 += w[j] * k[j];
+      m2 += w[j] * k[j] * k[j];
+    }
+    EXPECT_NEAR(m0, 1.0, 1.0e-12);
+    if (mean <= 0.0) {
+      EXPECT_EQ(k.size(), 1U);
+      continue;
+    }
+    EXPECT_NEAR(m1, mean, 1.0e-12 * mean);
+    EXPECT_NEAR(m2 - m1 * m1, mean + std::min(ssq, mean * mean), 1.0e-10 * (mean + ssq));
+
+    const double alpha_truth = ssq > 0.0 ? mean * mean / std::min(ssq, mean * mean) : 1.0e6;
+    for (const double factor : {0.3, 1.0, 3.0}) {
+      const double alpha = factor * alpha_truth;
+      double       e = 0.0, ref = 0.0;
+      for (std::size_t j = 0; j < k.size(); ++j) e += w[j] * digamma_difference(k[j], alpha);
+      for (std::size_t j = 0; j < k_ref.size(); ++j) ref += w_ref[j] * digamma_difference(k_ref[j], alpha);
+      const double gap = std::fabs(ref - digamma_difference(mean, alpha));
+      EXPECT_NEAR(e, ref, 1.0e-6 * gap) << "alpha " << alpha;
+    }
+  }
+}
+
+namespace {
+  /// A muon template of a few events per bin with a 40-70 % fluctuation: the
+  /// small-alpha regime where plain Asimov is not stationary under SAY.
+  std::string write_noisy_template(const std::string& path, const int bins) {
+    std::ofstream out(path);
+    out << "# template bins " << bins << "\n";
+    for (int b = 0; b < bins; ++b) {
+      const double rate = 2.0 + 0.5 * b;
+      out << rate << ' ' << (0.4 + 0.3 * (b % 2)) * rate << '\n';
+    }
+    return path;
+  }
+
+  std::vector<double> gradient_at_truth(SampleLikelihood& likelihood, const io::ic::AsimovMode mode) {
+    const std::vector<double> truth = truth_values();
+    ParameterWrapper          at_truth(kNPar);
+    at_truth.reset_parameter(truth.data());
+    likelihood.generate_asimov(at_truth, mode);
+    return analytic_gradient(likelihood, truth);
+  }
+}  // namespace
+
+/// Under SAYMean, plain Asimov data is not the maximum of the likelihood at
+/// the truth; the expected-likelihood Asimov is, in every parameter, with and
+/// without an RA axis and galactic templates.
+TEST(ExpectedAsimovTest, StationaryAtTheTruth) {
+  const Binning mc_binning = gradient_binning();
+  const Binning ra_binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                            io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
+                            io::ic::parse_axis("Ra", "(0.0, 6.28319, 3)")});
+  const io::ic::ICSample sample = gradient_sample(mc_binning, 3, false);
+  const std::string      tmpl   = write_noisy_template("ictests_expected_template.txt", mc_binning.total_bins());
+  const std::string      gal    = "ictests_expected_gal.txt";
+  {
+    std::ofstream out(gal);
+    out << "# template bins " << ra_binning.total_bins() << "\n";
+    for (int b = 0; b < ra_binning.total_bins(); ++b) out << 0.5 * (1.0 + 0.1 * b) << " 0\n";
+  }
+
+  enum class Layout { Plain, Ra, Galactic };
+  for (const Layout layout : {Layout::Plain, Layout::Ra, Layout::Galactic}) {
+    SCOPED_TRACE("layout " + std::to_string(static_cast<int>(layout)));
+    io::ic::SampleConfig cfg{.name       = "expected",
+                             .binning    = layout == Layout::Plain ? mc_binning : ra_binning,
+                             .mc_binning = mc_binning};
+    cfg.components          = {"astro", "conventional", "prompt", "muontemplate"};
+    cfg.template_file       = tmpl;
+    cfg.template_norm_index = P::MuonNorm;
+    if (layout == Layout::Galactic) cfg.galactic.push_back({.name = "a", .file = gal, .norm_index = P::GalacticNorm0});
+
+    SampleLikelihood          likelihood(sample, cfg, gradient_settings(AstroModel::Powerlaw), nullptr, true, 0.0);
+    const std::vector<double> plain = gradient_at_truth(likelihood, io::ic::AsimovMode::Mean);
+    EXPECT_FALSE(likelihood.expected_asimov());
+    const std::vector<double> expected = gradient_at_truth(likelihood, io::ic::AsimovMode::Expected);
+    EXPECT_TRUE(likelihood.expected_asimov());
+
+    double scale = 0.0;
+    for (const double g : plain) scale = std::max(scale, std::fabs(g));
+    ASSERT_GT(scale, 1.0e-2) << "plain Asimov is already stationary; the test sample does not probe the effect";
+    EXPECT_NE(plain[P::MuonNorm], 0.0);
+    for (int i = 0; i < kNPar; ++i) EXPECT_NEAR(expected[i], 0.0, 1.0e-6 * scale) << "parameter " << i;
+  }
+  std::remove(tmpl.c_str());
+  std::remove(gal.c_str());
+}
+
+/// The analytic gradient and the averaged likelihood agree away from the
+/// truth, under both SAY variants; measured counts switch the averaging off.
+TEST(ExpectedAsimovTest, GradientMatchesFiniteDifferences) {
+  const Binning mc_binning = gradient_binning();
+  const Binning ra_binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                            io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 2)"),
+                            io::ic::parse_axis("Ra", "(0.0, 6.28319, 3)")});
+  const io::ic::ICSample sample = gradient_sample(mc_binning, 3, false);
+  const std::string      tmpl   = write_noisy_template("ictests_expected_fd_template.txt", mc_binning.total_bins());
+  const std::string      gal    = "ictests_expected_fd_gal.txt";
+  {
+    std::ofstream out(gal);
+    out << "# template bins " << ra_binning.total_bins() << "\n";
+    for (int b = 0; b < ra_binning.total_bins(); ++b) out << 0.5 * (1.0 + 0.1 * b) << " 0\n";
+  }
+
+  for (const double alpha_offset : {0.0, 1.0}) {
+    for (const bool galactic : {false, true}) {
+      SCOPED_TRACE("alpha offset " + std::to_string(alpha_offset) + (galactic ? " galactic" : " ra only"));
+      io::ic::SampleConfig cfg{.name = "expected_fd", .binning = ra_binning, .mc_binning = mc_binning};
+      cfg.components          = {"astro", "conventional", "prompt", "muontemplate"};
+      cfg.template_file       = tmpl;
+      cfg.template_norm_index = P::MuonNorm;
+      if (galactic) cfg.galactic.push_back({.name = "a", .file = gal, .norm_index = P::GalacticNorm0});
+
+      SampleLikelihood likelihood(sample, cfg, gradient_settings(AstroModel::Powerlaw), nullptr, true, alpha_offset);
+      const std::vector<double> truth = truth_values();
+      ParameterWrapper          at_truth(kNPar);
+      at_truth.reset_parameter(truth.data());
+      likelihood.generate_asimov(at_truth, io::ic::AsimovMode::Expected);
+
+      const std::vector<double> x    = perturbed_values();
+      std::vector<int>          used = flux_parameters(AstroModel::Powerlaw, false);
+      used.push_back(P::MuonNorm);
+      if (galactic) used.push_back(P::GalacticNorm0);
+      expect_gradients_agree(analytic_gradient(likelihood, x), numerical_gradient(likelihood, x), used, 2.0e-5);
+
+      likelihood.set_data(std::vector<double>(likelihood.data().begin(), likelihood.data().end()));
+      EXPECT_FALSE(likelihood.expected_asimov());
+    }
+  }
+  std::remove(tmpl.c_str());
+  std::remove(gal.c_str());
+}
+
+/// Poisson is linear in k: the expected mode leaves its Asimov alone.
+TEST(ExpectedAsimovTest, PoissonKeepsThePlainAsimov) {
+  const Binning          binning = gradient_binning();
+  const io::ic::ICSample sample  = gradient_sample(binning, 3, false);
+  io::ic::SampleConfig   cfg{.name = "expected_poisson", .binning = binning, .mc_binning = binning};
+  cfg.components = {"astro", "conventional", "prompt"};
+  SampleLikelihood likelihood(sample, cfg, gradient_settings(AstroModel::Powerlaw), nullptr, false);
+  const std::vector<double> g = gradient_at_truth(likelihood, io::ic::AsimovMode::Expected);
+  EXPECT_FALSE(likelihood.expected_asimov());
+  for (int i = 0; i < kNPar; ++i) EXPECT_NEAR(g[i], 0.0, 1.0e-8) << "parameter " << i;
 }

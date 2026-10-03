@@ -68,7 +68,7 @@ namespace ana::ic {
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");
 
     setup_pulls();
-    initialize_data(input_options.use_data());
+    initialize_data(input_options.use_data(), input_options.asimov_mode());
   }
 
   void ICLikelihood::setup_pulls() {
@@ -89,7 +89,7 @@ namespace ana::ic {
     }
   }
 
-  void ICLikelihood::initialize_data(const bool use_data) {
+  void ICLikelihood::initialize_data(const bool use_data, const io::ic::AsimovMode asimov_mode) {
     const auto&         parameters = m_Options->inputOptions().input_parameters().parameters();
     std::vector<double> nominal(params::ic::number_of_parameters());
     // asimov_value() is the start value unless the config separates the two
@@ -101,11 +101,16 @@ namespace ana::ic {
 
     m_Parameter.reset_parameter(nominal.data());
 
+    const bool expected = asimov_mode == io::ic::AsimovMode::Expected;
+    if (expected && use_data)
+      std::cout << "ICLikelihood: AsimovMode Expected ignored, UseData is true\n";
+    const io::ic::AsimovMode mode = use_data ? io::ic::AsimovMode::Mean : asimov_mode;
+
     double total = 0.0;
     for (std::size_t k = 0; k < m_Samples.size(); ++k) {
       // The prediction at the nominal point is needed either way: as the Asimov
       // expectation, or to seed the SAY ssq before the measured counts replace it.
-      m_Samples[k]->generate_asimov(m_Parameter);
+      m_Samples[k]->generate_asimov(m_Parameter, mode);
       if (use_data) {
         const auto& counts = m_DataBase->data_histogram(k);
         if (counts.empty())
@@ -115,7 +120,12 @@ namespace ana::ic {
       for (const double v : m_Samples[k]->data())
         total += v;
     }
-    std::cout << "IC " << (use_data ? "data" : "Asimov") << " total events: " << total << '\n';
+    // Only SAY terms are curved in k; under Poisson the samples keep k = mu.
+    const bool expected_active = !use_data && m_Samples.front()->expected_asimov();
+    if (expected && !use_data && !expected_active)
+      std::cout << "ICLikelihood: AsimovMode Expected is the plain Asimov under a Poisson likelihood\n";
+    std::cout << "IC " << (use_data ? "data" : (expected_active ? "expected-likelihood Asimov" : "Asimov"))
+              << " total events: " << total << '\n';
   }
 
   double ICLikelihood::calculate_pulls(const ParameterWrapper& parameter) const noexcept {

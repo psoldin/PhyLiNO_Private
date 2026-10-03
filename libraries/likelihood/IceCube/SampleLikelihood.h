@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../io/IceCube/ICInputOptions.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../../io/IceCube/SampleConfig.h"
 #include "../ParameterWrapper.h"
@@ -78,8 +79,27 @@ namespace ana::ic {
      */
     void accumulate_gradient(const ParameterWrapper& parameter, std::span<double> gradient, double* hessian);
 
-    /** Fill this sample's Asimov data from the nominal parameters. */
-    void generate_asimov(const ParameterWrapper& nominal);
+    /**
+     * Fill this sample's Asimov data from the nominal parameters.
+     *
+     * AsimovMode::Expected additionally makes every SAY bin term the average
+     * over the counts SAY expects at the nominal point (ExpectedAsimov.h), so
+     * the likelihood is stationary there; data() still reports the mean count.
+     * Under Poisson the two modes are the same fit, and Mean is used.
+     */
+    void generate_asimov(const ParameterWrapper& nominal,
+                         io::ic::AsimovMode mode = io::ic::AsimovMode::Mean);
+
+    /** True while the data is an expected-likelihood Asimov (see generate_asimov()). */
+    [[nodiscard]] bool expected_asimov() const noexcept { return m_ExpectedAsimov; }
+
+    /** The counts and weights analysis bin `bin`'s term is averaged over; both
+        empty unless expected_asimov(). */
+    struct WeightedCounts {
+      std::span<const double> k;
+      std::span<const double> w;
+    };
+    [[nodiscard]] WeightedCounts expected_counts(std::size_t bin) const noexcept;
 
     /**
      * The prediction in the analysis binning.
@@ -188,6 +208,24 @@ namespace ana::ic {
     // the fit -- and one that costs a log per analysis bin per evaluation when
     // it is not treated as one.
     std::vector<double> m_PoissonSaturated;
+
+    // Expected-likelihood Asimov (generate_asimov() with AsimovMode::Expected):
+    // the nodes and weights each bin's SAY term is averaged over, CSR. With no
+    // galactic template every bin of an RA group has the same mean and
+    // variance, so there is one set per MC bin, shared by the group; otherwise
+    // one per analysis bin. While active, m_LogGammaDataPlus1 and its group sum
+    // hold E[lgamma(k + 1)], and m_Data the mean count.
+    bool                     m_ExpectedAsimov   = false;
+    bool                     m_ExpectedPerGroup = false;
+    std::vector<double>      m_ExpectedK;
+    std::vector<double>      m_ExpectedW;
+    std::vector<std::size_t> m_ExpectedOffsets;
+
+    [[nodiscard]] std::size_t expected_set(std::size_t bin) const noexcept {
+      return m_ExpectedPerGroup ? bin / static_cast<std::size_t>(m_RaBins) : bin;
+    }
+    [[nodiscard]] WeightedCounts expected_set_counts(std::size_t set) const noexcept;
+    void build_expected_counts();
 
     // Per-RA-group constants, one entry per MC bin. Everything the prediction
     // contributes to a likelihood bin is identical across that bin's RA slice

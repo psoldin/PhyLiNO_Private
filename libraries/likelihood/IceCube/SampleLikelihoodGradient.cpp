@@ -223,12 +223,23 @@ namespace ana::ic {
         TermDerivatives d;
         if (m_UseSAY) {
           const double s = m_McSsq[b] / ssq_divisor;
-          d              = say_term(value, s, n_ra, k_total, m_SayAlphaOffset,
-                                    [&](auto&& f) {
-                         for (std::size_t j = m_NonZeroOffsets[b]; j < m_NonZeroOffsets[b + 1]; ++j)
-                           f(m_Data[static_cast<std::size_t>(m_NonZeroData[j])]);
-                       },
-                                    second);
+          if (m_ExpectedAsimov) {
+            // Every bin of the group averages over the same counts.
+            const WeightedCounts c = expected_set_counts(b);
+            d = say_term(value, s, n_ra, k_total, m_SayAlphaOffset,
+                         [&](auto&& f) {
+                           for (std::size_t j = 0; j < c.k.size(); ++j)
+                             if (c.k[j] > 0.0) f(c.k[j], n_ra * c.w[j]);
+                         },
+                         second);
+          } else {
+            d = say_term(value, s, n_ra, k_total, m_SayAlphaOffset,
+                         [&](auto&& f) {
+                           for (std::size_t j = m_NonZeroOffsets[b]; j < m_NonZeroOffsets[b + 1]; ++j)
+                             f(m_Data[static_cast<std::size_t>(m_NonZeroData[j])], 1.0);
+                         },
+                         second);
+          }
         } else if (value > 0.0) {
           d = poisson_derivatives(value, n_ra, k_total);
         }
@@ -271,7 +282,17 @@ namespace ana::ic {
           const double      k   = m_Data[bin];
           TermDerivatives   d;
           if (m_UseSAY) {
-            d = say_term(mu, s, 1.0, k, m_SayAlphaOffset, [&](auto&& f) { if (k > 0.0) f(k); }, second);
+            if (m_ExpectedAsimov) {
+              const WeightedCounts c = expected_counts(bin);
+              d = say_term(mu, s, 1.0, k, m_SayAlphaOffset,
+                           [&](auto&& f) {
+                             for (std::size_t j = 0; j < c.k.size(); ++j)
+                               if (c.k[j] > 0.0) f(c.k[j], c.w[j]);
+                           },
+                           second);
+            } else {
+              d = say_term(mu, s, 1.0, k, m_SayAlphaOffset, [&](auto&& f) { if (k > 0.0) f(k, 1.0); }, second);
+            }
           } else if (mu > 0.0) {
             d = poisson_derivatives(mu, 1.0, k);
           }

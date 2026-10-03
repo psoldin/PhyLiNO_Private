@@ -1,5 +1,6 @@
 #include "SampleLikelihood.h"
 
+#include "ExpectedAsimov.h"
 #include "PoissonLikelihood.h"
 #include "SAYLikelihood.h"
 
@@ -594,6 +595,7 @@ namespace ana::ic {
                                "' has " + std::to_string(counts.size()) + " bins, the binning has " +
                                std::to_string(m_Data.size()));
     std::ranges::copy(counts, m_Data.begin());
+    m_ExpectedAsimov = false;
     refresh_data_constants();
 
     // The SAY ssq describes MC statistics, so it still comes from the model; seed
@@ -615,6 +617,16 @@ namespace ana::ic {
       m_LogGammaDataPlus1[b] = std::lgamma(k + 1.0);
       m_PoissonSaturated[b]  = poisson_bin_log_likelihood(k, k, m_LogGammaDataPlus1[b]);
     }
+
+    // An expected-likelihood Asimov averages lgamma(k + 1) over its counts like
+    // every other term; it only shifts -2lnL, but keeps it the expected value.
+    if (m_ExpectedAsimov)
+      for (std::size_t b = 0, n = m_Data.size(); b < n; ++b) {
+        const WeightedCounts c = expected_counts(b);
+        double               e = 0.0;
+        for (std::size_t j = 0; j < c.k.size(); ++j) e += c.w[j] * std::lgamma(c.k[j] + 1.0);
+        m_LogGammaDataPlus1[b] = e;
+      }
 
     // Per-RA-group sums of the above, plus the index of every bin with k > 0.
     // These are what make the no-galactic likelihood loop cost one logarithm
@@ -711,9 +723,23 @@ namespace ana::ic {
             for (int r = 0; r < n_ra; ++r) {
               const std::size_t bin = base + static_cast<std::size_t>(r);
               const double      mu  = std::max(0.0, value + galactic_sum[bin]);
-              acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin], m_SayAlphaOffset);
+              if (m_ExpectedAsimov) {
+                const WeightedCounts c = expected_counts(bin);
+                acc += say_bin_expected_log_likelihood(c.k, c.w, m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin],
+                                                       m_SayAlphaOffset);
+              } else {
+                acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin], m_SayAlphaOffset);
+              }
             }
             return acc;
+          }
+
+          // Expected-likelihood Asimov: every bin of the group is the same
+          // averaged term.
+          if (m_ExpectedAsimov) {
+            const WeightedCounts c = expected_set_counts(b);
+            return ra_scale * say_bin_expected_log_likelihood(c.k, c.w, m_Data[base], std::max(0.0, value), ssq,
+                                                              m_LogGammaDataPlus1[base], m_SayAlphaOffset);
           }
 
           // mu and sigma^2 are both constant across the group, so alpha, beta
@@ -747,7 +773,8 @@ namespace ana::ic {
     return -2.0 * llh;
   }
 
-  void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
+  void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal, const io::ic::AsimovMode mode) {
+    m_ExpectedAsimov = false;
     assemble_prediction(nominal);
     std::ranges::copy(predicted(), m_Data.begin());
     refresh_data_constants();
@@ -759,6 +786,43 @@ namespace ana::ic {
     // (silently degenerating to plain Poisson).
     if (m_UseSAY)
       assemble_fluctuation();
+
+    if (mode == io::ic::AsimovMode::Expected && m_UseSAY)
+      build_expected_counts();
+  }
+
+  void SampleLikelihood::build_expected_counts() {
+    // The truth's mean and variance per term: m_Data is the prediction there,
+    // and sigma^2 was just assembled at the same point.
+    const std::span<const double> ssq = this->ssq();
+    m_ExpectedPerGroup                = m_Galactic.empty();
+    const std::size_t n_sets          = m_ExpectedPerGroup ? m_McTotal.size() : m_Data.size();
+    const std::size_t n_ra            = static_cast<std::size_t>(m_RaBins);
+
+    m_ExpectedK.clear();
+    m_ExpectedW.clear();
+    m_ExpectedOffsets.assign(n_sets + 1, 0);
+    for (std::size_t set = 0; set < n_sets; ++set) {
+      const std::size_t bin = m_ExpectedPerGroup ? set * n_ra : set;
+      append_expected_counts(m_Data[bin], ssq[bin], kExpectedAsimovNodes, m_ExpectedK, m_ExpectedW);
+      m_ExpectedOffsets[set + 1] = m_ExpectedK.size();
+    }
+
+    m_ExpectedAsimov = true;
+    refresh_data_constants();
+  }
+
+  SampleLikelihood::WeightedCounts SampleLikelihood::expected_set_counts(const std::size_t set) const noexcept {
+    const std::size_t begin = m_ExpectedOffsets[set];
+    const std::size_t count = m_ExpectedOffsets[set + 1] - begin;
+    return {std::span<const double>(m_ExpectedK).subspan(begin, count),
+            std::span<const double>(m_ExpectedW).subspan(begin, count)};
+  }
+
+  SampleLikelihood::WeightedCounts SampleLikelihood::expected_counts(const std::size_t bin) const noexcept {
+    if (!m_ExpectedAsimov)
+      return {};
+    return expected_set_counts(expected_set(bin));
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {

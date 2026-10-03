@@ -23,6 +23,16 @@ namespace io::ic {
           "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson', 'SAY' or 'SAYMean')");
     }
 
+    const std::string asimov_str = ic.get<std::string>("AsimovMode", "Mean");
+    if (asimov_str == "Mean") {
+      m_AsimovMode = AsimovMode::Mean;
+    } else if (asimov_str == "Expected") {
+      m_AsimovMode = AsimovMode::Expected;
+    } else {
+      throw std::runtime_error(
+          "ICInputOptions: unknown AsimovMode '" + asimov_str + "' (expected 'Mean' or 'Expected')");
+    }
+
     const std::string backend_str = ic.get<std::string>("Backend", "cpu");
     if (backend_str == "cpu") {
       m_BackendKind = BackendKind::Cpu;

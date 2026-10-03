@@ -35,12 +35,14 @@ namespace ana::ic::bin_terms {
 
   /**
    * The SAY term of n bins sharing mu and s (unclipped, s > 0), with total
-   * count K; `each_count` calls its argument with the count of every bin
-   * whose count is not zero (zero counts contribute nothing to the alpha
-   * derivatives below).
+   * count K; `each_count` calls its argument with the count and weight of
+   * every bin whose count is not zero (zero counts contribute nothing to the
+   * alpha derivatives below). The weight is 1 for data; an expected-likelihood
+   * Asimov passes each bin's quadrature nodes with their weights, and K is
+   * then the sum of the bins' mean counts.
    *
    *   l = n (alpha log beta - lgamma alpha) - (K + n alpha) log1p beta
-   *       + sum_r lgamma(k_r + alpha) + const,
+   *       + sum_r w_r lgamma(k_r + alpha) + const,
    *   alpha = mu^2 / s + a0,  beta = mu / s.
    *
    * Every difference that cancels in the Poisson limit (alpha, beta -> inf) is
@@ -53,12 +55,13 @@ namespace ana::ic::bin_terms {
     const double beta  = mu / s;
     const double opb   = 1.0 + beta;
 
-    // dl/dalpha = -n log1p(1/beta) + sum_r [psi(k_r + alpha) - psi(alpha)]
+    // dl/dalpha = -n log1p(1/beta) + sum_r w_r [psi(k_r + alpha) - psi(alpha)]
+    // (the weights of each bin sum to 1, so the psi(alpha) still come n times)
     double l_a  = -n * std::log1p(1.0 / beta);
     double l_aa = 0.0;
-    each_count([&](const double k) {
-      l_a += polygamma::digamma_difference(k, alpha);
-      if (second) l_aa += polygamma::trigamma_difference(k, alpha);
+    each_count([&](const double k, const double w) {
+      l_a += w * polygamma::digamma_difference(k, alpha);
+      if (second) l_aa += w * polygamma::trigamma_difference(k, alpha);
     });
     // dl/dbeta = n alpha / beta - (K + n alpha) / (1 + beta)
     const double l_b = n * alpha / (beta * opb) - k_total / opb;

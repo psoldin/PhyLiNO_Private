@@ -15,7 +15,12 @@
 #include <stdexcept>
 #include <string>
 
+// ROOT 6.38 merged FCNGradAdapter<T> into the non-template FCNAdapter.
+#if __has_include(<Minuit2/FCNGradAdapter.h>)
 #include <Minuit2/FCNGradAdapter.h>
+#else
+#include <Minuit2/FCNAdapter.h>
+#endif
 #include <Minuit2/Minuit2Minimizer.h>
 #include <RVersion.h>
 
@@ -48,7 +53,11 @@ namespace ana {
       /** Attach `hessian` to the gradient adapter SetFunction() built. */
       template <class Hessian>
       void set_hessian(Hessian hessian) {
+#if __has_include(<Minuit2/FCNGradAdapter.h>)
         using Adapter = ROOT::Minuit2::FCNGradAdapter<ROOT::Math::IMultiGradFunction>;
+#else
+        using Adapter = ROOT::Minuit2::FCNAdapter;
+#endif
         auto* fcn     = dynamic_cast<const Adapter*>(GetFCN());
         if (fcn == nullptr)
           throw std::logic_error("Fit: the Hessian needs the minimizer's function to be a gradient function");

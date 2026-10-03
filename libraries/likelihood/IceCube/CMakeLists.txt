@@ -38,6 +38,8 @@ set(files
     TemplateFlux.cpp
     SAYLikelihood.h
     SAYLikelihood.cpp
+    ExpectedAsimov.h
+    ExpectedAsimov.cpp
     PoissonLikelihood.h
     PoissonLikelihood.cpp
     SampleLikelihood.h

@@ -52,4 +52,25 @@ namespace ana::ic {
                                : poisson_bin_log_likelihood(k, mu, lgamma_k_plus_1);
   }
 
+  double say_bin_expected_log_likelihood(const std::span<const double> k, const std::span<const double> w,
+                                         const double k_mean, const double mu, const double ssq,
+                                         const double expected_lgamma_k_plus_1,
+                                         const double alpha_offset) noexcept {
+    if (mu <= 0.0)
+      return (k_mean > 0.0) ? (-690.0 * k_mean) : 0.0;
+
+    const double ssq_clipped = std::clamp(ssq, 0.0, mu * mu);
+    if (ssq_clipped <= 0.0)
+      return poisson_bin_log_likelihood(k_mean, mu, expected_lgamma_k_plus_1);
+
+    const double alpha = mu * mu / ssq_clipped + alpha_offset;
+    const double beta  = mu / ssq_clipped;
+
+    double lgamma_k_alpha = 0.0;
+    for (std::size_t j = 0; j < k.size(); ++j) lgamma_k_alpha += w[j] * std::lgamma(k[j] + alpha);
+
+    return alpha * std::log(beta) + lgamma_k_alpha - expected_lgamma_k_plus_1 - (k_mean + alpha) * std::log1p(beta) -
+           std::lgamma(alpha);
+  }
+
 }  // namespace ana::ic

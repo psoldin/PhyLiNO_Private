@@ -100,6 +100,17 @@ namespace result::ic {
 
     const auto   ssq    = sample.ssq();
     const double offset = sample.say_alpha_offset();
+    if (sample.expected_asimov()) {
+      // The term the fit minimises: averaged over the bin's expected counts.
+      for (std::size_t b = 0; b < data.size(); ++b) {
+        const auto c              = sample.expected_counts(b);
+        double     lgamma_k_plus1 = 0.0;
+        for (std::size_t j = 0; j < c.k.size(); ++j) lgamma_k_plus1 += c.w[j] * std::lgamma(c.k[j] + 1.0);
+        out[b] = -2.0 * ana::ic::say_bin_expected_log_likelihood(c.k, c.w, data[b], pred[b], ssq[b],
+                                                                 lgamma_k_plus1, offset);
+      }
+      return out;
+    }
     for (std::size_t b = 0; b < data.size(); ++b)
       out[b] = -2.0 * ana::ic::say_bin_log_likelihood(data[b], pred[b], ssq[b],
                                                       std::lgamma(data[b] + 1.0), offset);
