@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -109,8 +110,61 @@ namespace io::ic {
       return get_numeric_column(table, name);
     }
 
+    // Topology.Prediction: the per-event most likely class, from the per-class
+    // score columns <prefix>0, <prefix>1, ... -- as many consecutive ones as the
+    // table has, so the config does not have to repeat the classifier's class
+    // count. Ties go to the lower index, like np.argmax, so the selection is the
+    // one the template notebooks apply. An event with any NaN score has no
+    // defined argmax and gets a NaN label, which topology_mask() treats like a
+    // NaN in a stored label column.
+    arrow::Result<std::vector<double>> topology_predictions(const arrow::Table& table, const SampleConfig& cfg) {
+      const std::string& prefix = cfg.topology_prediction_prefix;
+
+      std::vector<std::vector<double>> scores;
+      while (table.GetColumnByName(prefix + std::to_string(scores.size()))) {
+        ARROW_ASSIGN_OR_RAISE(auto column, get_double_column(table, prefix + std::to_string(scores.size())));
+        if (!scores.empty() && column.size() != scores.front().size())
+          return arrow::Status::Invalid("ICDataBase: topology score column '" + prefix +
+                                        std::to_string(scores.size()) + "' has " + std::to_string(column.size()) +
+                                        " rows, '" + prefix + "0' has " + std::to_string(scores.front().size()));
+        scores.push_back(std::move(column));
+      }
+      if (scores.size() < 2)
+        return arrow::Status::Invalid("ICDataBase: Topology.Prediction '" + prefix + "' needs at least two score "
+                                      "columns '" + prefix + "0', '" + prefix + "1', ...; found " +
+                                      std::to_string(scores.size()));
+      for (const int label : cfg.topology_values)
+        if (static_cast<std::size_t>(label) >= scores.size())
+          return arrow::Status::Invalid("ICDataBase: Topology.Values entry " + std::to_string(label) +
+                                        " is not a class of Topology.Prediction '" + prefix + "', which has " +
+                                        std::to_string(scores.size()) + " score columns");
+
+      std::vector<double> labels(scores.front().size());
+      for (std::size_t i = 0; i < labels.size(); ++i) {
+        std::size_t best = 0;
+        bool        nan  = false;
+        for (std::size_t k = 0; k < scores.size(); ++k) {
+          if (std::isnan(scores[k][i])) {
+            nan = true;
+            break;
+          }
+          if (scores[k][i] > scores[best][i]) best = k;
+        }
+        labels[i] = nan ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(best);
+      }
+      return labels;
+    }
+
+    // What the topology cut reads, for messages: the label column, or the score
+    // columns the predicted class is taken from.
+    std::string topology_source(const SampleConfig& cfg) {
+      return cfg.topology_prediction_prefix.empty() ? "'" + cfg.topology_branch + "'"
+                                                    : "argmax of '" + cfg.topology_prediction_prefix + "*'";
+    }
+
     // The sample's configured topology cut, as a dense keep-mask over the table's
-    // rows: an event is kept if its topology column equals one of the configured
+    // rows: an event is kept if its topology label -- the Topology.Branch column,
+    // or the argmax of the Topology.Prediction scores -- equals one of the configured
     // class labels, or (Topology.Exclude) kept unless it does. Returns an empty
     // mask when no cut is configured, which callers read as "keep everything".
     // The labels are compared as doubles rather than casting the column to int:
@@ -123,7 +177,12 @@ namespace io::ic {
       if (!cfg.filters_topology())
         return std::vector<bool>{};
 
-      ARROW_ASSIGN_OR_RAISE(auto column, get_double_column(table, cfg.topology_branch));
+      std::vector<double> column;
+      if (!cfg.topology_prediction_prefix.empty()) {
+        ARROW_ASSIGN_OR_RAISE(column, topology_predictions(table, cfg));
+      } else {
+        ARROW_ASSIGN_OR_RAISE(column, get_double_column(table, cfg.topology_branch));
+      }
 
       std::vector<bool> keep(column.size(), false);
       for (std::size_t i = 0; i < column.size(); ++i) {
@@ -353,7 +412,7 @@ namespace io::ic {
     // own and cannot go stale when a column is added.
     ARROW_ASSIGN_OR_RAISE(const auto topology_keeps, topology_mask(*table, cfg));
     if (!topology_keeps.empty() && topology_keeps.size() != out.e_true.size())
-      return arrow::Status::Invalid("ICDataBase: topology column '" + cfg.topology_branch + "' has " +
+      return arrow::Status::Invalid("ICDataBase: topology cut on " + topology_source(cfg) + " has " +
                                     std::to_string(topology_keeps.size()) + " rows, the weight columns have " +
                                     std::to_string(out.e_true.size()));
 
@@ -454,7 +513,7 @@ namespace io::ic {
     }
 
     if (cfg.filters_topology())
-      std::cout << "IceCube sample '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
+      std::cout << "IceCube sample '" << cfg.name << "': topology cut on " << topology_source(cfg) << " dropped "
                 << topology_dropped << " of " << N << " rows ("
                 << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(N)) << "%)\n";
 
@@ -542,7 +601,7 @@ namespace io::ic {
     // see one selection.
     ARROW_ASSIGN_OR_RAISE(const auto topology_keeps, topology_mask(*table, cfg));
     if (!topology_keeps.empty() && topology_keeps.size() != n_rows)
-      return arrow::Status::Invalid("ICDataBase: topology column '" + cfg.topology_branch + "' has " +
+      return arrow::Status::Invalid("ICDataBase: topology cut on " + topology_source(cfg) + " has " +
                                     std::to_string(topology_keeps.size()) + " rows, the data file has " +
                                     std::to_string(n_rows));
 
@@ -594,7 +653,7 @@ namespace io::ic {
                 << (100.0 * static_cast<double>(cut_dropped) / static_cast<double>(n_rows)) << "%)\n";
 
     if (cfg.filters_topology())
-      std::cout << "IceCube data '" << cfg.name << "': topology cut on '" << cfg.topology_branch << "' dropped "
+      std::cout << "IceCube data '" << cfg.name << "': topology cut on " << topology_source(cfg) << " dropped "
                 << topology_dropped << " of " << (n_rows - cut_dropped) << " rows ("
                 << (100.0 * static_cast<double>(topology_dropped) / static_cast<double>(n_rows - cut_dropped))
                 << "%)\n";
