@@ -38,6 +38,11 @@ namespace result::ic {
     j["EDM"]         = min->Edm();
     j["fitDuration"] = fit.time_duration();
 
+    // --evaluateAt: the parameters are the point that was asked for, not a fit
+    // (zero errors and EDM). Only written then, so a fit's output is unchanged.
+    if (fit.evaluated_only())
+      j["evaluatedOnly"] = true;
+
     // Fitted value and error of every parameter, keyed by its config name.
     const double* x   = min->X();
     const double* err = min->Errors();

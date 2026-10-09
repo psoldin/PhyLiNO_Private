@@ -74,6 +74,69 @@ namespace {
     return values;
   }
 
+  /// A result file as it was written: its fit summary and every parameter it
+  /// names, keyed by name, before anything decides what the values are good for.
+  struct StoredResult {
+    bool                          converged = false;
+    double                        edm       = std::numeric_limits<double>::infinity();
+    double                        llh       = 0.0;
+    std::map<std::string, double> values;
+    std::map<std::string, double> errors;
+  };
+
+  /**
+   * @brief Reads a result file in one output format.
+   *
+   * @param name   Base name of the file, without its extension.
+   * @param format "json" or "protobuf".
+   * @return The result, or nullopt if the file is absent or holds no usable likelihood.
+   */
+  std::optional<StoredResult> read_stored_result(const std::string& name, const std::string& format) {
+    StoredResult result;
+
+    if (format == "protobuf") {
+      const auto stored = result::ic::read_ice_cube_results_protobuf(name);
+      if (!stored)
+        return std::nullopt;
+
+      result.converged = stored->converged;
+      result.edm       = stored->edm;
+      result.llh       = stored->llh;
+      result.values    = stored->parameter_values;
+      result.errors    = stored->parameter_errors;
+    } else {
+      const std::filesystem::path path = name + ".json";
+      if (!std::filesystem::exists(path))
+        return std::nullopt;
+
+      std::ifstream  file(path);
+      nlohmann::json stored = nlohmann::json::parse(file, nullptr, false);
+      if (stored.is_discarded() || !stored.contains("LLH"))
+        return std::nullopt;
+
+      result.llh = stored["LLH"].get<double>();
+      if (!std::isfinite(result.llh))
+        return std::nullopt;
+
+      result.converged = stored.value("converged", false);
+
+      // A result written before EDM was recorded leaves this at infinity, which
+      // falls the seed test back onto the converged flag alone.
+      result.edm = stored.value("EDM", std::numeric_limits<double>::infinity());
+
+      if (stored.contains("parameters")) {
+        for (const auto& [key, parameter] : stored["parameters"].items()) {
+          if (parameter.contains("value"))
+            result.values[key] = parameter["value"].get<double>();
+          if (parameter.contains("error") && parameter["error"].is_number())
+            result.errors[key] = parameter["error"].get<double>();
+        }
+      }
+    }
+
+    return result;
+  }
+
   /**
    * @brief Reads back a point an earlier run already fitted.
    *
@@ -87,51 +150,11 @@ namespace {
    * @return The result, or nullopt if the file is absent or holds no usable likelihood.
    */
   std::optional<StoredFit> stored_fit(const std::string& name, const io::InputParameter& input_parameters, const std::string& format) {
-    bool                          converged = false;
-    double                        edm       = std::numeric_limits<double>::infinity();
-    double                        llh       = 0.0;
-    std::map<std::string, double> values;
-    std::map<std::string, double> errors;
+    const auto stored = read_stored_result(name, format);
+    if (!stored)
+      return std::nullopt;
 
-    if (format == "protobuf") {
-      const auto stored = result::ic::read_ice_cube_results_protobuf(name);
-      if (!stored)
-        return std::nullopt;
-
-      converged = stored->converged;
-      edm       = stored->edm;
-      llh       = stored->llh;
-      values    = stored->parameter_values;
-      errors    = stored->parameter_errors;
-    } else {
-      const std::filesystem::path path = name + ".json";
-      if (!std::filesystem::exists(path))
-        return std::nullopt;
-
-      std::ifstream  file(path);
-      nlohmann::json stored = nlohmann::json::parse(file, nullptr, false);
-      if (stored.is_discarded() || !stored.contains("LLH"))
-        return std::nullopt;
-
-      llh = stored["LLH"].get<double>();
-      if (!std::isfinite(llh))
-        return std::nullopt;
-
-      converged = stored.value("converged", false);
-
-      // A result written before EDM was recorded leaves this at infinity, which
-      // falls the seed test back onto the converged flag alone.
-      edm = stored.value("EDM", std::numeric_limits<double>::infinity());
-
-      if (stored.contains("parameters")) {
-        for (const auto& [key, parameter] : stored["parameters"].items()) {
-          if (parameter.contains("value"))
-            values[key] = parameter["value"].get<double>();
-          if (parameter.contains("error") && parameter["error"].is_number())
-            errors[key] = parameter["error"].get<double>();
-        }
-      }
-    }
+    const auto& [converged, edm, llh, values, errors] = *stored;
 
     StoredFit result;
     result.llh = llh;
@@ -321,6 +344,63 @@ namespace {
   /// after the MC has been loaded.
   const std::vector<double>& seed_from_values(const std::shared_ptr<io::Options>& options) {
     static const std::vector<double> values = load_seed_from_values(options);
+    return values;
+  }
+
+  /**
+   * @brief The point --evaluateAt names, in minimizer order; empty without the option.
+   *
+   * Unlike --seedFrom, the result is taken whatever its convergence: the point
+   * is what the caller wants evaluated, not a start the minimizer could walk
+   * away from. A result that did not converge is reported, not refused.
+   * Parameters the result does not carry (a different config, or --blind
+   * output) keep their configured StartValue, and are listed; so are names in
+   * the result this config does not have. Read once per run and before the
+   * module is built, like seed_from_values(), so a bad path fails at once.
+   */
+  const std::vector<double>& evaluate_at_values(const std::shared_ptr<io::Options>& options) {
+    static const std::vector<double> values = [&]() -> std::vector<double> {
+      const auto& input = options->inputOptions();
+      if (input.evaluate_at().empty())
+        return {};
+
+      const std::string path   = result_base_name(input.evaluate_at());
+      const auto&       format = input.output_format();
+
+      auto stored = read_stored_result(path, format);
+      if (!stored)
+        stored = read_stored_result(path, format == "protobuf" ? "json" : "protobuf");
+      if (!stored)
+        throw std::runtime_error("--evaluateAt \"" + input.evaluate_at() + "\": no readable result there (looked for " + path + ".json and " + path + ".pb.gz)");
+
+      std::cout << "Evaluating at the parameters of " << path << " (likelihood " << stored->llh << " there)\n";
+      if (!seedquality::usable(stored->converged, stored->edm))
+        std::cout << "Warning: that result did not converge (EDM " << stored->edm << "); evaluating at its parameters anyway\n";
+
+      const auto&         input_parameters = input.input_parameters();
+      const auto&         names            = input_parameters.names();
+      std::vector<double> point(names.size());
+      std::string         missing;
+      for (std::size_t i = 0; i < names.size(); ++i) {
+        if (const auto it = stored->values.find(names[i]); it != stored->values.end()) {
+          point[i] = it->second;
+        } else {
+          point[i] = input_parameters.value(static_cast<int>(i));
+          missing += (missing.empty() ? "" : ", ") + names[i];
+        }
+      }
+      if (!missing.empty())
+        std::cout << "Not in that result, kept at their configured StartValue: " << missing << '\n';
+
+      std::string unknown;
+      for (const auto& [name, value] : stored->values)
+        if (std::ranges::find(names, name) == names.end())
+          unknown += (unknown.empty() ? "" : ", ") + name;
+      if (!unknown.empty())
+        std::cout << "In that result but not in this config, ignored: " << unknown << '\n';
+
+      return point;
+    }();
     return values;
   }
 
@@ -1452,8 +1532,19 @@ int main(int argc, char** argv) {
     // Read here rather than where it is used: a bad --seedFrom should fail now,
     // not once the MC is in memory. The result is cached for the real callers.
     seed_from_values(options);
+    evaluate_at_values(options);
 
     const auto module = modules.at(options->inputOptions().experiment());
+
+    // --evaluateAt writes "Output" for this config's model at another result's
+    // parameters, with nothing minimized: how a best fit is carried over to a
+    // differently built model to compare that model with its data.
+    if (const auto& point = evaluate_at_values(options); !point.empty()) {
+      ana::Fit fit(options, module);
+      fit.evaluate(point);
+      result::write_results(fit, "Output");
+      return EXIT_SUCCESS;
+    }
 
     // --fitOnly runs the plain fit and writes "Output.json"; without it the scan
     // picked by --scanMode (2d by default) is the entry point. The single fit

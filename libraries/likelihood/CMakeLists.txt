@@ -3,6 +3,7 @@ set(files
     Fit.cpp
     NewtonMinimizer.h
     NewtonMinimizer.cpp
+    PointEvaluator.h
     ParameterWrapper.h
     ParameterWrapper.cpp
     ParameterSeeding.h

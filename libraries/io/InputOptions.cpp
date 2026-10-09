@@ -54,6 +54,7 @@ namespace io {
 	("gpuDevices", po::value<std::string>(&m_GpuDevices)->default_value(""), "GPU ordinal per scan worker, as device:count[,device:count...] (e.g. \"0:6,1:10\"); empty keeps every worker on device 0")
 	("scanWarmStart", po::value<bool>(&m_ScanWarmStart)->default_value(true), "Start each scan fit from the parameters of the nearest scan point already fitted (ignored with --randomizeSeeds)")
 	("seedFrom", po::value<std::string>(&m_SeedFrom)->default_value(""), "A finished result, with or without its .json/.pb.gz extension, whose fitted parameters become the start values: of the plain fit with --fitOnly, and of a scan's free fit and of every scan point that has no fitted neighbour yet. Use it when the free fit settles into a local minimum. Ignored with --randomizeSeeds")
+	("evaluateAt", po::value<std::string>(&m_EvaluateAt)->default_value(""), "A finished result, with or without its .json/.pb.gz extension, at whose parameter values this config's model is evaluated and written to Output, without any minimization (replaces --fitOnly and the scans). Parameters the result lacks keep their configured StartValue. The data are this config's own: an Asimov run keeps its AsimovValue truth")
 	("scanMode", po::value<std::string>(&m_ScanMode)->default_value("2d"), "Which scan LLHFit runs when --fitOnly is not given: 2d|2d-regular|1d|1d-regular|1d-crossing|nm1")
 	("scanParameter", po::value<std::string>(&m_ScanParameter)->default_value(""), "Restrict --scanMode 1d/1d-regular/1d-crossing to a single named parameter instead of every non-fixed one; required by --scanMode nm1, where it names the parameter whose sensitivity is measured")
 	("scanPoints", po::value<int>(&m_ScanPoints)->default_value(30), "Grid points per axis for --scanMode 2d-regular/1d-regular")
@@ -97,6 +98,9 @@ namespace io {
       throw std::invalid_argument("--minimizer: expected Minuit2 or Newton, got \"" + m_Minimizer + "\"");
     if (m_Minimizer == "Newton" && (!m_AnalyticGradient || m_Hessian != "gn"))
       throw std::invalid_argument("--minimizer Newton needs --gradient true and --hessian gn");
+
+    if (!m_EvaluateAt.empty() && !m_SeedFrom.empty())
+      throw std::invalid_argument("--evaluateAt and --seedFrom do not combine: --evaluateAt fits nothing, so there is no start point to seed");
 
     if (m_Hessian != "gn" && m_Hessian != "none")
       throw std::invalid_argument("--hessian: expected gn or none, got \"" + m_Hessian + "\"");

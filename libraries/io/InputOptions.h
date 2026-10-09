@@ -116,6 +116,21 @@ namespace io {
     [[nodiscard]] const std::string& seed_from() const noexcept { return m_SeedFrom; }
 
     /**
+     * @brief A finished result at whose parameters the model is evaluated
+     * instead of fitted.
+     *
+     * Empty unless --evaluateAt was given. LLHFit then writes "Output" for the
+     * model this config builds -- its samples, cuts, templates and gradients --
+     * at that result's parameter values, with nothing minimized: the way to
+     * carry a best fit over to a differently built model (a topology split, a
+     * different muon template) and compare it with that model's data. The data
+     * are this config's own, so an Asimov run's data stay at the configured
+     * AsimovValue/StartValue truth. Same file formats and base-name handling as
+     * --seedFrom; the two do not combine.
+     */
+    [[nodiscard]] const std::string& evaluate_at() const noexcept { return m_EvaluateAt; }
+
+    /**
      * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
      * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
      * (perform_2d_scan_regular), "1d" or "1d-regular" (perform_1d_scan_all,
@@ -251,6 +266,7 @@ namespace io {
     std::vector<int> m_GpuDeviceOfWorker;  /**< --gpuDevices expanded to one device ordinal per worker slot. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
     std::string m_SeedFrom;           /**< --seedFrom: result whose parameters are this run's start values. */
+    std::string m_EvaluateAt;         /**< --evaluateAt: result whose parameters the model is evaluated at, unfitted. */
     std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
     int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */

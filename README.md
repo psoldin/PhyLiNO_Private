@@ -167,6 +167,16 @@ Before trusting gradient fits on a new backend or configuration, compare the ana
 
 Away from the minimum the relative differences should be at the level of the `fd.noise` column (1e-6 or below on an FP64 backend); at the minimum the gradient vanishes and both columns are noise.
 
+## Evaluating a model at given parameters (`--evaluateAt`)
+
+`--evaluateAt <result>` builds the model of the config passed with `-c` at the parameter values of a finished result (`Output.json` or `.pb.gz`, with or without the extension) and writes `Output` without minimizing anything: the prediction, the data, the per-bin likelihood and the component breakdown at that point. Use it to carry a best fit over to a differently built model, for example a topology split with its own muon template and SnowStorm gradients, and compare that model with its data.
+
+```bash
+./build/bin/LLHFit -c config_topology.json --evaluateAt default_fit/Output.json
+```
+
+The data are the config's own. An Asimov run keeps its data at the configured `AsimovValue` (or `StartValue`), not at the injected point. Parameters the result does not carry keep their configured `StartValue` and are listed. A result that did not converge is used anyway, with a warning. A value outside the config's bounds is an error. The output carries `"evaluatedOnly": true`, zero errors and zero EDM. `--minimizer` is irrelevant because nothing is minimized, and `--seedFrom` is rejected alongside it. Evaluating a config at its own best fit reproduces that fit's output bin for bin.
+
 ## Expected-likelihood Asimov (`AsimovMode`)
 
 Asimov data sets every bin's count to the prediction at the truth, `k = mu`. That is the maximum of a Poisson term but not of a SAY term: SAY's derivative carries `psi(k + alpha)`, which is curved in `k`, so wherever the MC variance is large compared with `mu` (a few-event muon template, say) an Asimov fit under `SAY` or `SAYMean` moves away from the truth. Plain-Asimov sensitivities under SAY are then not what pseudo-experiments give.

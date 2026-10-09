@@ -2,6 +2,7 @@
 
 #include "NewtonMinimizer.h"
 #include "ParameterSeeding.h"
+#include "PointEvaluator.h"
 
 // STL includes
 #include <algorithm>
@@ -159,7 +160,11 @@ namespace ana {
     // constructor touches (default options).
     std::shared_ptr<Minuit2>         minuit;
     std::shared_ptr<NewtonMinimizer> newton;
-    if (input_options.minimizer() == "Newton") {
+    if (m_EvaluateOnly) {
+      // Nothing is minimized, so --minimizer does not matter, and Minuit2
+      // would crash on a problem with every variable fixed.
+      m_Minimizer = std::make_shared<PointEvaluator>();
+    } else if (input_options.minimizer() == "Newton") {
       if (!m_UseHessian)
         throw std::runtime_error("Fit: --minimizer Newton needs a likelihood with an analytic gradient and Hessian");
       newton      = std::make_shared<NewtonMinimizer>();
@@ -200,7 +205,7 @@ namespace ana {
       };
       if (minuit)
         minuit->set_hessian([hessian](const std::vector<double>& x, double* out) { return hessian(x.data(), out); });
-      else
+      else if (newton)
         newton->set_hessian(hessian);
     }
     m_Minimizer->SetTolerance(m_Tolerance);
@@ -396,6 +401,52 @@ namespace ana {
     std::cout << ss.rdbuf() << std::endl;
 
     m_FitPerformed = true;
+
+    return m_Converged;
+  }
+
+  bool Fit::evaluate(const std::span<const double> point) {
+    using namespace std::chrono;
+
+    const auto& input_options = m_Options->inputOptions();
+    const auto& parameters    = input_options.input_parameters().parameters();
+    const auto& names         = input_options.input_parameters().names();
+    if (point.size() != parameters.size())
+      throw std::invalid_argument("Fit::evaluate: got " + std::to_string(point.size()) + " parameter values, the config has " +
+                                  std::to_string(parameters.size()));
+
+    // A value outside the configured bounds is a point this model was never
+    // meant to describe -- most likely a config whose bounds differ from the
+    // one that produced the point -- so it is an error rather than clamped.
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+      const std::optional<double>& lower = parameters[i].lower_bound();
+      const std::optional<double>& upper = parameters[i].upper_bound();
+      if (!std::isfinite(point[i]) || (lower && point[i] < *lower) || (upper && point[i] > *upper))
+        throw std::invalid_argument("Fit::evaluate: " + names[i] + " = " + std::to_string(point[i]) +
+                                    " is outside its configured bounds [" + (lower ? std::to_string(*lower) : "-inf") +
+                                    ", " + (upper ? std::to_string(*upper) : "+inf") + "]");
+    }
+
+    const auto begin = high_resolution_clock::now();
+
+    m_EvaluateOnly = true;
+    const std::vector<double> start(point.begin(), point.end());
+    const std::vector<bool>   all_fixed(parameters.size(), true);
+    setup_minimizer(&start, &all_fixed);
+    m_Converged = m_Minimizer->Minimize();
+
+    m_FitDuration  = high_resolution_clock::now() - begin;
+    m_FitPerformed = true;
+
+    std::stringstream ss;
+    if (!input_options.silent() && !input_options.blind()) {
+      for (std::size_t i = 0; i < parameters.size(); ++i)
+        ss << "Evaluate at parameter " << std::setw(5) << i << ": " << std::setw(18) << names[i] << " = " << point[i] << '\n';
+      ss << "-----\n";
+    }
+    ss << "Evaluated without minimizing: " << std::boolalpha << m_Converged << '\n';
+    ss << "Likelihood: " << m_Minimizer->MinValue() << '\n';
+    std::cout << ss.rdbuf() << std::endl;
 
     return m_Converged;
   }

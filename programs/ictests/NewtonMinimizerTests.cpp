@@ -2,6 +2,7 @@
 // --minimizer Newton, on functions whose minima and curvatures are known.
 
 #include "NewtonMinimizer.h"
+#include "PointEvaluator.h"
 
 #include <Math/Functor.h>
 #include <Minuit2/Minuit2Minimizer.h>
@@ -190,4 +191,29 @@ TEST(NewtonMinimizerTest, AgreesWithMigradOnAPoissonFit) {
   EXPECT_NEAR(newton.X()[0], migrad.X()[0], 1e-4 * migrad.Errors()[0]);
   EXPECT_NEAR(newton.X()[1], migrad.X()[1], 1e-4 * migrad.Errors()[1]);
   EXPECT_LE(newton.NCalls(), 20u);
+}
+
+/// ana::PointEvaluator (--evaluateAt): one evaluation where the variables were
+/// put, nothing moved, zero errors -- including with every variable fixed,
+/// which is exactly the problem Minuit2 crashes on.
+TEST(PointEvaluatorTest, EvaluatesWithoutMoving) {
+  Problem                 p = correlated_quadratic();
+  ROOT::Math::GradFunctor functor(p.f, p.n, p.g);
+  ana::PointEvaluator     m;
+  m.SetFunction(functor);
+  m.SetLimitedVariable(0, "x", 0.5, 0.1, 0.0, 2.0);
+  m.SetVariable(1, "y", 0.0, 0.1);
+  m.FixVariable(0);
+  m.FixVariable(1);
+  ASSERT_TRUE(m.Minimize());
+
+  const double at[2] = {0.5, 0.0};
+  EXPECT_DOUBLE_EQ(m.X()[0], 0.5);
+  EXPECT_DOUBLE_EQ(m.X()[1], 0.0);
+  EXPECT_DOUBLE_EQ(m.MinValue(), p.f(at));
+  EXPECT_EQ(m.NCalls(), 1u);
+  EXPECT_EQ(m.Edm(), 0.0);
+  ASSERT_NE(m.Errors(), nullptr);
+  EXPECT_EQ(m.Errors()[0], 0.0);
+  EXPECT_EQ(m.Errors()[1], 0.0);
 }

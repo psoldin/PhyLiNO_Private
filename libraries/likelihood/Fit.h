@@ -32,6 +32,19 @@ namespace ana {
     bool minimize();
 
     /**
+     * Evaluate the likelihood at `point` -- every parameter, in minimizer
+     * order -- without minimizing (--evaluateAt). Every parameter is fixed
+     * there, so the minimizer this leaves behind reports `point` as X(), the
+     * likelihood there as MinValue(), and zero errors and EDM; the result
+     * writers then describe the model at `point` as they would a fit. Throws
+     * if `point` has the wrong size or leaves a configured bound.
+     */
+    bool evaluate(std::span<const double> point);
+
+    /** Whether evaluate() rather than minimize() produced this Fit's result. */
+    [[nodiscard]] bool evaluated_only() const noexcept { return m_EvaluateOnly; }
+
+    /**
      * Override the --tolerance this fit converges to. The scans set their
      * per-point fits to --scanTolerance this way. Kept on the Fit rather than
      * set on the minimizer alone because a restart builds a fresh minimizer,
@@ -94,6 +107,7 @@ namespace ana {
     bool m_ExactErrors = true;   ///< Final Hesse on the exact Hessian (see set_exact_errors()).
     bool m_ExactHessianMode = false;  ///< The Hessian callback differences the gradient instead of returning Gauss-Newton.
     bool m_MinuitTransform  = true;   ///< The minimizer works in Minuit2's internal coordinates (see exact_hessian()).
+    bool m_EvaluateOnly     = false;  ///< setup_minimizer() builds a PointEvaluator (see evaluate()).
 
     /** Central differences of the analytic gradient over the free parameters, row-major n x n. */
     bool exact_hessian(const std::vector<double>& x, double* hessian);
