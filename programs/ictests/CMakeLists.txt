@@ -1,8 +1,8 @@
 add_executable(ICTests ICTests.cpp Df64Test.cpp InputOptionsTests.cpp ExplorerModelTests.cpp
-               ResponseTests.cpp)
+               ResponseTests.cpp GradientTests.cpp NewtonMinimizerTests.cpp)
 # Arrow/Parquet are PRIVATE to `icecube`; ICTests links them itself to write the
 # small parquet fixtures the ICDataBase read tests load.
-target_link_libraries(ICTests PRIVATE io icecube GTest::gtest_main
+target_link_libraries(ICTests PRIVATE io icecube likelihood ROOT::Minuit2 GTest::gtest_main
                       Arrow::arrow_shared Parquet::parquet_shared)
 # io's Boost include dir is PRIVATE (not propagated to consumers); ICTests
 # needs it directly to include boost/property_tree headers for the
@@ -18,7 +18,7 @@ target_include_directories(ICTests PRIVATE ${CMAKE_SOURCE_DIR}/programs/ParamExp
 
 # The scan refinement is header-only and pulls in nothing from the fit, so its
 # tests are a separate, fast target.
-add_executable(AdaptiveGridTests AdaptiveGridTests.cpp AdaptiveScan1DTests.cpp ScanSeedsTests.cpp)
+add_executable(AdaptiveGridTests AdaptiveGridTests.cpp AdaptiveScan1DTests.cpp CrossingScan1DTests.cpp ScanSeedsTests.cpp)
 target_link_libraries(AdaptiveGridTests PRIVATE GTest::gtest_main)
 target_include_directories(AdaptiveGridTests PRIVATE ${CMAKE_SOURCE_DIR}/programs/LLHFit)
 

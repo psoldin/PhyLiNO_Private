@@ -3,6 +3,7 @@
 #include "../../io/IceCube/ICParameter.h"
 #include "../../io/Options.h"
 
+#include <algorithm>
 #include <cmath>
 #include <future>
 #include <iostream>
@@ -21,10 +22,9 @@ namespace ana::ic {
     , m_DataBase(std::move(data_base))
     , m_GpuBackend(std::move(gpu_backend))
     , m_UseMultiThreading(m_Options->inputOptions().use_multi_threading()) {
-    const bool use_bb  = input_options.likelihood_type() == io::ic::LikelihoodType::BBLite;
-    // BBLite reads the same per-bin sigma^2 as SAY, so it shares the SAY setup.
-    const bool use_say = use_bb || input_options.likelihood_type() == io::ic::LikelihoodType::SAY;
-    std::cout << "ICLikelihood: using " << (use_bb ? "BBLite" : use_say ? "SAY" : "Poisson") << " likelihood\n";
+    const io::ic::LikelihoodType likelihood_type = input_options.likelihood_type();
+    const bool                   use_say         = io::ic::uses_say(likelihood_type);
+    std::cout << "ICLikelihood: using " << io::ic::likelihood_name(likelihood_type) << " likelihood\n";
 
     const GlobalFluxSettings settings{
         .e_ref_gev                = input_options.e_ref_gev(),
@@ -61,14 +61,14 @@ namespace ana::ic {
       // uploaded MC columns stay shared behind the sessions.
       m_Samples.push_back(std::make_unique<SampleLikelihood>(
           m_DataBase->sample(k), cfg, settings,
-          m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say));
-      m_Samples.back()->set_barlow_beeston(use_bb);
+          m_GpuBackend ? m_GpuBackend->create_session() : nullptr, use_say,
+          io::ic::say_alpha_offset(likelihood_type)));
     }
     if (m_Samples.empty())
       throw std::runtime_error("ICLikelihood: no enabled IceCube samples");
 
     setup_pulls();
-    initialize_data(input_options.use_data());
+    initialize_data(input_options.use_data(), input_options.asimov_mode());
   }
 
   void ICLikelihood::setup_pulls() {
@@ -89,7 +89,7 @@ namespace ana::ic {
     }
   }
 
-  void ICLikelihood::initialize_data(const bool use_data) {
+  void ICLikelihood::initialize_data(const bool use_data, const io::ic::AsimovMode asimov_mode) {
     const auto&         parameters = m_Options->inputOptions().input_parameters().parameters();
     std::vector<double> nominal(params::ic::number_of_parameters());
     // asimov_value() is the start value unless the config separates the two
@@ -101,11 +101,16 @@ namespace ana::ic {
 
     m_Parameter.reset_parameter(nominal.data());
 
+    const bool expected = asimov_mode == io::ic::AsimovMode::Expected;
+    if (expected && use_data)
+      std::cout << "ICLikelihood: AsimovMode Expected ignored, UseData is true\n";
+    const io::ic::AsimovMode mode = use_data ? io::ic::AsimovMode::Mean : asimov_mode;
+
     double total = 0.0;
     for (std::size_t k = 0; k < m_Samples.size(); ++k) {
       // The prediction at the nominal point is needed either way: as the Asimov
       // expectation, or to seed the SAY ssq before the measured counts replace it.
-      m_Samples[k]->generate_asimov(m_Parameter);
+      m_Samples[k]->generate_asimov(m_Parameter, mode);
       if (use_data) {
         const auto& counts = m_DataBase->data_histogram(k);
         if (counts.empty())
@@ -115,7 +120,12 @@ namespace ana::ic {
       for (const double v : m_Samples[k]->data())
         total += v;
     }
-    std::cout << "IC " << (use_data ? "data" : "Asimov") << " total events: " << total << '\n';
+    // Only SAY terms are curved in k; under Poisson the samples keep k = mu.
+    const bool expected_active = !use_data && m_Samples.front()->expected_asimov();
+    if (expected && !use_data && !expected_active)
+      std::cout << "ICLikelihood: AsimovMode Expected is the plain Asimov under a Poisson likelihood\n";
+    std::cout << "IC " << (use_data ? "data" : (expected_active ? "expected-likelihood Asimov" : "Asimov"))
+              << " total events: " << total << '\n';
   }
 
   double ICLikelihood::calculate_pulls(const ParameterWrapper& parameter) const noexcept {
@@ -200,6 +210,45 @@ namespace ana::ic {
     // (iminuit errordef = LIKELIHOOD = 0.5). Same minimum, same parameter
     // errors; only the printed scale differs.
     return std::isfinite(llh) ? llh : 1.0e25;
+  }
+
+  void ICLikelihood::evaluate_derivatives(const double* parameter, const bool want_hessian) {
+    const std::size_t n = static_cast<std::size_t>(params::ic::number_of_parameters());
+
+    const bool same_point = m_DerivativePoint.size() == n && std::equal(parameter, parameter + n, m_DerivativePoint.begin());
+    if (same_point && (m_HaveHessian || !want_hessian))
+      return;
+
+    m_Parameter.reset_parameter(parameter);
+
+    m_Gradient.assign(n, 0.0);
+    if (want_hessian)
+      m_Hessian.assign(n * n, 0.0);
+
+    for (const auto& sample : m_Samples)
+      sample->accumulate_gradient(m_Parameter, m_Gradient, want_hessian ? m_Hessian.data() : nullptr);
+
+    // d/dx ((x - cv) / sigma)^2 = 2 (x - cv) / sigma^2, and twice 1 / sigma^2.
+    for (const auto& [idx, cv, sigma] : m_Pulls) {
+      const auto i = static_cast<std::size_t>(idx);
+      m_Gradient[i] += 2.0 * (m_Parameter[idx] - cv) / (sigma * sigma);
+      if (want_hessian)
+        m_Hessian[i * n + i] += 2.0 / (sigma * sigma);
+    }
+
+    m_DerivativePoint.assign(parameter, parameter + n);
+    m_HaveHessian = want_hessian;
+  }
+
+  void ICLikelihood::calculate_gradient(const double* parameter, double* gradient) {
+    evaluate_derivatives(parameter, false);
+    std::ranges::copy(m_Gradient, gradient);
+  }
+
+  bool ICLikelihood::calculate_hessian(const double* parameter, double* hessian) {
+    evaluate_derivatives(parameter, true);
+    std::ranges::copy(m_Hessian, hessian);
+    return true;
   }
 
 }  // namespace ana::ic

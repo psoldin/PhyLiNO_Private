@@ -54,13 +54,19 @@ namespace io {
 	("gpuDevices", po::value<std::string>(&m_GpuDevices)->default_value(""), "GPU ordinal per scan worker, as device:count[,device:count...] (e.g. \"0:6,1:10\"); empty keeps every worker on device 0")
 	("scanWarmStart", po::value<bool>(&m_ScanWarmStart)->default_value(true), "Start each scan fit from the parameters of the nearest scan point already fitted (ignored with --randomizeSeeds)")
 	("seedFrom", po::value<std::string>(&m_SeedFrom)->default_value(""), "A finished result, with or without its .json/.pb.gz extension, whose fitted parameters become the start values: of the plain fit with --fitOnly, and of a scan's free fit and of every scan point that has no fitted neighbour yet. Use it when the free fit settles into a local minimum. Ignored with --randomizeSeeds")
-	("scanMode", po::value<std::string>(&m_ScanMode)->default_value("2d"), "Which scan LLHFit runs when --fitOnly is not given: 2d|2d-regular|1d|1d-regular|nm1")
-	("scanParameter", po::value<std::string>(&m_ScanParameter)->default_value(""), "Restrict --scanMode 1d/1d-regular to a single named parameter instead of every non-fixed one; required by --scanMode nm1, where it names the parameter whose sensitivity is measured")
+	("evaluateAt", po::value<std::string>(&m_EvaluateAt)->default_value(""), "A finished result, with or without its .json/.pb.gz extension, at whose parameter values this config's model is evaluated and written to Output, without any minimization (replaces --fitOnly and the scans). Parameters the result lacks keep their configured StartValue. The data are this config's own: an Asimov run keeps its AsimovValue truth")
+	("scanMode", po::value<std::string>(&m_ScanMode)->default_value("2d"), "Which scan LLHFit runs when --fitOnly is not given: 2d|2d-regular|1d|1d-regular|1d-crossing|nm1")
+	("scanParameter", po::value<std::string>(&m_ScanParameter)->default_value(""), "Restrict --scanMode 1d/1d-regular/1d-crossing to a single named parameter instead of every non-fixed one; required by --scanMode nm1, where it names the parameter whose sensitivity is measured")
 	("scanPoints", po::value<int>(&m_ScanPoints)->default_value(30), "Grid points per axis for --scanMode 2d-regular/1d-regular")
+	("crossingLevel", po::value<double>(&m_CrossingLevel)->default_value(1.0), "Delta chi2 whose crossings --scanMode 1d-crossing searches for: 1 for 1 sigma, 4 for 2 sigma, 2.71 for 90 %")
 	("tolerance", po::value<double>(&m_Tolerance)->default_value(0.05), "Set Fit tolerance")
+	("scanTolerance", po::value<double>(&m_ScanTolerance)->default_value(-1.0), "Fit tolerance of the per-point fits of every scan (the free fit a scan starts from keeps --tolerance); both minimizers stop at EDM < 0.002 * tolerance. Default (-1): 0.5 with --minimizer Newton, whose EDM tracks the true distance to the minimum, and --tolerance with Minuit2, whose EDM was measured to understate it by up to ~300x at scan points")
 	("fitRetries", po::value<int>(&m_FitRetries)->default_value(3), "Times a stalled Migrad is restarted from its own last point before the fit is given up on")
 	("minuitStrategy", po::value<int>(&m_MinuitStrategy)->default_value(1), "Minuit2 strategy: 0 fast, 1 default, 2 more accurate derivatives and Hessian updates")
 	("minimizerAlgo", po::value<std::string>(&m_MinimizerAlgo)->default_value("Migrad"), "Minuit2 algorithm: Migrad, Combined (Migrad, then Simplex and Migrad again on failure), Simplex or Fumili")
+	("minimizer", po::value<std::string>(&m_Minimizer)->default_value("Minuit2"), "Minimizer: Minuit2 (Migrad, see --minimizerAlgo) or Newton (projected trust-region Newton on the analytic gradient and Gauss-Newton Hessian; needs --gradient and --hessian gn)")
+	("gradient", po::value<bool>(&m_AnalyticGradient)->default_value(true), "Hand the minimizer the likelihood's analytic gradient where it has one (IceCube) instead of letting Minuit2 differentiate numerically")
+	("hessian", po::value<std::string>(&m_Hessian)->default_value("gn"), "Second derivatives the minimizer gets with --gradient: gn (the likelihood's Gauss-Newton Hessian as Migrad's metric, with Minuit2 strategy raised to 2 so the whole matrix seeds it, and the reported errors from the exact Hessian -- central differences of the analytic gradient) or none (Minuit2's own numerical ones)")
 	("fitOnly", po::bool_switch(&m_FitOnly), "Run a single fit and write its result instead of the 2D scan")
 	("randomizeSeeds", po::bool_switch(&m_RandomizeSeeds), "Randomize the minimizer start values around the configured ones (data/Asimov are unaffected); use --seed to reproduce a draw")
 	("randomizeWidth", po::value<double>(&m_RandomizeWidth)->default_value(0.08), "Relative width of the randomized start values (NNMFit's default is 0.08)")
@@ -87,6 +93,17 @@ namespace io {
     notify(vm);
 
     m_GpuDeviceOfWorker = parse_gpu_devices(m_GpuDevices);
+
+    if (m_Minimizer != "Minuit2" && m_Minimizer != "Newton")
+      throw std::invalid_argument("--minimizer: expected Minuit2 or Newton, got \"" + m_Minimizer + "\"");
+    if (m_Minimizer == "Newton" && (!m_AnalyticGradient || m_Hessian != "gn"))
+      throw std::invalid_argument("--minimizer Newton needs --gradient true and --hessian gn");
+
+    if (!m_EvaluateAt.empty() && !m_SeedFrom.empty())
+      throw std::invalid_argument("--evaluateAt and --seedFrom do not combine: --evaluateAt fits nothing, so there is no start point to seed");
+
+    if (m_Hessian != "gn" && m_Hessian != "none")
+      throw std::invalid_argument("--hessian: expected gn or none, got \"" + m_Hessian + "\"");
 
     namespace pt = boost::property_tree;
 

@@ -16,11 +16,21 @@ namespace io::ic {
       m_LikelihoodType = LikelihoodType::Poisson;
     } else if (likelihood_str == "SAY") {
       m_LikelihoodType = LikelihoodType::SAY;
-    } else if (likelihood_str == "BBLite") {
-      m_LikelihoodType = LikelihoodType::BBLite;
+    } else if (likelihood_str == "SAYMean") {
+      m_LikelihoodType = LikelihoodType::SAYMean;
     } else {
       throw std::runtime_error(
-          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson', 'SAY' or 'BBLite')");
+          "ICInputOptions: unknown Likelihood '" + likelihood_str + "' (expected 'Poisson', 'SAY' or 'SAYMean')");
+    }
+
+    const std::string asimov_str = ic.get<std::string>("AsimovMode", "Mean");
+    if (asimov_str == "Mean") {
+      m_AsimovMode = AsimovMode::Mean;
+    } else if (asimov_str == "Expected") {
+      m_AsimovMode = AsimovMode::Expected;
+    } else {
+      throw std::runtime_error(
+          "ICInputOptions: unknown AsimovMode '" + asimov_str + "' (expected 'Mean' or 'Expected')");
     }
 
     const std::string backend_str = ic.get<std::string>("Backend", "cpu");

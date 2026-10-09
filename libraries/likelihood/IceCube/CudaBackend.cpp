@@ -400,7 +400,16 @@ namespace ana::ic {
       else         row.host32.assign(n, 0.0f);
     }
     cu_check(cuMemAlloc(&row.dptr, n * row.elem_bytes), "cuMemAlloc(output)");
-    cu_check(cuMemsetD8(row.dptr, 0, n * row.elem_bytes), "cuMemsetD8(output)");
+    // On this session's stream, not the NULL stream cuMemsetD8 would use: the
+    // session stream is CU_STREAM_NON_BLOCKING and so does not wait for NULL-
+    // stream work, and cuMemsetD8 returns before the memset has run. A kernel
+    // dispatched right after the allocation could then write its results first
+    // and have the memset zero them -- which is what happened to FluxGradient's
+    // partials, allocated on first use and dispatched immediately (the
+    // allocations of the other components were only ever followed by
+    // synchronous uploads, which drain the NULL stream and hid it). Queued here,
+    // the memset is ordered before every later dispatch on the stream.
+    cu_check(cuMemsetD8Async(row.dptr, 0, n * row.elem_bytes, s->stream), "cuMemsetD8Async(output)");
 
     const int handle = static_cast<int>(s->rows.size());
     s->rows.push_back(std::move(row));

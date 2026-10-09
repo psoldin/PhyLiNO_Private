@@ -1,5 +1,6 @@
 #include "SampleLikelihood.h"
 
+#include "ExpectedAsimov.h"
 #include "PoissonLikelihood.h"
 #include "SAYLikelihood.h"
 
@@ -190,10 +191,12 @@ namespace ana::ic {
                                      const io::ic::SampleConfig& cfg,
                                      const GlobalFluxSettings&   settings,
                                      std::shared_ptr<GpuSession> gpu,
-                                     const bool                  use_say)
+                                     const bool                  use_say,
+                                     const double                say_alpha_offset)
     : m_Sample(sample)
     , m_Config(cfg)
     , m_UseSAY(use_say)
+    , m_SayAlphaOffset(say_alpha_offset)
     , m_UseMultiThreading(settings.use_multi_threading) {
     // Folding reads the per-event weights, which the components only keep when
     // asked; SAY is the other reason to ask.
@@ -227,6 +230,26 @@ namespace ana::ic {
                      settings.veto_anchor_energy,
                      settings.veto_rescale_energy,
                      settings.use_multi_threading);
+
+    if (m_Astro || m_Atmo) {
+      const FluxGradient::Settings gradient_settings{.has_astro           = m_Astro.has_value(),
+                                                     .has_atmo            = m_Atmo.has_value(),
+                                                     .use_veto            = cfg.wants_veto(),
+                                                     .astro_model         = settings.astro_model,
+                                                     .e_ref_gev           = settings.e_ref_gev,
+                                                     .reference_index     = settings.astro_reference_index,
+                                                     .per_type_norm       = settings.astro_per_type_norm,
+                                                     .conv_e_ref          = settings.conv_delta_gamma_e_ref,
+                                                     .prompt_e_ref        = settings.prompt_delta_gamma_e_ref,
+                                                     .veto_anchor_energy  = settings.veto_anchor_energy,
+                                                     .veto_rescale_energy = settings.veto_rescale_energy,
+                                                     .use_multi_threading = settings.use_multi_threading};
+      m_FluxGradient.emplace(sample, static_cast<std::size_t>(cfg.mc_binning.total_bins()), gradient_settings, gpu);
+      m_GradTable.assign(static_cast<std::size_t>(FluxGradient::kQuantities) * cfg.mc_binning.total_bins(), 0.0);
+      m_AstroShapeParameters = FluxGradient::astro_shape_parameters(settings.astro_model);
+      m_AstroNormFactor      = settings.astro_per_type_norm ? 1.0 : 0.5;
+      m_UseVeto              = cfg.wants_veto();
+    }
 
     if (cfg.wants_template())
       m_Template.emplace(cfg.mc_binning, cfg.template_file, cfg.template_norm_index, cfg.livetime,
@@ -572,6 +595,7 @@ namespace ana::ic {
                                "' has " + std::to_string(counts.size()) + " bins, the binning has " +
                                std::to_string(m_Data.size()));
     std::ranges::copy(counts, m_Data.begin());
+    m_ExpectedAsimov = false;
     refresh_data_constants();
 
     // The SAY ssq describes MC statistics, so it still comes from the model; seed
@@ -593,6 +617,16 @@ namespace ana::ic {
       m_LogGammaDataPlus1[b] = std::lgamma(k + 1.0);
       m_PoissonSaturated[b]  = poisson_bin_log_likelihood(k, k, m_LogGammaDataPlus1[b]);
     }
+
+    // An expected-likelihood Asimov averages lgamma(k + 1) over its counts like
+    // every other term; it only shifts -2lnL, but keeps it the expected value.
+    if (m_ExpectedAsimov)
+      for (std::size_t b = 0, n = m_Data.size(); b < n; ++b) {
+        const WeightedCounts c = expected_counts(b);
+        double               e = 0.0;
+        for (std::size_t j = 0; j < c.k.size(); ++j) e += c.w[j] * std::lgamma(c.k[j] + 1.0);
+        m_LogGammaDataPlus1[b] = e;
+      }
 
     // Per-RA-group sums of the above, plus the index of every bin with k > 0.
     // These are what make the no-galactic likelihood loop cost one logarithm
@@ -689,9 +723,23 @@ namespace ana::ic {
             for (int r = 0; r < n_ra; ++r) {
               const std::size_t bin = base + static_cast<std::size_t>(r);
               const double      mu  = std::max(0.0, value + galactic_sum[bin]);
-              acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin]);
+              if (m_ExpectedAsimov) {
+                const WeightedCounts c = expected_counts(bin);
+                acc += say_bin_expected_log_likelihood(c.k, c.w, m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin],
+                                                       m_SayAlphaOffset);
+              } else {
+                acc += say_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin], m_SayAlphaOffset);
+              }
             }
             return acc;
+          }
+
+          // Expected-likelihood Asimov: every bin of the group is the same
+          // averaged term.
+          if (m_ExpectedAsimov) {
+            const WeightedCounts c = expected_set_counts(b);
+            return ra_scale * say_bin_expected_log_likelihood(c.k, c.w, m_Data[base], std::max(0.0, value), ssq,
+                                                              m_LogGammaDataPlus1[base], m_SayAlphaOffset);
           }
 
           // mu and sigma^2 are both constant across the group, so alpha, beta
@@ -706,7 +754,7 @@ namespace ana::ic {
           if (ssq_clipped <= 0.0)
             return m_GroupDataSum[b] * std::log(mu) - ra_scale * mu - m_GroupLogGammaSum[b];
 
-          const double alpha        = mu * mu / ssq_clipped + 1.0;
+          const double alpha        = mu * mu / ssq_clipped + m_SayAlphaOffset;
           const double beta         = mu / ssq_clipped;
           const double log_beta     = std::log(beta);
           const double log1p_beta   = std::log1p(beta);
@@ -725,33 +773,8 @@ namespace ana::ic {
     return -2.0 * llh;
   }
 
-  double SampleLikelihood::bb_llh() const {
-    const int    n_ra        = m_RaBins;
-    const double ra_scale    = static_cast<double>(n_ra);
-    const double ssq_divisor = ra_scale * ra_scale;
-    const bool   galactic    = !m_Galactic.empty();
-    const auto   galactic_sum = std::span<const double>(m_GalacticTotal);
-
-    // Prototype: one beta per analysis bin, so no group collapse.
-    const double llh = sum_over_groups(
-        m_McTotal.size(), static_cast<std::size_t>(n_ra), m_UseMultiThreading, m_Partial,
-        [&](const std::size_t b) {
-          const double      value = m_McTotal[b] / ra_scale;
-          const double      ssq   = m_McSsq[b] / ssq_divisor;
-          const std::size_t base  = b * static_cast<std::size_t>(n_ra);
-          double            acc   = 0.0;
-          for (int r = 0; r < n_ra; ++r) {
-            const std::size_t bin = base + static_cast<std::size_t>(r);
-            const double      mu  = std::max(0.0, value + (galactic ? galactic_sum[bin] : 0.0));
-            acc += bb_bin_log_likelihood(m_Data[bin], mu, ssq, m_LogGammaDataPlus1[bin]);
-          }
-          return acc;
-        });
-
-    return -2.0 * llh;
-  }
-
-  void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal) {
+  void SampleLikelihood::generate_asimov(const ParameterWrapper& nominal, const io::ic::AsimovMode mode) {
+    m_ExpectedAsimov = false;
     assemble_prediction(nominal);
     std::ranges::copy(predicted(), m_Data.begin());
     refresh_data_constants();
@@ -763,6 +786,43 @@ namespace ana::ic {
     // (silently degenerating to plain Poisson).
     if (m_UseSAY)
       assemble_fluctuation();
+
+    if (mode == io::ic::AsimovMode::Expected && m_UseSAY)
+      build_expected_counts();
+  }
+
+  void SampleLikelihood::build_expected_counts() {
+    // The truth's mean and variance per term: m_Data is the prediction there,
+    // and sigma^2 was just assembled at the same point.
+    const std::span<const double> ssq = this->ssq();
+    m_ExpectedPerGroup                = m_Galactic.empty();
+    const std::size_t n_sets          = m_ExpectedPerGroup ? m_McTotal.size() : m_Data.size();
+    const std::size_t n_ra            = static_cast<std::size_t>(m_RaBins);
+
+    m_ExpectedK.clear();
+    m_ExpectedW.clear();
+    m_ExpectedOffsets.assign(n_sets + 1, 0);
+    for (std::size_t set = 0; set < n_sets; ++set) {
+      const std::size_t bin = m_ExpectedPerGroup ? set * n_ra : set;
+      append_expected_counts(m_Data[bin], ssq[bin], kExpectedAsimovNodes, m_ExpectedK, m_ExpectedW);
+      m_ExpectedOffsets[set + 1] = m_ExpectedK.size();
+    }
+
+    m_ExpectedAsimov = true;
+    refresh_data_constants();
+  }
+
+  SampleLikelihood::WeightedCounts SampleLikelihood::expected_set_counts(const std::size_t set) const noexcept {
+    const std::size_t begin = m_ExpectedOffsets[set];
+    const std::size_t count = m_ExpectedOffsets[set + 1] - begin;
+    return {std::span<const double>(m_ExpectedK).subspan(begin, count),
+            std::span<const double>(m_ExpectedW).subspan(begin, count)};
+  }
+
+  SampleLikelihood::WeightedCounts SampleLikelihood::expected_counts(const std::size_t bin) const noexcept {
+    if (!m_ExpectedAsimov)
+      return {};
+    return expected_set_counts(expected_set(bin));
   }
 
   double SampleLikelihood::partial_llh(const ParameterWrapper& parameter) {
@@ -771,7 +831,7 @@ namespace ana::ic {
     if (m_UseSAY) {
       if (change.ssq)
         assemble_fluctuation(change.per_event);
-      return m_UseBB ? bb_llh() : say_llh();
+      return say_llh();
     }
 
     return poisson_llh();

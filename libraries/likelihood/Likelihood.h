@@ -26,6 +26,23 @@ namespace ana {
 
     [[nodiscard]] virtual double calculate_likelihood(const double* parameter) = 0;
 
+    /** Whether calculate_gradient() is implemented. */
+    [[nodiscard]] virtual bool has_gradient() const noexcept { return false; }
+
+    /**
+     * The gradient of calculate_likelihood() at `parameter`, one entry per
+     * parameter, fixed ones included. Only called when has_gradient().
+     */
+    virtual void calculate_gradient(const double* /*parameter*/, double* /*gradient*/) {}
+
+    /**
+     * A positive semi-definite approximation of the Hessian of
+     * calculate_likelihood() at `parameter`, row-major n x n over all
+     * parameters, or false if the likelihood provides none. Used as the
+     * minimizer's metric, not as an exact second derivative.
+     */
+    virtual bool calculate_hessian(const double* /*parameter*/, double* /*hessian*/) { return false; }
+
     [[nodiscard]] ParameterWrapper& parameter() noexcept { return m_Parameter; }
 
     /**

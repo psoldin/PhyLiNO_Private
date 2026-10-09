@@ -117,23 +117,40 @@ namespace io::ic {
         throw std::runtime_error("parse_samples: sample '" + sample.name +
                                  "' sets Gradients.ScaleToTopology but no Gradients.File");
 
-      if (sample.filters_topology() && sample.topology_branch.empty())
+      const bool by_label      = !sample.topology_branch.empty();
+      const bool by_prediction = !sample.topology_prediction_prefix.empty();
+      if (by_label && by_prediction)
         throw std::runtime_error("parse_samples: sample '" + sample.name +
-                                 "' has Topology.Values but an empty Topology.Branch");
-      if (!sample.topology_branch.empty() && !sample.filters_topology())
+                                 "' sets both Topology.Branch and Topology.Prediction; the cut reads either a "
+                                 "stored label or the most likely predicted class, not both");
+      if (sample.filters_topology() && !by_label && !by_prediction)
         throw std::runtime_error("parse_samples: sample '" + sample.name +
-                                 "' has a Topology.Branch but no Topology.Values; the cut would keep nothing");
+                                 "' has Topology.Values but an empty Topology.Branch / Topology.Prediction");
+      if ((by_label || by_prediction) && !sample.filters_topology())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' has a Topology.Branch or Topology.Prediction but no Topology.Values; the cut "
+                                 "would keep nothing");
+      // An argmax is a column index, so a negative label could never match. The
+      // upper bound depends on how many score columns the file has and is checked
+      // when it is read.
+      if (by_prediction && std::ranges::any_of(sample.topology_values, [](const int v) { return v < 0; }))
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' has a negative Topology.Values entry with Topology.Prediction; the predicted "
+                                 "class is a column index and is never negative");
 
       // Every pre-binned input was exported from the full sample. Cutting events
       // out of the parquet without re-exporting them would leave the templates,
       // the gradients and the counts describing a selection the prediction no
       // longer has, which is a normalisation error no gate downstream can see.
-      if (sample.filters_topology()) {
+      // A template notebook that applies the same topology cut (e.g. the argmax
+      // of the same Topology.Prediction scores) produces a matching export; the
+      // config asserts that with "CutsMatchInputs": true, as for "Cuts" below.
+      if (sample.filters_topology() && !sample.cuts_match_inputs) {
         if (!sample.template_file.empty())
           throw std::runtime_error("parse_samples: sample '" + sample.name +
                                    "' combines a topology cut with a muon template; the template was exported from "
-                                   "the unfiltered sample and would no longer match. Re-export it, then drop this "
-                                   "check for that file");
+                                   "the unfiltered sample and would no longer match. Re-export it with the same "
+                                   "topology cut and set \"CutsMatchInputs\": true to confirm it");
         if (!sample.gradient_file.empty() && !sample.scale_gradients_to_topology)
           throw std::runtime_error("parse_samples: sample '" + sample.name +
                                    "' combines a topology cut with a SnowStorm gradient file; the gradients were "
@@ -143,13 +160,19 @@ namespace io::ic {
         if (!sample.galactic.empty())
           throw std::runtime_error("parse_samples: sample '" + sample.name +
                                    "' combines a topology cut with a galactic template; the template was exported "
-                                   "from the unfiltered sample and would no longer match. Re-export it, then drop "
-                                   "this check for that file");
-        if (!sample.data_counts_path.empty())
-          throw std::runtime_error("parse_samples: sample '" + sample.name +
-                                   "' combines a topology cut with pre-binned \"DataCounts\"; the counts are not "
-                                   "filtered by this framework, so the cut would only apply to the prediction");
+                                   "from the unfiltered sample and would no longer match. Re-export it with the "
+                                   "same topology cut and set \"CutsMatchInputs\": true to confirm it");
       }
+      if (sample.filters_topology() && !sample.data_counts_path.empty())
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' combines a topology cut with pre-binned \"DataCounts\"; the counts are not "
+                                 "filtered by this framework, so the cut would only apply to the prediction");
+      // Rescaling gradients that already match the cut would apply the topology
+      // fraction twice.
+      if (sample.scale_gradients_to_topology && sample.cuts_match_inputs)
+        throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                 "' sets both Gradients.ScaleToTopology and CutsMatchInputs; gradients exported "
+                                 "with the cut must not be rescaled to it again");
 
       // The same pre-binned-input problem as the topology cut above, except an
       // event cut is a threshold the exports can and do reproduce: the notebooks
@@ -170,10 +193,10 @@ namespace io::ic {
                                    "\"CutsMatchInputs\": true to confirm it, or they will describe a selection the "
                                    "prediction no longer has");
       }
-      if (sample.cuts_match_inputs && !sample.filters_events())
+      if (sample.cuts_match_inputs && !sample.filters_events() && !sample.filters_topology())
         throw std::runtime_error("parse_samples: sample '" + sample.name +
-                                 "' sets CutsMatchInputs but has no \"Cuts\"; there is nothing for the pre-binned "
-                                 "inputs to match and the flag would hide a later config mistake");
+                                 "' sets CutsMatchInputs but has no \"Cuts\" or \"Topology\"; there is nothing for "
+                                 "the pre-binned inputs to match and the flag would hide a later config mistake");
 
       if (!sample.galactic.empty() && !has_ra_axis(sample.binning))
         throw std::runtime_error("parse_samples: sample '" + sample.name +
@@ -190,7 +213,7 @@ namespace io::ic {
 
     // "Template": { "File": ..., "Norm": "MuonNorm"|"MuonGunNorm" },
     // "Gradients": { "File": ... }, "Oscillations": { "File": ..., "Branch": ... },
-    // "Topology": { "Branch": ..., "Values": "1, 2" }, "Cuts": { "<name>": {
+    // "Topology": { "Branch"|"Prediction": ..., "Values": "1, 2" }, "Cuts": { "<name>": {
     // "Branch": ..., "Min": ..., "Max": ... } } and "Galactic": { ... },
     // all optional.
     void parse_component_files(const boost::property_tree::ptree& node, SampleConfig& sample) {
@@ -218,8 +241,12 @@ namespace io::ic {
       }
 
       if (const auto topology = node.get_child_optional("Topology")) {
-        sample.topology_branch  = topology->get<std::string>("Branch");
-        sample.topology_exclude = topology->get<bool>("Exclude", false);
+        sample.topology_branch            = topology->get<std::string>("Branch", "");
+        sample.topology_prediction_prefix = topology->get<std::string>("Prediction", "");
+        sample.topology_exclude           = topology->get<bool>("Exclude", false);
+        if (!topology->get_child_optional("Branch") && !topology->get_child_optional("Prediction"))
+          throw std::runtime_error("parse_samples: sample '" + sample.name +
+                                   "' has a Topology block with neither \"Branch\" nor \"Prediction\"");
 
         for (const std::string& value : split_trim(topology->get<std::string>("Values"), ',')) {
           if (boost::iequals(value, "NaN")) {

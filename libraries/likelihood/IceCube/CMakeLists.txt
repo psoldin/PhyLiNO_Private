@@ -38,10 +38,17 @@ set(files
     TemplateFlux.cpp
     SAYLikelihood.h
     SAYLikelihood.cpp
+    ExpectedAsimov.h
+    ExpectedAsimov.cpp
     PoissonLikelihood.h
     PoissonLikelihood.cpp
     SampleLikelihood.h
     SampleLikelihood.cpp
+    SampleLikelihoodGradient.cpp
+    FluxGradient.h
+    FluxGradient.cpp
+    Polygamma.h
+    BinTermDerivatives.h
     ICLikelihood.h
     ICLikelihood.cpp
     ICModule.h

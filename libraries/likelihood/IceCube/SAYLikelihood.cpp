@@ -20,9 +20,10 @@ namespace ana::ic {
                                                const double ssq_clipped,
                                                const double k,
                                                const double
-                                               lgamma_k_plus_1) noexcept {
+                                               lgamma_k_plus_1,
+                                               const double alpha_offset) noexcept {
 
-    const double alpha = mu * mu / ssq_clipped + 1.0;
+    const double alpha = mu * mu / ssq_clipped + alpha_offset;
     const double beta  = mu / ssq_clipped;
 
     return alpha * std::log(beta)
@@ -34,6 +35,11 @@ namespace ana::ic {
 
   double say_bin_log_likelihood(const double k, const double mu, const double ssq,
                                 const double lgamma_k_plus_1) noexcept {
+    return say_bin_log_likelihood(k, mu, ssq, lgamma_k_plus_1, 1.0);
+  }
+
+  double say_bin_log_likelihood(const double k, const double mu, const double ssq,
+                                const double lgamma_k_plus_1, const double alpha_offset) noexcept {
 
     if (mu <= 0.0)
       return (k > 0.0) ? (-690.0 * k) : 0.0;
@@ -42,27 +48,29 @@ namespace ana::ic {
     // T.clip(ssq, 0, mu**2) in the graph version of compute_log_L).
     const double ssq_clipped = std::clamp(ssq, 0.0, mu * mu);
 
-    return (ssq_clipped > 0.0) ? calculate_effective_likelihood(mu, ssq_clipped, k, lgamma_k_plus_1)
+    return (ssq_clipped > 0.0) ? calculate_effective_likelihood(mu, ssq_clipped, k, lgamma_k_plus_1, alpha_offset)
                                : poisson_bin_log_likelihood(k, mu, lgamma_k_plus_1);
   }
 
-  double bb_bin_log_likelihood(const double k, const double mu, const double ssq,
-                               const double lgamma_k_plus_1) noexcept {
-
+  double say_bin_expected_log_likelihood(const std::span<const double> k, const std::span<const double> w,
+                                         const double k_mean, const double mu, const double ssq,
+                                         const double expected_lgamma_k_plus_1,
+                                         const double alpha_offset) noexcept {
     if (mu <= 0.0)
-      return (k > 0.0) ? (-690.0 * k) : 0.0;
-    if (ssq <= 0.0)
-      return poisson_bin_log_likelihood(k, mu, lgamma_k_plus_1);
+      return (k_mean > 0.0) ? (-690.0 * k_mean) : 0.0;
 
-    // beta^2 + (mu d^2 - 1) beta - k d^2 = 0, with mu d^2 = ssq / mu.
-    const double d2   = ssq / (mu * mu);
-    const double a    = 1.0 - ssq / mu;
-    const double beta = 0.5 * (a + std::sqrt(a * a + 4.0 * k * d2));
+    const double ssq_clipped = std::clamp(ssq, 0.0, mu * mu);
+    if (ssq_clipped <= 0.0)
+      return poisson_bin_log_likelihood(k_mean, mu, expected_lgamma_k_plus_1);
 
-    double llh = -beta * mu - lgamma_k_plus_1 - 0.5 * square(beta - 1.0) / d2;
-    if (k > 0.0)
-      llh += k * std::log(beta * mu);
-    return llh;
+    const double alpha = mu * mu / ssq_clipped + alpha_offset;
+    const double beta  = mu / ssq_clipped;
+
+    double lgamma_k_alpha = 0.0;
+    for (std::size_t j = 0; j < k.size(); ++j) lgamma_k_alpha += w[j] * std::lgamma(k[j] + alpha);
+
+    return alpha * std::log(beta) + lgamma_k_alpha - expected_lgamma_k_plus_1 - (k_mean + alpha) * std::log1p(beta) -
+           std::lgamma(alpha);
   }
 
 }  // namespace ana::ic

@@ -49,6 +49,15 @@ namespace ana::ic {
     /** sigma^2 contribution per analysis bin (zero if the file carried no fluctuations). */
     [[nodiscard]] std::span<const double> fluctuation() const noexcept { return m_Fluctuation; }
 
+    /** The norm-free template, rate * livetime per bin: d histogram() / d norm. */
+    [[nodiscard]] std::span<const double> rates() const noexcept { return m_Template; }
+
+    /** The norm-free fluctuation, sigma * livetime per bin: fluctuation() = (norm * sigmas())^2. */
+    [[nodiscard]] std::span<const double> sigmas() const noexcept { return m_Sigma; }
+
+    /** Index of the parameter this template's norm is. */
+    [[nodiscard]] int norm_index() const noexcept { return m_NormIndex; }
+
    private:
     int                 m_NormIndex;
     std::vector<double> m_Template;     // rate * livetime, per bin

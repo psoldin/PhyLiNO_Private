@@ -38,6 +38,11 @@ namespace result::ic {
     j["EDM"]         = min->Edm();
     j["fitDuration"] = fit.time_duration();
 
+    // --evaluateAt: the parameters are the point that was asked for, not a fit
+    // (zero errors and EDM). Only written then, so a fit's output is unchanged.
+    if (fit.evaluated_only())
+      j["evaluatedOnly"] = true;
+
     // Fitted value and error of every parameter, keyed by its config name.
     const double* x   = min->X();
     const double* err = min->Errors();
@@ -53,7 +58,7 @@ namespace result::ic {
     double data_total = 0.0;
     double pred_total = 0.0;
 
-    const bool use_say = info.likelihood_type() == io::ic::LikelihoodType::SAY;
+    const bool use_say = io::ic::uses_say(info.likelihood_type());
 
     j["samples"] = nlohmann::json::array();
     for (std::size_t s = 0; s < llh.n_samples(); ++s) {
@@ -136,7 +141,7 @@ namespace result::ic {
     // Summed over all samples (what the single-sample output used to report).
     j["dataTotal"]  = data_total;
     j["predTotal"]  = pred_total;
-    j["likelihood"] = (info.likelihood_type() == io::ic::LikelihoodType::SAY) ? "SAY" : "Poisson";
+    j["likelihood"] = io::ic::likelihood_name(info.likelihood_type());
 
     return j;
   }

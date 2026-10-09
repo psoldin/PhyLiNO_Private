@@ -66,6 +66,16 @@ namespace ana::ic {
     /** Sum quantity `q`'s chunk partials per bin into `hist` (an n_bins output handle). */
     void gather(int hist, std::size_t q = 0) const;
 
+    /**
+     * Sum every quantity's chunk partials per bin into `table`, an
+     * n_quantities * n_bins output handle holding quantity q of bin b at
+     * q * n_bins + b -- one dispatch instead of n_quantities gather() calls.
+     * One thread per (quantity, bin) walks that bin's few chunk partials, which
+     * suits a reduction whose quantity count, not its bin population, is what
+     * is large (FluxGradient's table).
+     */
+    void gather_all(int table) const;
+
    private:
     std::shared_ptr<GpuSession> m_Gpu;
     std::size_t                 m_NChunks          = 0;
@@ -74,6 +84,9 @@ namespace ana::ic {
     int                         m_hChunkOffsets    = -1;
     int                         m_hBinChunkOffsets = -1;
     int                         m_hPartial         = -1;
+    // gather_all()'s kernel is compiled on its first use: only FluxGradient's
+    // reduction calls it, and an NVRTC compile is not free.
+    mutable bool                m_GatherAllReady   = false;
   };
 
   /**

@@ -144,3 +144,41 @@ The Double Chooz regression check needs an external Double Chooz configuration a
 ## Toy configuration
 
 The supplied [`configs/config_linreg.json`](configs/config_linreg.json) selects the `LinearRegression` module, specifies the Asimov truth and sampling range, and defines the two Minuit parameters. Parameter array order is significant: the linear-regression implementation expects slope `a` first and intercept `b` second.
+
+## Analytic gradient and minimizer options
+
+The IceCube likelihood differentiates itself analytically: one sweep over the MC events yields the per-bin derivatives of the prediction and of the SAY variance (`FluxGradient`), which are chained through the SAY, SAYMean and Poisson bin terms. The fit uses this by default; the options below select how.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--gradient` | `true` | Hand the minimizer the analytic gradient (likelihoods that have one; currently IceCube). `false` restores Minuit2's numerical derivatives. |
+| `--hessian` | `gn` | `gn`: the Gauss-Newton Hessian is Migrad's metric (Minuit2 strategy is raised to 2 so the whole matrix seeds it), and the reported errors come from a final Hesse on the exact Hessian (central differences of the analytic gradient). `none`: Minuit2's numerical second derivatives. |
+| `--minimizer` | `Minuit2` | `Newton`: projected trust-region (Levenberg-Marquardt) Newton on the gradient and Gauss-Newton Hessian, with bounds handled by an active set instead of Minuit2's internal transformation. Needs `--gradient true --hessian gn`. |
+| `--scanTolerance` | auto | Tolerance of the per-point fits of every scan; the free fit a scan starts from keeps `--tolerance`. By default 0.5 (EDM < 1e-3) with `--minimizer Newton`, whose stops were measured within 1e-3 of the minimum, and `--tolerance` with Minuit2, whose EDM was measured to understate the distance to the minimum by up to ~300x at scan points. |
+
+The derivative kernels exist for every backend: CUDA in the backend's precision (`GpuPrecision`), Metal in FP32 (derivatives only steer the minimizer; the likelihood value keeps the backend's precision), and the CPU loop, which is the reference the GPU kernels are tested against.
+
+Before trusting gradient fits on a new backend or configuration, compare the analytic gradient with finite differences of the likelihood itself:
+
+```bash
+./build/bin/GradientCheck -c config.json --silent                 # at the config's start values
+./build/bin/GradientCheck -c config.json --seedFrom Output --silent --hessianCheck
+```
+
+Away from the minimum the relative differences should be at the level of the `fd.noise` column (1e-6 or below on an FP64 backend); at the minimum the gradient vanishes and both columns are noise.
+
+## Evaluating a model at given parameters (`--evaluateAt`)
+
+`--evaluateAt <result>` builds the model of the config passed with `-c` at the parameter values of a finished result (`Output.json` or `.pb.gz`, with or without the extension) and writes `Output` without minimizing anything: the prediction, the data, the per-bin likelihood and the component breakdown at that point. Use it to carry a best fit over to a differently built model, for example a topology split with its own muon template and SnowStorm gradients, and compare that model with its data.
+
+```bash
+./build/bin/LLHFit -c config_topology.json --evaluateAt default_fit/Output.json
+```
+
+The data are the config's own. An Asimov run keeps its data at the configured `AsimovValue` (or `StartValue`), not at the injected point. Parameters the result does not carry keep their configured `StartValue` and are listed. A result that did not converge is used anyway, with a warning. A value outside the config's bounds is an error. The output carries `"evaluatedOnly": true`, zero errors and zero EDM. `--minimizer` is irrelevant because nothing is minimized, and `--seedFrom` is rejected alongside it. Evaluating a config at its own best fit reproduces that fit's output bin for bin.
+
+## Expected-likelihood Asimov (`AsimovMode`)
+
+Asimov data sets every bin's count to the prediction at the truth, `k = mu`. That is the maximum of a Poisson term but not of a SAY term: SAY's derivative carries `psi(k + alpha)`, which is curved in `k`, so wherever the MC variance is large compared with `mu` (a few-event muon template, say) an Asimov fit under `SAY` or `SAYMean` moves away from the truth. Plain-Asimov sensitivities under SAY are then not what pseudo-experiments give.
+
+`"AsimovMode": "Expected"` in the `IceCube` block averages each bin's SAY term over the counts SAY expects at the truth, a negative binomial of mean `mu` and variance `mu + sigma^2`. The averaged likelihood is stationary at the truth, so an Asimov fit recovers it under `SAYMean`. Under `SAY` (L_Eff) it is not, because L_Eff's mean is `mu + sigma^2/mu`, and the shift that remains is L_Eff's own bias. Counts below 8 are summed exactly. Above that, every band of a factor 4 in `k` gets an 8-point Gauss rule, so a bin costs about 8 to 40 `lgamma` per evaluation instead of 1. The default `"Mean"` keeps `k = mu`. The option has no effect with `UseData: true`, and under `Poisson`, whose term is linear in `k`, the two modes are the same fit.

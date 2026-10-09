@@ -8,9 +8,40 @@
 
 namespace io::ic {
 
+  // SAY is L_Eff of arXiv:1901.04645 (gamma shape mu^2/sigma^2 + 1, mode at mu);
+  // SAYMean is its L_Mean (shape mu^2/sigma^2, mean at mu). Both use the same
+  // per-bin sigma^2.
   enum class LikelihoodType { Poisson,
                               SAY,
-                              BBLite };
+                              SAYMean };
+
+  [[nodiscard]] constexpr bool uses_say(const LikelihoodType t) noexcept {
+    return t == LikelihoodType::SAY || t == LikelihoodType::SAYMean;
+  }
+
+  /** Offset c in the SAY gamma shape alpha = mu^2/sigma^2 + c (0 outside SAY). */
+  [[nodiscard]] constexpr double say_alpha_offset(const LikelihoodType t) noexcept {
+    return t == LikelihoodType::SAY ? 1.0 : 0.0;
+  }
+
+  [[nodiscard]] constexpr const char* likelihood_name(const LikelihoodType t) noexcept {
+    switch (t) {
+      case LikelihoodType::SAY: return "SAY";
+      case LikelihoodType::SAYMean: return "SAYMean";
+      default: return "Poisson";
+    }
+  }
+
+  // How the Asimov data is built (UseData false).
+  //   Mean     - k = mu at the truth in every bin.
+  //   Expected - every bin's term is averaged over the counts the SAY model
+  //              expects at the truth (negative binomial of mean mu and variance
+  //              mu + sigma^2), so the likelihood is stationary at the truth.
+  //              A curved-in-k term such as SAY is not stationary at k = mu
+  //              wherever sigma^2 is large; Poisson is, so for Poisson the two
+  //              modes coincide.
+  enum class AsimovMode { Mean,
+                          Expected };
 
   // Compute backend for the per-event flux histograms.
   //   Cpu   - OMP+SIMD reference path, available everywhere.
@@ -58,6 +89,7 @@ namespace io::ic {
 
     [[nodiscard]] bool           use_data() const noexcept { return m_UseData; }
     [[nodiscard]] LikelihoodType likelihood_type() const noexcept { return m_LikelihoodType; }
+    [[nodiscard]] AsimovMode     asimov_mode() const noexcept { return m_AsimovMode; }
     // Selected compute backend for the flux histograms (see BackendKind).
     [[nodiscard]] BackendKind    backend_kind() const noexcept { return m_BackendKind; }
     // GPU kernel precision (see GpuPrecision); only consulted for the Cuda backend.
@@ -93,6 +125,7 @@ namespace io::ic {
    private:
     bool           m_UseData        = false;
     LikelihoodType m_LikelihoodType = LikelihoodType::Poisson;
+    AsimovMode     m_AsimovMode     = AsimovMode::Mean;
     BackendKind    m_BackendKind    = BackendKind::Cpu;
     GpuPrecision   m_GpuPrecision   = GpuPrecision::Fp32;
 

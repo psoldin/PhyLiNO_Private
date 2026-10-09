@@ -539,6 +539,27 @@ TEST(SampleConfigTest, ParsesAndValidatesTopology) {
   ASSERT_TRUE(throws(cut + R"(, "Gradients": { "File": "g.txt" })"));
   ASSERT_TRUE(throws(cut + R"(, "DataCounts": "counts.txt")"));
   ASSERT_TRUE(!throws(R"(, "Gradients": { "File": "g.txt" })"));  // without the cut: fine
+
+  // Topology.Prediction selects by the argmax of per-class score columns
+  // instead of a stored label. It replaces Branch rather than adding to it.
+  const auto predicted = parse_with(R"(, "Topology": { "Prediction": "topology_pred_", "Values": "1" })");
+  ASSERT_TRUE(predicted[0].filters_topology());
+  ASSERT_TRUE(predicted[0].topology_branch.empty());
+  ASSERT_TRUE(predicted[0].topology_prediction_prefix == "topology_pred_");
+  ASSERT_TRUE(throws(R"(, "Topology": { "Branch": "c", "Prediction": "p_", "Values": "1" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Values": "1" })"));
+  ASSERT_TRUE(throws(R"(, "Topology": { "Prediction": "p_", "Values": "" })"));
+  // An argmax is a column index, never negative.
+  ASSERT_TRUE(throws(R"(, "Topology": { "Prediction": "p_", "Values": "-1" })"));
+
+  // Pre-binned inputs re-exported under the same topology cut are accepted once
+  // the config asserts it; ScaleToTopology on top would rescale twice, and
+  // DataCounts are never filtered here, so no flag excuses them.
+  const std::string pred = R"(, "Topology": { "Prediction": "p_", "Values": "1" })";
+  ASSERT_TRUE(throws(pred + R"(, "Gradients": { "File": "g.txt" })"));
+  ASSERT_TRUE(!throws(pred + R"(, "Gradients": { "File": "g.txt" }, "CutsMatchInputs": true)"));
+  ASSERT_TRUE(throws(cut + R"(, "Gradients": { "File": "g.txt", "ScaleToTopology": true }, "CutsMatchInputs": true)"));
+  ASSERT_TRUE(throws(cut + R"(, "DataCounts": "counts.txt", "CutsMatchInputs": true)"));
 }
 
 // "Cuts": { "<name>": { "Branch": ..., "Min": ..., "Max": ... } } is a separate
@@ -1209,8 +1230,9 @@ TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
   ParameterWrapper perturbed(params::ic::number_of_parameters());
   perturbed.reset_parameter(perturbed_values.data());
 
-  for (const bool use_say : {false, true}) {
-    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say);
+  // Poisson, SAY (L_Eff, offset 1) and SAYMean (L_Mean, offset 0).
+  for (const auto& [use_say, offset] : {std::pair{false, 1.0}, std::pair{true, 1.0}, std::pair{true, 0.0}}) {
+    SampleLikelihood likelihood(sample, cfg, synthetic_settings(), /*gpu=*/nullptr, use_say, offset);
     likelihood.generate_asimov(nominal);
 
     const double llh = likelihood.partial_llh(perturbed);
@@ -1225,7 +1247,36 @@ TEST(SampleLikelihoodTest, BinLikelihoodSumsToPartialLlh) {
 
     // Same terms, different summation order, so this is a float-comparison
     // tolerance and not a physics one.
-    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say;
+    EXPECT_NEAR(sum, llh, 1e-9 * std::abs(llh) + 1e-12) << "use_say = " << use_say << " offset = " << offset;
+  }
+}
+
+// L_Mean (SAYMean) is a negative binomial with mean mu and variance mu + ssq;
+// L_Eff (SAY) has mean mu + ssq/mu. Summing the per-bin probability over k checks
+// normalisation and both moments, and offset 1 must be the plain SAY overload.
+TEST(LikelihoodParityTest, SayMeanIsMeanMatchedNegativeBinomial) {
+  using ana::ic::say_bin_log_likelihood;
+
+  for (const auto& [mu, ssq] : {std::pair{2.0, 1.2}, std::pair{0.7, 0.3}, std::pair{15.0, 40.0}}) {
+    for (const double offset : {0.0, 1.0}) {
+      double norm = 0.0, mean = 0.0, second = 0.0;
+      for (int k = 0; k < 2000; ++k) {
+        const double p = std::exp(say_bin_log_likelihood(k, mu, ssq, std::lgamma(k + 1.0), offset));
+        norm += p;
+        mean += k * p;
+        second += static_cast<double>(k) * k * p;
+      }
+      const double expected_mean = mu + offset * ssq / mu;
+      const double alpha         = mu * mu / ssq + offset;
+      const double beta          = mu / ssq;
+      // Negative binomial variance alpha/beta * (1 + 1/beta).
+      const double expected_var = alpha / beta * (1.0 + 1.0 / beta);
+      EXPECT_NEAR(norm, 1.0, 1e-10) << "mu=" << mu << " offset=" << offset;
+      EXPECT_NEAR(mean, expected_mean, 1e-8) << "mu=" << mu << " offset=" << offset;
+      EXPECT_NEAR(second - mean * mean, expected_var, 1e-7) << "mu=" << mu << " offset=" << offset;
+    }
+    EXPECT_NEAR(say_bin_log_likelihood(3.0, mu, ssq, std::lgamma(4.0), 1.0),
+                say_bin_log_likelihood(3.0, mu, ssq), 1e-14);
   }
 }
 
@@ -3185,6 +3236,97 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   ASSERT_TRUE(kept.e_true.size() == 2);
   ASSERT_TRUE(kept.e_true[0] == 1.0e3);
   ASSERT_TRUE(kept.e_true[1] == 3.0e3);
+
+  std::remove(mc_path.c_str());
+  std::remove(data_path.c_str());
+}
+
+// Topology.Prediction derives the label at load time as the argmax of the
+// per-class scores, on MC and data alike, and must keep the same events a
+// stored argmax label would.
+TEST(ICDataBaseTest, TopologyPredictionCutsOnArgmax) {
+  const std::string mc_path   = "ictests_topology_pred_mc.parquet";
+  const std::string data_path = "ictests_topology_pred_data.parquet";
+  const double      nan       = std::numeric_limits<double>::quiet_NaN();
+
+  // Six MC events, three classes. argmax: 1, 0, 2, 1, 0 (tie 0/1 -> 0), NaN.
+  const std::vector<double> p0{0.1, 0.7, 0.2, 0.3, 0.4, 0.5};
+  const std::vector<double> p1{0.8, 0.2, 0.3, 0.6, 0.4, nan};
+  const std::vector<double> p2{0.1, 0.1, 0.5, 0.1, 0.2, 0.2};
+  const std::vector<double> reco_energy{1.0e3, 3.0e3, 1.0e4, 3.0e4, 1.0e5, 3.0e5};
+
+  write_parquet(mc_path, {{"energy_truncated", reco_energy},
+                          {"zenith_MPEFit", {2.0, 2.0, 2.0, 2.0, 2.0, 2.0}},
+                          {"MCPrimaryEnergy", {1.0e3, 2.0e3, 3.0e3, 4.0e3, 5.0e3, 6.0e3}},
+                          {"powerlaw", {1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8}},
+                          {"pred_0", p0},
+                          {"pred_1", p1},
+                          {"pred_2", p2}});
+
+  // Data: three events, argmax 1, 2, 1.
+  {
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& [name, values] : std::vector<std::pair<std::string, std::vector<double>>>{
+             {"energy_truncated", {1.0e3, 3.0e3, 1.0e4}},
+             {"zenith_MPEFit", {2.0, 2.0, 2.0}},
+             {"pred_0", {0.1, 0.1, 0.2}},
+             {"pred_1", {0.6, 0.2, 0.7}},
+             {"pred_2", {0.3, 0.7, 0.1}}}) {
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(double_array(values));
+    }
+    append_passing_mask_columns(fields, arrays, "energy_truncated", 3);
+
+    const auto table = arrow::Table::Make(arrow::schema(fields), arrays);
+    auto       sink  = arrow::io::FileOutputStream::Open(data_path).ValueOrDie();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 3).ok());
+    ASSERT_TRUE(sink->Close().ok());
+  }
+
+  const Binning binning({Axis{Axis::Kind::Log10Energy, 2.0, 7.0, 5},
+                         Axis{Axis::Kind::CosZenith, -1.0, 0.0872, 2}});
+
+  auto load = [&](const std::vector<int>& labels, bool drop_nan = false) {
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet                    = mc_path;
+    cfg.data_path                  = data_path;
+    cfg.components                 = {"astro"};
+    cfg.topology_prediction_prefix = "pred_";
+    cfg.topology_values            = labels;
+    cfg.topology_drop_nan          = drop_nan;
+    return io::ic::ICDataBase(std::vector<io::ic::SampleConfig>{cfg});
+  };
+
+  auto data_total = [](const io::ic::ICDataBase& db) {
+    double total = 0.0;
+    for (const double v : db.data_histogram(0)) total += v;
+    return total;
+  };
+
+  // Class 1, NaN dropped: MC rows 0 and 3, data rows 0 and 2.
+  const auto muons = load({1}, true);
+  ASSERT_TRUE(muons.sample(0).size() == 2);
+  ASSERT_TRUE(muons.sample(0).e_true[0] == 1.0e3);
+  ASSERT_TRUE(muons.sample(0).e_true[1] == 4.0e3);
+  ASSERT_TRUE(data_total(muons) == 2.0);
+
+  // A NaN score passes by default, like a NaN label.
+  ASSERT_TRUE(load({1}).sample(0).size() == 3);
+
+  // A tie goes to the lower index: class 0 is rows 1 and 4.
+  const auto zeros = load({0}, true);
+  ASSERT_TRUE(zeros.sample(0).size() == 2);
+  ASSERT_TRUE(zeros.sample(0).e_true[1] == 5.0e3);
+
+  // A label beyond the score columns is a config error, not an empty selection.
+  bool threw = false;
+  try {
+    static_cast<void>(load({3}));
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
 
   std::remove(mc_path.c_str());
   std::remove(data_path.c_str());

@@ -116,16 +116,32 @@ namespace io {
     [[nodiscard]] const std::string& seed_from() const noexcept { return m_SeedFrom; }
 
     /**
+     * @brief A finished result at whose parameters the model is evaluated
+     * instead of fitted.
+     *
+     * Empty unless --evaluateAt was given. LLHFit then writes "Output" for the
+     * model this config builds -- its samples, cuts, templates and gradients --
+     * at that result's parameter values, with nothing minimized: the way to
+     * carry a best fit over to a differently built model (a topology split, a
+     * different muon template) and compare it with that model's data. The data
+     * are this config's own, so an Asimov run's data stay at the configured
+     * AsimovValue/StartValue truth. Same file formats and base-name handling as
+     * --seedFrom; the two do not combine.
+     */
+    [[nodiscard]] const std::string& evaluate_at() const noexcept { return m_EvaluateAt; }
+
+    /**
      * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
      * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
      * (perform_2d_scan_regular), "1d" or "1d-regular" (perform_1d_scan_all,
-     * regular selecting its grid flavour). Validated in LLHFit.C, the only
+     * regular selecting its grid flavour), "1d-crossing" (perform_1d_crossing_all,
+     * the 1 sigma interval only). Validated in LLHFit.C, the only
      * place that knows the scan functions.
      */
     [[nodiscard]] const std::string& scan_mode() const noexcept { return m_ScanMode; }
 
     /**
-     * Restricts --scanMode 1d/1d-regular to this single named parameter
+     * Restricts --scanMode 1d/1d-regular/1d-crossing to this single named parameter
      * (perform_1d_scan/perform_1d_scan_regular) instead of every non-fixed one
      * (perform_1d_scan_all). Empty (the default) means "every parameter".
      */
@@ -134,9 +150,32 @@ namespace io {
     /** Grid points per axis for --scanMode 2d-regular/1d-regular (--scanPoints, default 30). */
     [[nodiscard]] int scan_points() const noexcept { return m_ScanPoints; }
 
+    /** Delta chi2 whose crossings --scanMode 1d-crossing searches for (--crossingLevel, default 1, i.e. 1 sigma). */
+    [[nodiscard]] double crossing_level() const noexcept { return m_CrossingLevel; }
+
     [[nodiscard]] const boost::property_tree::ptree& config_tree() const noexcept { return m_ConfigTree; }
 
     [[nodiscard]] double tolerance() const noexcept { return m_Tolerance; }
+
+    /**
+     * Tolerance of the per-point fits of a scan (--scanTolerance). A scan
+     * point only has to sit at its minimum to well within the delta chi2 the
+     * scan resolves (0.02 for the crossing search), which is far looser than
+     * what the free fit -- whose parameters and errors are reported -- is held
+     * to by --tolerance.
+     *
+     * Whether a loose tolerance delivers that depends on how honest the
+     * minimizer's EDM is. NewtonMinimizer rebuilds its model at every iterate,
+     * and its stops at EDM < 1e-3 (tolerance 0.5) were measured within 1e-3 of
+     * the minimum. Migrad's EDM comes from its quasi-Newton metric, and on the
+     * IceCube tracks Asimov it stopped 0.1-0.3 above the minimum at EDM 5e-4
+     * -- with or without the analytic gradient. So the default (-1) picks 0.5
+     * for Newton and --tolerance for Minuit2; an explicit value is used as is.
+     */
+    [[nodiscard]] double scan_tolerance() const noexcept {
+      if (m_ScanTolerance > 0.0) return m_ScanTolerance;
+      return m_Minimizer == "Newton" ? 0.5 : m_Tolerance;
+    }
 
     /**
      * How often a Migrad that reported failure is restarted, each time on a
@@ -163,6 +202,28 @@ namespace io {
      * point instead of rebuilding a Hessian at it.
      */
     [[nodiscard]] const std::string& minimizer_algo() const noexcept { return m_MinimizerAlgo; }
+
+    /**
+     * Whether a likelihood with an analytic gradient hands it to the minimizer
+     * (--gradient, default true). Minuit2's numerical gradient costs two
+     * likelihood evaluations per free parameter per iteration and is limited by
+     * the evaluation's rounding; the analytic one costs about one evaluation.
+     */
+    [[nodiscard]] bool analytic_gradient() const noexcept { return m_AnalyticGradient; }
+
+    /**
+     * The minimizer (--minimizer): "Minuit2" (default) or "Newton", the
+     * projected trust-region Newton of ana::NewtonMinimizer. Newton needs the
+     * analytic gradient and the Gauss-Newton Hessian.
+     */
+    [[nodiscard]] const std::string& minimizer() const noexcept { return m_Minimizer; }
+
+    /**
+     * Second derivatives handed to the minimizer alongside the analytic
+     * gradient (--hessian): "gn" for the likelihood's Gauss-Newton Hessian,
+     * "none" for Minuit2's numerical ones. Ignored without --gradient.
+     */
+    [[nodiscard]] const std::string& hessian() const noexcept { return m_Hessian; }
 
     /** Result output format ("json" or "protobuf"), as passed via --output-format. */
     [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
@@ -205,17 +266,23 @@ namespace io {
     std::vector<int> m_GpuDeviceOfWorker;  /**< --gpuDevices expanded to one device ordinal per worker slot. */
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
     std::string m_SeedFrom;           /**< --seedFrom: result whose parameters are this run's start values. */
+    std::string m_EvaluateAt;         /**< --evaluateAt: result whose parameters the model is evaluated at, unfitted. */
     std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
     int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */
+    double m_CrossingLevel{1.0};      /**< Delta chi2 of the crossings --scanMode 1d-crossing searches for. */
     bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     bool   m_Blind{false};          /**< Keep the signal out of the written results. */
     double m_Tolerance;         /**< The tolerance for the minimizer. */
+    double m_ScanTolerance{-1.0}; /**< The tolerance of the per-point fits of a scan; <= 0 picks by minimizer. */
     int    m_FitRetries{3};     /**< Restarts granted to a Migrad that stalled. */
     int    m_MinuitStrategy{1}; /**< Minuit2 strategy passed to the minimizer. */
     std::string m_MinimizerAlgo{"Migrad"}; /**< Minuit2 algorithm the fit runs. */
+    std::string m_Minimizer{"Minuit2"};    /**< Minuit2 or Newton. */
+    bool        m_AnalyticGradient{true};  /**< Use the likelihood's analytic gradient when it has one. */
+    std::string m_Hessian{"gn"};           /**< Second derivatives handed to the minimizer with the gradient. */
     std::string m_OutputFormat; /**< Result output format ("json" or "protobuf"). */
 
     std::string m_ConfigFile; /**< The configuration file path. */

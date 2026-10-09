@@ -1,15 +1,18 @@
 #pragma once
 
+#include "../../io/IceCube/ICInputOptions.h"
 #include "../../io/IceCube/ICSample.h"
 #include "../../io/IceCube/SampleConfig.h"
 #include "../ParameterWrapper.h"
 #include "AtmosphericFlux.h"
 #include "DetectorSystematics.h"
+#include "FluxGradient.h"
 #include "GpuBackend.h"
 #include "GpuBinReduce.h"
 #include "PowerlawFlux.h"
 #include "TemplateFlux.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <span>
@@ -51,13 +54,52 @@ namespace ana::ic {
                      const io::ic::SampleConfig& cfg,
                      const GlobalFluxSettings&   settings,
                      std::shared_ptr<GpuSession> gpu,
-                     bool                        use_say);
+                     bool                        use_say,
+                     double                      say_alpha_offset = 1.0);
 
     /** Recompute prediction for the current parameters; return this sample's -2lnL (no pulls). */
     [[nodiscard]] double partial_llh(const ParameterWrapper& parameter);
 
-    /** Fill this sample's Asimov data from the nominal parameters. */
-    void generate_asimov(const ParameterWrapper& nominal);
+    /**
+     * Add this sample's analytic d(-2lnL)/dtheta at `parameter` to `gradient`
+     * (one entry per fit parameter) and, when `hessian` is non-null, its
+     * Gauss-Newton Hessian to `hessian` (row-major, n x n).
+     *
+     * The prediction is brought to `parameter` first, so the call needs no
+     * partial_llh() at the same point before it (and costs little extra after
+     * one). Every derivative goes through the two per-MC-bin sums the
+     * likelihood reads -- the prediction and, under SAY, its MC variance --
+     * whose derivatives come from FluxGradient (flux components) and from the
+     * bin-level components directly. The Gauss-Newton Hessian keeps the exact
+     * second derivatives of each bin's term in those two sums and drops the
+     * second derivatives of the sums themselves; that is exact where the
+     * prediction meets the data and positive semi-definite everywhere (each
+     * bin's 2x2 block is clipped to its PSD part), which is what a minimizer's
+     * metric needs.
+     */
+    void accumulate_gradient(const ParameterWrapper& parameter, std::span<double> gradient, double* hessian);
+
+    /**
+     * Fill this sample's Asimov data from the nominal parameters.
+     *
+     * AsimovMode::Expected additionally makes every SAY bin term the average
+     * over the counts SAY expects at the nominal point (ExpectedAsimov.h), so
+     * the likelihood is stationary there; data() still reports the mean count.
+     * Under Poisson the two modes are the same fit, and Mean is used.
+     */
+    void generate_asimov(const ParameterWrapper& nominal,
+                         io::ic::AsimovMode mode = io::ic::AsimovMode::Mean);
+
+    /** True while the data is an expected-likelihood Asimov (see generate_asimov()). */
+    [[nodiscard]] bool expected_asimov() const noexcept { return m_ExpectedAsimov; }
+
+    /** The counts and weights analysis bin `bin`'s term is averaged over; both
+        empty unless expected_asimov(). */
+    struct WeightedCounts {
+      std::span<const double> k;
+      std::span<const double> w;
+    };
+    [[nodiscard]] WeightedCounts expected_counts(std::size_t bin) const noexcept;
 
     /**
      * The prediction in the analysis binning.
@@ -74,6 +116,9 @@ namespace ana::ic {
     /** Per-bin sigma^2 in the analysis binning (SAY only; zero under Poisson).
         Materialised on demand, like predicted(). */
     [[nodiscard]] std::span<const double> ssq() const noexcept;
+
+    /** Gamma-shape offset of the SAY term: 1 for L_Eff (SAY), 0 for L_Mean (SAYMean). */
+    [[nodiscard]] double say_alpha_offset() const noexcept { return m_SayAlphaOffset; }
 
     /** This sample's config: name, binning and component list (for the results writer). */
     [[nodiscard]] const io::ic::SampleConfig& config() const noexcept { return m_Config; }
@@ -119,14 +164,11 @@ namespace ana::ic {
     /** Replace the Asimov expectation with measured counts (UseData). */
     void set_data(std::span<const double> counts);
 
-    /** Swap the SAY term for the Barlow-Beeston light one (needs use_say). */
-    void set_barlow_beeston(bool on) noexcept { m_UseBB = on; }
-
    private:
     const io::ic::ICSample&     m_Sample;
     const io::ic::SampleConfig& m_Config;
     bool                        m_UseSAY;
-    bool                        m_UseBB = false;  ///< Barlow-Beeston light on the SAY sigma^2
+    double                      m_SayAlphaOffset;
     bool                        m_UseMultiThreading;
 
     // Only the components the config declares are constructed; the parquet
@@ -166,6 +208,24 @@ namespace ana::ic {
     // the fit -- and one that costs a log per analysis bin per evaluation when
     // it is not treated as one.
     std::vector<double> m_PoissonSaturated;
+
+    // Expected-likelihood Asimov (generate_asimov() with AsimovMode::Expected):
+    // the nodes and weights each bin's SAY term is averaged over, CSR. With no
+    // galactic template every bin of an RA group has the same mean and
+    // variance, so there is one set per MC bin, shared by the group; otherwise
+    // one per analysis bin. While active, m_LogGammaDataPlus1 and its group sum
+    // hold E[lgamma(k + 1)], and m_Data the mean count.
+    bool                     m_ExpectedAsimov   = false;
+    bool                     m_ExpectedPerGroup = false;
+    std::vector<double>      m_ExpectedK;
+    std::vector<double>      m_ExpectedW;
+    std::vector<std::size_t> m_ExpectedOffsets;
+
+    [[nodiscard]] std::size_t expected_set(std::size_t bin) const noexcept {
+      return m_ExpectedPerGroup ? bin / static_cast<std::size_t>(m_RaBins) : bin;
+    }
+    [[nodiscard]] WeightedCounts expected_set_counts(std::size_t set) const noexcept;
+    void build_expected_counts();
 
     // Per-RA-group constants, one entry per MC bin. Everything the prediction
     // contributes to a likelihood bin is identical across that bin's RA slice
@@ -208,6 +268,22 @@ namespace ana::ic {
     // member so the loop allocates nothing per evaluation.
     mutable std::vector<double> m_Partial;
 
+    // Analytic gradient: the per-bin derivative table of the flux components
+    // (absent when the sample has neither), the parameters the astrophysical
+    // model differentiates, and scratch reused across calls.
+    std::optional<FluxGradient> m_FluxGradient;
+    std::array<int, 3>          m_AstroShapeParameters{-1, -1, -1};
+    double                      m_AstroNormFactor = 0.5;  ///< d(effective astro norm) / d AstroNorm
+    bool                        m_UseVeto        = false;  ///< the atmospheric flux carries the veto reweight
+    std::vector<double>         m_GradTable;
+    /// d McTotal / dtheta and d McSsq / dtheta of one parameter, MC binning.
+    struct GradientColumn {
+      int                 parameter = -1;
+      std::vector<double> dmu;
+      std::vector<double> dssq;
+    };
+    std::vector<GradientColumn> m_GradColumns;
+
     // SAY-on-GPU: the per-event ssq reduction runs as the say_ssq kernel over
     // the flux components' GPU-resident per-event weight buffers. Set up in the
     // constructor when a backend is present, SAY is active and at least one
@@ -244,7 +320,6 @@ namespace ana::ic {
     /** -2 lnL over the analysis bins, reading the prediction group by group. */
     [[nodiscard]] double poisson_llh() const;
     [[nodiscard]] double say_llh() const;
-    [[nodiscard]] double bb_llh() const;
 
     /** Recompute the per-bin constants derived from m_Data. Call after every
         write to m_Data and nowhere else. */

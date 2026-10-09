@@ -7,6 +7,7 @@
 // STL includes
 #include <chrono>
 #include <memory>
+#include <span>
 #include <vector>
 
 // ROOT includes
@@ -30,6 +31,45 @@ namespace ana {
 
     bool minimize();
 
+    /**
+     * Evaluate the likelihood at `point` -- every parameter, in minimizer
+     * order -- without minimizing (--evaluateAt). Every parameter is fixed
+     * there, so the minimizer this leaves behind reports `point` as X(), the
+     * likelihood there as MinValue(), and zero errors and EDM; the result
+     * writers then describe the model at `point` as they would a fit. Throws
+     * if `point` has the wrong size or leaves a configured bound.
+     */
+    bool evaluate(std::span<const double> point);
+
+    /** Whether evaluate() rather than minimize() produced this Fit's result. */
+    [[nodiscard]] bool evaluated_only() const noexcept { return m_EvaluateOnly; }
+
+    /**
+     * Override the --tolerance this fit converges to. The scans set their
+     * per-point fits to --scanTolerance this way. Kept on the Fit rather than
+     * set on the minimizer alone because a restart builds a fresh minimizer,
+     * which would otherwise fall back to --tolerance.
+     */
+    void set_tolerance(double tolerance);
+
+    /**
+     * Whether minimize() ends with a Hesse on the exact Hessian (default
+     * true). Only matters with --hessian gn: Migrad then runs on the
+     * Gauss-Newton Hessian, which is the right metric but not the right
+     * curvature for the reported errors, so the errors are recomputed from
+     * central differences of the analytic gradient -- 2 gradients per free
+     * parameter. Fits whose errors nobody reads (scan points) switch it off.
+     */
+    void set_exact_errors(bool exact) noexcept { m_ExactErrors = exact; }
+
+    /**
+     * Step sizes for the free parameters in place of the config's StepWidths,
+     * one per parameter in minimizer order; entries that are not positive and
+     * finite keep the configured width. Kept across restarts, which rebuild
+     * the minimizer from the configuration otherwise.
+     */
+    void set_step_sizes(std::span<const double> steps);
+
     [[nodiscard]] double time_duration() const;
 
     [[nodiscard]] bool converged() const;
@@ -37,6 +77,12 @@ namespace ana {
     [[nodiscard]] const std::shared_ptr<io::Options>& options() const;
 
     auto get_minimizer() const { return m_Minimizer; }
+
+    /** Likelihood evaluations this fit made, restarts included. */
+    [[nodiscard]] std::size_t n_calls() const noexcept { return m_NCalls; }
+
+    /** Analytic gradient evaluations this fit made (0 without --gradient). */
+    [[nodiscard]] std::size_t n_gradient_calls() const noexcept { return m_NGradCalls; }
 
    private:
     std::shared_ptr<io::Options>      m_Options;
@@ -47,9 +93,28 @@ namespace ana {
     bool m_Converged;
     bool m_FitPerformed;
 
+    double m_Tolerance;
+
+    std::vector<double> m_StepSizes;  ///< Overrides of the configured StepWidths (see set_step_sizes()).
+
     std::shared_ptr<ROOT::Math::Minimizer> m_Minimizer;
 
-    std::shared_ptr<ROOT::Math::Functor> m_Functor;
+    // A GradFunctor when the analytic gradient is used, a plain Functor otherwise.
+    std::shared_ptr<ROOT::Math::IMultiGenFunction> m_Functor;
+
+    bool m_UseGradient = false;  ///< --gradient and the likelihood provides one.
+    bool m_UseHessian  = false;  ///< --hessian gn on top of the gradient.
+    bool m_ExactErrors = true;   ///< Final Hesse on the exact Hessian (see set_exact_errors()).
+    bool m_ExactHessianMode = false;  ///< The Hessian callback differences the gradient instead of returning Gauss-Newton.
+    bool m_MinuitTransform  = true;   ///< The minimizer works in Minuit2's internal coordinates (see exact_hessian()).
+    bool m_EvaluateOnly     = false;  ///< setup_minimizer() builds a PointEvaluator (see evaluate()).
+
+    /** Central differences of the analytic gradient over the free parameters, row-major n x n. */
+    bool exact_hessian(const std::vector<double>& x, double* hessian);
+
+    // Likelihood and gradient evaluations of this fit, restarts included.
+    std::size_t m_NCalls     = 0;
+    std::size_t m_NGradCalls = 0;
 
     std::shared_ptr<Likelihood> m_Likelihood;
 

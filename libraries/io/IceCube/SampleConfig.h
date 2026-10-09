@@ -177,14 +177,23 @@ namespace io::ic {
     // every other sample's labels). Applied to the MC parquet and to a data
     // parquet alike, before binning, so both sides of the likelihood see the
     // same selection. Empty `topology_values` = no cut. Pre-binned inputs
-    // (muon/galactic templates, SnowStorm gradients, "DataCounts") were
-    // exported from the unfiltered sample, so parse_samples() rejects
-    // combining them with a cut.
+    // (muon/galactic templates, SnowStorm gradients, "DataCounts") are assumed
+    // exported from the unfiltered sample, so parse_samples() rejects combining
+    // them with a cut unless "CutsMatchInputs": true asserts they were
+    // re-exported under it ("DataCounts" is refused regardless).
     //
     // A NaN in `topology_branch` is not a class label, so it passes the cut
     // (and Exclude) by default. List "NaN" among `Values` to opt into
     // dropping NaN-labelled events instead.
+    //
+    // "Prediction": "<prefix>" in place of "Branch" classifies each event by its
+    // most likely class instead of a stored label: the per-class scores
+    // <prefix>0, <prefix>1, ... (as many consecutive columns as the file has)
+    // are read and the event's label is the index of the largest, computed at
+    // load time. Ties go to the lower index (np.argmax), and an event with any
+    // NaN score gets a NaN label. Exactly one of Branch and Prediction is set.
     std::string      topology_branch;
+    std::string      topology_prediction_prefix;
     std::vector<int> topology_values;
     bool             topology_exclude  = false;
     bool             topology_drop_nan = false;
@@ -198,8 +207,9 @@ namespace io::ic {
     std::vector<EventCut> cuts;
 
     // "CutsMatchInputs": true: this sample's pre-binned inputs (muon/galactic
-    // templates, SnowStorm gradients) were re-exported with `cuts` applied, so
-    // pairing them with the cuts is a match rather than the normalisation error
+    // templates, SnowStorm gradients) were re-exported with `cuts` and the
+    // topology cut applied, so pairing them with the cuts is a match rather than
+    // the normalisation error
     // validate_components() otherwise refuses. There is nothing in a template
     // file that records which selection produced it, so this is an assertion the
     // config makes and the framework takes at its word -- unlike the topology
