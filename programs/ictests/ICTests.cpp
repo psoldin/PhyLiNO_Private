@@ -3524,6 +3524,31 @@ TEST(ICDataBaseTest, TopologyCutAppliesToMcAndData) {
   ASSERT_TRUE(kept.e_true[0] == 1.0e3);
   ASSERT_TRUE(kept.e_true[1] == 3.0e3);
 
+  // with_data (LLHBatch) shares the MC -- the same ICSample object, not a copy --
+  // and reads the data of another config: here pre-binned DataCounts instead of
+  // the data parquet. The original keeps its own data.
+  {
+    const std::string counts_path = "ictests_with_data_counts.txt";
+    {
+      std::ofstream out(counts_path);
+      out << "# counts\n";
+      for (int b = 0; b < binning.total_bins(); ++b) out << 0.5 * (b + 1) << '\n';
+    }
+    io::ic::SampleConfig cfg{.name = "s", .binning = binning, .mc_binning = binning};
+    cfg.parquet          = mc_path;
+    cfg.data_counts_path = counts_path;
+    cfg.components       = {"astro"};
+    const io::ic::ICDataBase rebound = unfiltered.with_data({cfg});
+    EXPECT_EQ(&rebound.sample(0), &unfiltered.sample(0));
+    EXPECT_EQ(rebound.n_samples(), unfiltered.n_samples());
+    const double n = binning.total_bins();
+    EXPECT_DOUBLE_EQ(data_total(rebound), 0.5 * n * (n + 1) / 2.0);
+    EXPECT_EQ(data_total(unfiltered), 4.0);
+    // A config enabling a different number of samples cannot share this MC.
+    EXPECT_THROW(static_cast<void>(unfiltered.with_data({cfg, cfg})), std::runtime_error);
+    std::remove(counts_path.c_str());
+  }
+
   std::remove(mc_path.c_str());
   std::remove(data_path.c_str());
 }

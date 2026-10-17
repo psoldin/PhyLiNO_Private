@@ -62,18 +62,26 @@ namespace ana::ic {
 
     std::shared_ptr<const io::ic::ICDataBase> database;
     std::shared_ptr<GpuBackend>               gpu;
+    bool                                      own_config = false;
     {
-      const std::scoped_lock lock(m_CacheMutex);
-      if (m_DataBase == nullptr) {
-        m_DataBase = std::make_shared<const io::ic::ICDataBase>(m_InputOptions->samples());
+      Cache&                 cache = *m_Cache;
+      const std::scoped_lock lock(cache.mutex);
+      if (cache.database == nullptr) {
+        cache.database = std::make_shared<const io::ic::ICDataBase>(m_InputOptions->samples());
+        cache.owner    = m_InputOptions;
       }
-      auto& cached = m_GpuBackends[device];
+      auto& cached = cache.gpu_backends[device];
       if (cached == nullptr) {
         cached = make_gpu_backend(m_InputOptions->backend_kind(), m_InputOptions->gpu_precision(), device);
       }
-      database = m_DataBase;
-      gpu      = cached;
+      database   = cache.database;
+      gpu        = cached;
+      own_config = cache.owner == m_InputOptions;
     }
+    // A module sharing another's cache (LLHBatch) brings its own data: the MC is
+    // shared, the few-kB histograms are read from this module's config.
+    if (!own_config)
+      database = std::make_shared<const io::ic::ICDataBase>(database->with_data(m_InputOptions->samples()));
 
     return std::make_shared<ICLikelihood>(std::move(options),
                                           std::move(database),

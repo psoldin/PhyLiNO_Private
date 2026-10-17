@@ -141,6 +141,18 @@ tools/run_validation.sh --no-build
 
 The Double Chooz regression check needs an external Double Chooz configuration and an untracked baseline output. It is skipped when those files are unavailable; the self-contained toy and configuration checks still run.
 
+## Many fits in one process (`LLHBatch`)
+
+A pseudo-experiment study runs thousands of IceCube fits that differ only in their data counts, the muon template, the likelihood and which parameters are fixed where. Each `LLHFit` reads the MC parquet again; on the ANTS sample that is about 15 s of loading for a 2 s fit on a GPU. `LLHBatch` loads the MC once (and on CUDA uploads its columns once) and runs every fit against it:
+
+```
+LLHBatch jobs.txt --workers 4 -- -m --silent --gpuDevices 0:2,1:2
+```
+
+`jobs.txt` lists one job per line: a directory with the job's `config.json`, optionally followed by LLHFit options for that job alone (`#` starts a comment line). Each job is the equivalent of `cd <dir> && LLHFit -c config.json --fitOnly <common options> <job options>` and writes `<dir>/Output.json` in the same format, plus `<dir>/wall.txt`, or `<dir>/error.txt` if it fails. Jobs whose `Output.json` exists are skipped unless `--force` is given, so a stopped batch resumes.
+
+The configs may differ from the first job's only in the `Parameter` array, `IceCube.Likelihood`, `IceCube.AsimovMode`, `IceCube.UseData` and, per sample, `Template.File` and `DataCounts`. Anything else (another MC file, binning, cut, oscillation or gradient file, backend) would need another MC, and the batch is rejected before the first fit. Each job's data histogram is read from its own config (`ICDataBase::with_data`). Worker `i` runs on the device `--gpuDevices` gives LLHFit's scan worker `i`.
+
 ## Toy configuration
 
 The supplied [`configs/config_linreg.json`](configs/config_linreg.json) selects the `LinearRegression` module, specifies the Asimov truth and sampling range, and defines the two Minuit parameters. Parameter array order is significant: the linear-regression implementation expects slope `a` first and intercept `b` second.

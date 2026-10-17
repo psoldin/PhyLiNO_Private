@@ -626,22 +626,42 @@ namespace io::ic {
   }
 
   ICDataBase::ICDataBase(const std::vector<SampleConfig>& samples) {
+    std::vector<ICSample> mc;
     for (const std::size_t i : enabled_sample_indices(samples)) {
       const SampleConfig& cfg = samples[i];
       ICSample            sample;
       const auto          status = read_sample(cfg, sample);
       if (!status.ok())
         throw std::runtime_error("Failed to read IceCube sample '" + cfg.name + "': " + status.ToString());
-      m_Samples.push_back(std::move(sample));
+      mc.push_back(std::move(sample));
+    }
+    if (mc.empty())
+      throw std::runtime_error("ICDataBase: no enabled IceCube samples");
+    m_Samples = std::make_shared<const std::vector<ICSample>>(std::move(mc));
+    read_data_histograms(samples);
+  }
 
+  ICDataBase ICDataBase::with_data(const std::vector<SampleConfig>& samples) const {
+    if (enabled_sample_indices(samples).size() != m_Samples->size())
+      throw std::runtime_error("ICDataBase::with_data: the config enables " +
+                               std::to_string(enabled_sample_indices(samples).size()) +
+                               " samples, the database holds " + std::to_string(m_Samples->size()));
+    ICDataBase out;
+    out.m_Samples = m_Samples;
+    out.read_data_histograms(samples);
+    return out;
+  }
+
+  void ICDataBase::read_data_histograms(const std::vector<SampleConfig>& samples) {
+    m_DataHistograms.clear();
+    for (const std::size_t i : enabled_sample_indices(samples)) {
+      const SampleConfig& cfg = samples[i];
       std::vector<double> data_histogram;
       const auto          data_status = read_data_histogram(cfg, data_histogram);
       if (!data_status.ok())
         throw std::runtime_error("Failed to read IceCube data for sample '" + cfg.name + "': " + data_status.ToString());
       m_DataHistograms.push_back(std::move(data_histogram));
     }
-    if (m_Samples.empty())
-      throw std::runtime_error("ICDataBase: no enabled IceCube samples");
   }
 
 }  // namespace io::ic
