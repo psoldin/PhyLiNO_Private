@@ -33,7 +33,19 @@ namespace ana::ic {
    *   theta_j = parameter MuonTmplMode1 + j  (Gaussian-constrained in the config),
    *
    * and mu_b = norm * template_b(theta) * livetime; the fluctuation column is not
-   * affected. Only MuonNorm's template may carry modes: the mode parameters are
+   * affected.
+   *
+   * A header line "# template mode_forms <form_1> ... <form_M>" (each "additive" or
+   * "multiplicative", default all additive) makes a mode act on the logarithm
+   * instead: with r_jb = ln((template_b + d_jb) / template_b),
+   *
+   *   template_b(theta) = max(template_b + sum_additive theta_j d_jb, 0)
+   *                       * exp(sum_multiplicative theta_k r_kb).
+   *
+   * Both forms give template + d at theta = 1, but a multiplicative mode never
+   * drives a bin negative (theta = -1 gives template^2 / (template + d)), which
+   * matters where d is several times the template. It needs template_b > 0 and
+   * template_b + d_jb > 0 in every bin; the file is rejected otherwise. Only MuonNorm's template may carry modes: the mode parameters are
    * global, and a second template reading them would tie two unrelated shapes.
    *
    * O(nBins) work: CPU only, no GPU path.
@@ -73,9 +85,15 @@ namespace ana::ic {
     /** Parameter index of mode j. */
     [[nodiscard]] static int mode_index(int j) noexcept;
 
+    /** True if mode j acts multiplicatively (header "mode_forms"). */
+    [[nodiscard]] bool mode_multiplicative(const int j) const noexcept {
+      return m_Multiplicative[static_cast<std::size_t>(j)] != 0;
+    }
+
     /**
-     * d histogram() / d theta_j per bin, added to `out`: norm * d_jb * livetime where
-     * the shaped template is positive, 0 where the clip at 0 holds it.
+     * d histogram() / d theta_j per bin, added to `out`. Additive mode: norm * d_jb *
+     * livetime * F_b where the additive part is positive, 0 where the clip at 0 holds
+     * it (F_b the multiplicative factor). Multiplicative mode: norm * shaped_b * r_jb.
      */
     void add_mode_derivative(int j, double norm, std::span<double> out) const;
 
@@ -88,9 +106,12 @@ namespace ana::ic {
    private:
     int                 m_NormIndex;
     std::vector<double> m_Template;     // rate * livetime, per bin
-    std::vector<std::vector<double>> m_Modes;       // d_j * livetime, per mode and bin
+    std::vector<std::vector<double>> m_Modes;       // d_j * livetime (additive) or r_j (multiplicative)
+    std::vector<char>                m_Multiplicative;  // per mode: 1 if it acts on the logarithm
     std::vector<double>              m_ModeValues;  // theta_j the shaped template was built at
-    std::vector<double> m_Shaped;       // max(m_Template + sum_j theta_j m_Modes[j], 0)
+    std::vector<double> m_Linear;       // max(m_Template + sum_additive theta_j m_Modes[j], 0)
+    std::vector<double> m_Factor;       // exp(sum_multiplicative theta_k m_Modes[k])
+    std::vector<double> m_Shaped;       // m_Linear * m_Factor
     std::vector<double> m_Sigma;        // fluctuation rate * livetime, per bin
     std::vector<double> m_Histogram;    // norm * m_Template
     std::vector<double> m_Fluctuation;  // (norm * m_Sigma)^2

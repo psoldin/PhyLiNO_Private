@@ -2725,6 +2725,115 @@ TEST(TemplateFluxTest, SeveralShapeModes) {
   }
 }
 
+// Multiplicative modes act on the logarithm: with r = ln((T + d) / T) the template
+// is max(T + sum_additive theta d, 0) * exp(sum_multiplicative theta r). Both forms
+// reproduce T + d at theta = 1; a multiplicative mode gives T^2 / (T + d) at
+// theta = -1 instead of clipping, and its derivative is norm * shaped * r.
+TEST(TemplateFluxTest, MultiplicativeShapeModes) {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+  using namespace params::ic;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  const double rates[3]  = {1.0e-6, 2.0e-6, 4.0e-6};
+  const double sigmas[3] = {2.0e-7, 3.0e-7, 5.0e-7};
+  const double add[3]    = {-5.0e-7, 1.0e-6, 2.0e-6};   // mode 1, additive
+  const double mul[3]    = {9.0e-6, -1.0e-6, 2.0e-6};   // mode 2, multiplicative: bin 0 x10, bin 1 x0.5
+
+  const std::string path = "ictests_template_mul_modes.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 3\n# template modes 2\n# template mode_forms additive multiplicative\n";
+    for (int b = 0; b < 3; ++b) out << rates[b] << ' ' << sigmas[b] << ' ' << add[b] << ' ' << mul[b] << '\n';
+  }
+  const double livetime = 3.0e8;
+  TemplateFlux flux(binning, path, MuonNorm, livetime);
+  std::remove(path.c_str());
+  ASSERT_EQ(flux.mode_count(), 2);
+  EXPECT_FALSE(flux.mode_multiplicative(0));
+  EXPECT_TRUE(flux.mode_multiplicative(1));
+
+  std::vector<double> values(number_of_parameters(), 0.0);
+  ParameterWrapper    parameter(number_of_parameters());
+  auto at = [&](const double t1, const double t2) {
+    values[MuonNorm]      = 2.0;
+    values[MuonTmplMode1] = t1;
+    values[MuonTmplMode2] = t2;
+    parameter.reset_parameter(values.data());
+    flux.check_and_recalculate(parameter);
+  };
+  auto expected = [&](const int b, const double t1, const double t2) {
+    const double ratio = (rates[b] + mul[b]) / rates[b];
+    return 2.0 * std::max(rates[b] + t1 * add[b], 0.0) * std::pow(ratio, t2) * livetime;
+  };
+
+  // theta2 = 1 reproduces T + d, theta2 = -1 gives T^2 / (T + d) (no clip, although
+  // the additive form would go to 1e-6 - 9e-6 < 0 in bin 0), and fractional values
+  // interpolate geometrically; combined with the additive mode, including its clip.
+  for (const auto& [t1, t2] : {std::array{0.0, 1.0}, std::array{0.0, -1.0}, std::array{0.0, 0.5},
+                               std::array{0.8, -0.7}, std::array{3.0, 0.4}}) {
+    at(t1, t2);
+    for (int b = 0; b < 3; ++b) {
+      const double mu = expected(b, t1, t2);
+      EXPECT_NEAR(flux.histogram()[b], mu, 1e-9 * std::max(mu, 1e-30)) << t1 << ' ' << t2 << " bin " << b;
+    }
+  }
+  at(0.0, 1.0);
+  for (int b = 0; b < 3; ++b)
+    EXPECT_NEAR(flux.histogram()[b], 2.0 * (rates[b] + mul[b]) * livetime, 1e-9 * (rates[b] + mul[b]) * livetime);
+
+  // Derivatives at (0.8, -0.7) against central differences of histogram(); at
+  // (3, 0.4) bin 0's additive part is clipped, so both derivatives vanish there.
+  for (const auto& [t1, t2] : {std::array{0.8, -0.7}, std::array{3.0, 0.4}}) {
+    at(t1, t2);
+    for (int j = 0; j < 2; ++j) {
+      std::vector<double> d(3, 0.0);
+      flux.add_mode_derivative(j, 2.0, d);
+      const double h = 1e-6;
+      for (int b = 0; b < 3; ++b) {
+        const double up   = j == 0 ? expected(b, t1 + h, t2) : expected(b, t1, t2 + h);
+        const double down = j == 0 ? expected(b, t1 - h, t2) : expected(b, t1, t2 - h);
+        const double fd   = (up - down) / (2.0 * h);
+        EXPECT_NEAR(d[b], fd, 1e-6 * std::max(std::abs(fd), 1.0)) << "mode " << j << " bin " << b << " at " << t1;
+      }
+    }
+  }
+  at(3.0, 0.4);
+  EXPECT_EQ(flux.histogram()[0], 0.0);
+
+  // The fluctuation column does not move.
+  for (int b = 0; b < 3; ++b) {
+    const double ssq = (2.0 * sigmas[b] * livetime) * (2.0 * sigmas[b] * livetime);
+    EXPECT_NEAR(flux.fluctuation()[b], ssq, 1e-9 * ssq);
+  }
+
+  // Rejected: a multiplicative mode where T + d <= 0 or T <= 0, an unknown form, and
+  // a form count that does not match the modes. Additive stays the default.
+  auto rejects = [&](const std::string& body) {
+    const std::string bad = "ictests_template_mul_bad.txt";
+    {
+      std::ofstream out(bad);
+      out << body;
+    }
+    bool threw = false;
+    try {
+      TemplateFlux broken(binning, bad, MuonNorm, livetime);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    std::remove(bad.c_str());
+    return threw;
+  };
+  const std::string two = "# template bins 3\n# template modes 1\n";
+  EXPECT_TRUE(rejects(two + "# template mode_forms multiplicative\n1 0.1 -1\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_TRUE(rejects(two + "# template mode_forms multiplicative\n0 0.1 0.5\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_TRUE(rejects(two + "# template mode_forms logarithmic\n1 0.1 0.5\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_TRUE(rejects(two + "# template mode_forms additive additive\n1 0.1 0.5\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_FALSE(rejects(two + "1 0.1 -2\n2 0.2 0.1\n3 0.3 0.1\n"));
+  EXPECT_FALSE(rejects(two + "# template mode_forms multiplicative\n1 0.1 0.5\n2 0.2 -1.9\n3 0.3 0.1\n"));
+}
+
 // SnowStorm gradients are a histogram-level additive perturbation of mu and
 // sigma^2 (NNMFit snowstorm_gradient.make_graph, external_gradients: True so the
 // histogram-gradient covariance is excluded):

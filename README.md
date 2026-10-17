@@ -192,9 +192,21 @@ template_b(theta) = max(template_b + sum_j MuonTmplMode<j> * d_jb, 0),    MuonTm
 What a column means is up to the file. Two kinds are in use:
 
 - **Bootstrap mode** (`corsika-template/mode_prototype.py`): the leading eigenmode of one estimator's bootstrap covariance, i.e. how that template scatters when its CORSIKA events are resampled.
-- **Estimator-variation modes** (`tools/make_estimator_modes.py`): `d_k = s_k * T_alt,k - T`, the difference to another template estimator (other CORSIKA sets, weights, cuts or KDE settings), rescaled by default to the nominal total so that it is a pure shape change and the normalization stays with MuonNorm. `MuonTmplMode<k> = 1` reproduces that template; the prior then takes the spread between the estimators at hand as the 1-sigma uncertainty of the method. `--keep-modes` keeps a bootstrap column in front, so the estimator modes follow it.
+- **Estimator-variation modes** (`tools/make_estimator_modes.py`, multiplicative by default): `d_k = s_k * T_alt,k - T`, the difference to another template estimator (other CORSIKA sets, weights, cuts or KDE settings), rescaled by default to the nominal total so that it is a pure shape change and the normalization stays with MuonNorm. `MuonTmplMode<k> = 1` reproduces that template; the prior then takes the spread between the estimators at hand as the 1-sigma uncertainty of the method. `--keep-modes` keeps a bootstrap column in front, so the estimator modes follow it.
 
-The clip at zero acts on the sum of all modes. A mode much larger than the template in some bins clips there on its negative side, and the shift is then no longer linear in the parameter; `make_estimator_modes.py` reports how much the clip removes at `-1` and `-2`.
+The clip at zero acts on the sum of all additive modes. A mode much larger than the template in some bins clips there on its negative side, and the shift is then no longer linear in the parameter. Such a mode can act multiplicatively instead, declared per mode in the header:
+
+```
+# template mode_forms additive multiplicative
+```
+
+A multiplicative mode keeps the same column `d_j` but scales the template by `((template + d_j) / template)^MuonTmplMode<j>`:
+
+```
+template_b(theta) = max(template_b + sum_additive theta_j d_jb, 0) * exp(sum_multiplicative theta_k r_kb),    r_kb = ln((template_b + d_kb) / template_b)
+```
+
+Both forms give `template + d` at `1`. A multiplicative mode never drives a bin negative (`-1` gives `template^2 / (template + d)`), but where the alternative is much smaller than the template, the negative side grows that bin by the same factor, so the total is no longer conserved away from `0` and `1`. It needs `template > 0` and `template + d > 0` in every bin; the file is rejected otherwise. Without a `mode_forms` line every mode is additive. `make_estimator_modes.py --form` chooses the form (multiplicative by default) and reports clipping (additive) or the ratio range and total (multiplicative) at `-1` and `-2`.
 
 To use a mode, set `MuonTmplMode<j>` free in the config with `"Constrained": true, "PriorValue": 0.0, "PriorWidth": 1.0`. The fluctuation column is not affected by the modes. Only MuonNorm's template may carry modes, and a free `MuonTmplMode<j>` whose column the template lacks is rejected. With every mode at 0 the fit is identical to one without them, and Asimov data stays stationary there under every likelihood. With modes in place, use `Poisson`: SAYMean's per-bin variance would count part of the same uncertainty twice.
 

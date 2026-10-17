@@ -3,6 +3,7 @@
 #include "../../io/IceCube/ICParameter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -24,7 +25,8 @@ namespace ana::ic {
       throw std::runtime_error("TemplateFlux: template '" + template_file +
                                "' carries shape modes, but only MuonNorm's template may (its norm here is "
                                "parameter " + std::to_string(m_NormIndex) + ")");
-    m_Shaped = m_Template;
+    m_Shaped = m_Linear = m_Template;
+    m_Factor.assign(m_Template.size(), 1.0);
     m_ModeValues.assign(m_Modes.size(), 0.0);
   }
 
@@ -32,8 +34,12 @@ namespace ana::ic {
 
   void TemplateFlux::add_mode_derivative(const int j, const double norm, const std::span<double> out) const {
     const std::vector<double>& d = m_Modes[static_cast<std::size_t>(j)];
+    if (mode_multiplicative(j)) {
+      for (std::size_t b = 0, n = out.size(); b < n; ++b) out[b] += norm * m_Shaped[b] * d[b];
+      return;
+    }
     for (std::size_t b = 0, n = out.size(); b < n; ++b)
-      if (m_Shaped[b] > 0.0) out[b] += norm * d[b];
+      if (m_Linear[b] > 0.0) out[b] += norm * d[b] * m_Factor[b];
   }
 
   void TemplateFlux::load(const std::string& path, const int total_bins, const double livetime,
@@ -51,23 +57,38 @@ namespace ana::ic {
     // remaining comments (bin edges) are informational. The bin count is a hard
     // check -- a template binned differently from the sample would mis-assign
     // every bin while still summing to a plausible total.
-    int         declared_bins = -1;
-    int         modes         = 0;
-    std::string line;
+    int                      declared_bins = -1;
+    int                      modes         = 0;
+    std::vector<std::string> forms;
+    std::string              line;
     while (std::getline(in, line)) {
       if (line.empty()) continue;
       if (line.front() != '#') break;
       std::istringstream header(line);
       std::string        hash, word, key;
-      int                value = -1;
-      if (header >> hash >> word && word == "template" && header >> key >> value) {
-        if (key == "bins") declared_bins = value;
-        if (key == "modes") modes = value;
+      if (!(header >> hash >> word >> key) || word != "template") continue;
+      if (key == "mode_forms") {
+        for (std::string form; header >> form;) forms.push_back(form);
+        continue;
       }
+      int value = -1;
+      if (!(header >> value)) continue;
+      if (key == "bins") declared_bins = value;
+      if (key == "modes") modes = value;
     }
     if (modes < 0 || modes > params::ic::nTemplateModes)
       throw std::runtime_error("TemplateFlux: template '" + path + "' declares " + std::to_string(modes) +
                                " modes; the parameter layout has " + std::to_string(params::ic::nTemplateModes));
+    if (forms.empty()) forms.assign(std::max(modes, 0), "additive");
+    if (static_cast<int>(forms.size()) != modes)
+      throw std::runtime_error("TemplateFlux: template '" + path + "' lists " + std::to_string(forms.size()) +
+                               " mode_forms for " + std::to_string(modes) + " modes");
+    for (const std::string& form : forms) {
+      if (form != "additive" && form != "multiplicative")
+        throw std::runtime_error("TemplateFlux: template '" + path + "' has mode form '" + form +
+                                 "'; expected additive or multiplicative");
+      m_Multiplicative.push_back(form == "multiplicative" ? 1 : 0);
+    }
     if (declared_bins != file_rows)
       throw std::runtime_error("TemplateFlux: template '" + path + "' declares " +
                                std::to_string(declared_bins) + " bins, the sample's binning has " +
@@ -110,6 +131,19 @@ namespace ana::ic {
     m_Template = to_sample(rates);
     m_Sigma    = to_sample(sigmas);
     for (const auto& column : mode_rates) m_Modes.push_back(to_sample(column));
+    // A multiplicative mode is stored as r = ln((T + d) / T), livetime-free.
+    for (std::size_t j = 0; j < m_Modes.size(); ++j) {
+      if (!m_Multiplicative[j]) continue;
+      for (std::size_t b = 0; b < m_Template.size(); ++b) {
+        const double shifted = m_Template[b] + m_Modes[j][b];
+        if (!(m_Template[b] > 0.0) || !(shifted > 0.0))
+          throw std::runtime_error("TemplateFlux: template '" + path + "' mode " + std::to_string(j + 1) +
+                                   " is multiplicative, but bin " + std::to_string(b) + " has template " +
+                                   std::to_string(m_Template[b]) + " and template + mode " +
+                                   std::to_string(shifted) + "; both must be positive");
+        m_Modes[j][b] = std::log(shifted / m_Template[b]);
+      }
+    }
 
     double total = 0.0;
     for (const double v : m_Template) total += v;
@@ -117,7 +151,11 @@ namespace ana::ic {
     if (!file_bins.identity())
       std::cout << " (" << file_rows << " bins in the file, " << (file_rows - total_bins) << " dropped)";
     std::cout << " (" << total << " events at norm 1)";
-    if (modes > 0) std::cout << " with " << modes << " shape mode" << (modes > 1 ? "s" : "");
+    if (modes > 0) {
+      const auto mul = std::ranges::count(m_Multiplicative, 1);
+      std::cout << " with " << modes << " shape mode" << (modes > 1 ? "s" : "");
+      if (mul > 0) std::cout << " (" << mul << " multiplicative)";
+    }
     std::cout << "\n";
   }
 
@@ -133,9 +171,12 @@ namespace ana::ic {
     if (shape_changed) {
       for (std::size_t j = 0; j < m_Modes.size(); ++j) m_ModeValues[j] = parameter[mode_index(static_cast<int>(j))];
       for (std::size_t b = 0, n = m_Shaped.size(); b < n; ++b) {
-        double value = m_Template[b];
-        for (std::size_t j = 0; j < m_Modes.size(); ++j) value += m_ModeValues[j] * m_Modes[j][b];
-        m_Shaped[b] = std::max(value, 0.0);
+        double linear = m_Template[b], exponent = 0.0;
+        for (std::size_t j = 0; j < m_Modes.size(); ++j)
+          (m_Multiplicative[j] ? exponent : linear) += m_ModeValues[j] * m_Modes[j][b];
+        m_Linear[b] = std::max(linear, 0.0);
+        m_Factor[b] = std::exp(exponent);
+        m_Shaped[b] = m_Linear[b] * m_Factor[b];
       }
     }
 
