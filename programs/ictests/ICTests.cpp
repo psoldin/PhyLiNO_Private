@@ -23,6 +23,7 @@
 #include <parquet/arrow/writer.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -163,7 +164,7 @@ TEST(BinningTest, MixedCascadeGrid) {
 // count and the two contiguous blocks components index into.
 TEST(ICParameterTest, Layout) {
   using namespace params::ic;
-  ASSERT_TRUE(number_of_parameters() == 26);
+  ASSERT_TRUE(number_of_parameters() == 28);
   ASSERT_TRUE(nBarrParams == 4);
   ASSERT_TRUE(nDetSysParams == 5);
   // Barr block, contiguous in {H, W, Y, Z} order (AtmosphericFlux reads BarrH + k).
@@ -182,7 +183,11 @@ TEST(ICParameterTest, Layout) {
   ASSERT_TRUE(AstroParabolaB == AstroEBreak + 1);
   ASSERT_TRUE(AstroLogECut == AstroParabolaB + 1);
   // Muon-template shape modes close the layout.
+  // Muon-template shape modes close the layout, contiguous in the order of the
+  // template file's mode columns (TemplateFlux::mode_index reads MuonTmplMode1 + j).
   ASSERT_TRUE(MuonTmplMode1 == AstroLogECut + 1);
+  ASSERT_TRUE(nTemplateModes == 3);
+  ASSERT_TRUE(MuonTmplMode2 == MuonTmplMode1 + 1 && MuonTmplMode3 == MuonTmplMode1 + 2);
   ASSERT_TRUE(MuonTmplMode1 + nTemplateModes == number_of_parameters());
 
   // parameter_names() is what configs are checked against: one name per index,
@@ -195,6 +200,7 @@ TEST(ICParameterTest, Layout) {
   EXPECT_EQ(names[GalacticNorm1], "GalacticNorm1");
   EXPECT_EQ(names[AstroLogECut], "AstroLogECut");
   EXPECT_EQ(names[MuonTmplMode1], "MuonTmplMode1");
+  EXPECT_EQ(names[MuonTmplMode3], "MuonTmplMode3");
 }
 
 // The Gaussian pull width must be separable from the minimiser step, while a
@@ -2631,8 +2637,92 @@ TEST(TemplateFluxTest, ShapeModes) {
   };
   EXPECT_TRUE(rejects("# template bins 3\n# template modes 1\n1 0.1 0.2\n2 0.2\n3 0.3 0.1\n"));
   EXPECT_TRUE(rejects("# template bins 3\n1 0.1 0.2\n2 0.2 0.1\n3 0.3 0.1\n"));
-  EXPECT_TRUE(rejects("# template bins 3\n# template modes 2\n1 0.1 0.2 0.1\n2 0.2 0.1 0.1\n3 0.3 0.1 0.1\n"));
+  EXPECT_TRUE(rejects("# template bins 3\n# template modes 4\n1 0.1 0 0 0 0\n2 0.2 0 0 0 0\n3 0.3 0 0 0 0\n"));
   EXPECT_FALSE(rejects("# template bins 3\n1 0.1\n\n2 0.2\n3 0.3\n"));
+}
+
+// Several modes add up: the template is max(T + sum_j theta_j d_j, 0), mode j reads
+// MuonTmplMode1 + j, and the clip acts on the sum, so a bin that one mode alone
+// would keep positive can still be clipped by the combination. The estimator-
+// variation modes (tools/make_estimator_modes.py) rely on exactly this.
+TEST(TemplateFluxTest, SeveralShapeModes) {
+  using ana::ic::TemplateFlux;
+  using ana::ParameterWrapper;
+  using namespace params::ic;
+
+  const Binning binning({io::ic::parse_axis("Log10Energy", "(2.0, 5.0, 3)"),
+                         io::ic::parse_axis("CosZenith", "(-1.0, 1.0, 1)")});
+  const double rates[3]    = {1.0e-6, 2.0e-6, 4.0e-6};
+  const double sigmas[3]   = {2.0e-7, 3.0e-7, 5.0e-7};
+  const double modes[3][3] = {{-5.0e-7, 1.0e-6, 2.0e-6},    // mode 1
+                              {-6.0e-7, -1.0e-6, 1.0e-6},   // mode 2
+                              {3.0e-7, -2.0e-7, -4.0e-6}};  // mode 3
+
+  const std::string path = "ictests_template_three_modes.txt";
+  {
+    std::ofstream out(path);
+    out << "# template bins 3\n# template modes 3\n";
+    for (int b = 0; b < 3; ++b)
+      out << rates[b] << ' ' << sigmas[b] << ' ' << modes[0][b] << ' ' << modes[1][b] << ' ' << modes[2][b] << '\n';
+  }
+  const double livetime = 3.0e8;
+  TemplateFlux flux(binning, path, MuonNorm, livetime);
+  std::remove(path.c_str());
+  ASSERT_EQ(flux.mode_count(), 3);
+  for (int j = 0; j < 3; ++j) ASSERT_EQ(TemplateFlux::mode_index(j), MuonTmplMode1 + j);
+
+  std::vector<double> values(number_of_parameters(), 0.0);
+  ParameterWrapper    parameter(number_of_parameters());
+  auto at = [&](const double t1, const double t2, const double t3) {
+    values[MuonNorm]      = 1.5;
+    values[MuonTmplMode1] = t1;
+    values[MuonTmplMode2] = t2;
+    values[MuonTmplMode3] = t3;
+    parameter.reset_parameter(values.data());
+    flux.check_and_recalculate(parameter);
+  };
+  auto shifted = [&](const int b, const double t1, const double t2, const double t3) {
+    return rates[b] + t1 * modes[0][b] + t2 * modes[1][b] + t3 * modes[2][b];
+  };
+
+  // Each mode on its own, then all together, and a change in only the last mode is
+  // picked up.
+  for (const auto& [t1, t2, t3] : {std::array{0.7, 0.0, 0.0}, std::array{0.0, 0.7, 0.0},
+                                   std::array{0.0, 0.0, 0.4}, std::array{0.3, -0.5, 0.2},
+                                   std::array{0.3, -0.5, 0.25}}) {
+    at(t1, t2, t3);
+    for (int b = 0; b < 3; ++b) {
+      const double mu = 1.5 * shifted(b, t1, t2, t3) * livetime;
+      EXPECT_NEAR(flux.histogram()[b], mu, 1e-9 * std::abs(mu)) << t1 << ' ' << t2 << ' ' << t3 << " bin " << b;
+    }
+  }
+
+  // At (-1, -1, 0.6) each mode alone keeps bin 2 positive (4 - 2, 4 - 1, 4 - 2.4, in
+  // 1e-6), but together they take it under zero (4 - 2 - 1 - 2.4 = -1.4): the clip acts
+  // on the sum. Every mode's derivative vanishes there and is MuonNorm * d_j in the
+  // two bins that stay positive.
+  for (const auto& [t1, t2, t3] : {std::array{-1.0, 0.0, 0.0}, std::array{0.0, -1.0, 0.0}, std::array{0.0, 0.0, 0.6}}) {
+    at(t1, t2, t3);
+    EXPECT_GT(flux.histogram()[2], 0.0) << t1 << ' ' << t2 << ' ' << t3;
+  }
+  at(-1.0, -1.0, 0.6);
+  EXPECT_EQ(flux.histogram()[2], 0.0);
+  for (int b = 0; b < 2; ++b) {
+    const double mu = 1.5 * shifted(b, -1.0, -1.0, 0.6) * livetime;
+    EXPECT_NEAR(flux.histogram()[b], mu, 1e-9 * mu) << b;
+  }
+  for (int j = 0; j < 3; ++j) {
+    std::vector<double> d(3, 0.0);
+    flux.add_mode_derivative(j, 1.5, d);
+    EXPECT_EQ(d[2], 0.0) << "mode " << j;
+    for (int b = 0; b < 2; ++b)
+      EXPECT_NEAR(d[b], 1.5 * modes[j][b] * livetime, 1e-9 * std::abs(modes[j][b]) * livetime) << "mode " << j << " bin " << b;
+  }
+  // The fluctuation column is untouched by any of them.
+  for (int b = 0; b < 3; ++b) {
+    const double ssq = (1.5 * sigmas[b] * livetime) * (1.5 * sigmas[b] * livetime);
+    EXPECT_NEAR(flux.fluctuation()[b], ssq, 1e-9 * ssq);
+  }
 }
 
 // SnowStorm gradients are a histogram-level additive perturbation of mu and
@@ -3585,7 +3675,8 @@ TEST(BlindingTest, HidesTheSignalParametersOnly) {
   for (const std::string& name : {"ConvNorm", "BarrH", "BarrW", "BarrY", "BarrZ", "CRGrad",
                                   "DeltaGamma", "MuonNorm", "MuonGunNorm", "VetoThreshold",
                                   "DOMEff", "IceAbs", "IceScat", "HoleIceP0", "HoleIceP1",
-                                  "GalacticNorm0", "GalacticNorm1", "MuonTmplMode1"})
+                                  "GalacticNorm0", "GalacticNorm1", "MuonTmplMode1",
+                                  "MuonTmplMode2", "MuonTmplMode3"})
     EXPECT_FALSE(result::ic::is_blinded_parameter(name)) << name;
 }
 

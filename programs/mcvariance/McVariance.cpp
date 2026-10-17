@@ -65,6 +65,7 @@ namespace {
         {"AstroGamma1", AstroGamma1},     {"AstroGamma2", AstroGamma2},
         {"AstroEBreak", AstroEBreak},       {"AstroParabolaB", AstroParabolaB},
         {"AstroLogECut", AstroLogECut},     {"MuonTmplMode1", MuonTmplMode1},
+        {"MuonTmplMode2", MuonTmplMode2},   {"MuonTmplMode3", MuonTmplMode3},
     };
     return map;
   }

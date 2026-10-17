@@ -38,11 +38,13 @@ namespace params::ic {
    *   AstroParabolaB, AstroLogECut -> NNMFit's LogEnergyIndex (astro_parabola_b) and
    *     Cutoff (cutoff_pos), multiplied onto the single power law when IceCube.AstroModel
    *     is "LogParabola" or "PowerlawCutoff" respectively. Fixed in every other config.
-   *   MuonTmplMode1 -> shape mode of the Corsika muon template: the template becomes
-   *     max(T + MuonTmplMode1 * d, 0) for the per-bin pattern d the template file
-   *     carries as a third column (TemplateFlux). A Gaussian-constrained nuisance
-   *     (prior 0 +- 1) for the template's own correlated MC uncertainty. No NNMFit
-   *     counterpart; Fixed at 0 in a config whose template has no mode column.
+   *   MuonTmplMode1..3 -> shape modes of the Corsika muon template: the template becomes
+   *     max(T + sum_j MuonTmplMode<j> * d_j, 0) for the per-bin patterns d_j the template
+   *     file carries as extra columns, mode j in column 2 + j (TemplateFlux). Each is a
+   *     Gaussian-constrained nuisance (prior 0 +- 1). What a column means is up to the
+   *     file: a bootstrap direction of the template's own MC uncertainty, or the
+   *     difference to another template estimator (tools/make_estimator_modes.py). No
+   *     NNMFit counterpart; Fixed at 0 for every column the template file lacks.
    */
   enum General : int {
     AstroNorm    = 0,  // astrophysical flux normalization
@@ -99,6 +101,8 @@ namespace params::ic {
     // --- shape modes of the muon template (MuonNorm's template only), in the
     // order of the template file's mode columns ---
     MuonTmplMode1,
+    MuonTmplMode2,
+    MuonTmplMode3,
     _last_of_TemplateModes_,
     _last_of_General_ = _last_of_TemplateModes_
   };
@@ -110,7 +114,7 @@ namespace params::ic {
     static_cast<int>(_last_of_DetSys_) - static_cast<int>(DOMEff);  // = 5
 
   inline constexpr int nTemplateModes =
-    static_cast<int>(_last_of_TemplateModes_) - static_cast<int>(MuonTmplMode1);  // = 1
+    static_cast<int>(_last_of_TemplateModes_) - static_cast<int>(MuonTmplMode1);  // = 3
 
   constexpr int number_of_general_parameters() noexcept {
     return static_cast<int>(_last_of_General_);
@@ -123,9 +127,9 @@ namespace params::ic {
   static_assert(nBarrParams == 4, "Expected 4 Barr parameters: H, W, Y, Z");
   static_assert(nDetSysParams == 5,
     "DOMEff, IceAbs, IceScat, HoleIceP0, HoleIceP1 -- the order the exported gradient file uses");
-  static_assert(number_of_parameters() == 26,
+  static_assert(number_of_parameters() == 28,
     "10 flux/atmo params + 2 template norms + VetoThreshold + 5 detector params + 2 galactic norms "
-    "+ 3 astro broken-power-law params + log-parabola curvature + cutoff energy + 1 muon-template mode. "
+    "+ 3 astro broken-power-law params + log-parabola curvature + cutoff energy + 3 muon-template modes. "
     "Update every config's Parameter array, parameter_names() and this if the layout changes.");
 
   /**
@@ -140,7 +144,7 @@ namespace params::ic {
             "MuonNorm",      "MuonGunNorm",   "VetoThreshold", "DOMEff",         "IceAbs",
             "IceScat",       "HoleIceP0",     "HoleIceP1",     "GalacticNorm0",  "GalacticNorm1",
             "AstroGamma1",   "AstroGamma2",   "AstroEBreak",   "AstroParabolaB", "AstroLogECut",
-            "MuonTmplMode1"};
+            "MuonTmplMode1", "MuonTmplMode2", "MuonTmplMode3"};
   }
 
 }  // namespace params::ic

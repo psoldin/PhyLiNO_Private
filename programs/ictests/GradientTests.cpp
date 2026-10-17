@@ -109,15 +109,19 @@ namespace {
     return path;
   }
 
-  /// write_template() plus one shape-mode column. Every fifth bin's mode is
-  /// -5x its rate, so at MuonTmplMode1 = 0.4 it is clipped at zero.
-  std::string write_template_with_mode(const std::string& path, const int bins, const double scale) {
+  /// write_template() plus `modes` shape-mode columns. Every fifth bin's first mode
+  /// is -5x its rate, so at MuonTmplMode1 = 0.4 it is clipped at zero; the further
+  /// modes are smooth patterns too small to undo that clip at perturbed_values().
+  std::string write_template_with_mode(const std::string& path, const int bins, const double scale,
+                                       const int modes = 1) {
     std::ofstream out(path);
-    out << "# template bins " << bins << "\n# template modes 1\n";
+    out << "# template bins " << bins << "\n# template modes " << modes << "\n";
     for (int b = 0; b < bins; ++b) {
       const double rate = scale * (1.0 + 0.3 * b);
-      const double mode = b % 5 == 3 ? -5.0 * rate : 0.4 * rate * std::sin(0.9 * b + 0.2);
-      out << rate << ' ' << 0.1 * scale * (1.0 + 0.2 * b) << ' ' << mode << '\n';
+      out << rate << ' ' << 0.1 * scale * (1.0 + 0.2 * b) << ' '
+          << (b % 5 == 3 ? -5.0 * rate : 0.4 * rate * std::sin(0.9 * b + 0.2));
+      for (int j = 1; j < modes; ++j) out << ' ' << 0.3 * rate * std::cos(0.7 * j * b + 0.5 * j);
+      out << '\n';
     }
     return path;
   }
@@ -172,6 +176,8 @@ namespace {
     v[P::AstroParabolaB] = 0.15;
     v[P::AstroLogECut]   = 5.5;
     v[P::MuonTmplMode1]  = 0.4;
+    v[P::MuonTmplMode2]  = -0.3;
+    v[P::MuonTmplMode3]  = 0.6;
     return v;
   }
 
@@ -572,6 +578,64 @@ TEST(AnalyticGradientTest, MuonTemplateShapeMode) {
     const std::vector<double> g_up   = analytic_gradient(likelihood, up);
     const std::vector<double> g_down = analytic_gradient(likelihood, down);
     for (const int j : {P::AstroNorm, P::ConvNorm, P::MuonNorm, P::MuonTmplMode1}) {
+      const double fd = (g_up[j] - g_down[j]) / (2.0 * h);
+      EXPECT_NEAR(hessian[i * kNPar + j], fd, 1e-5 * std::max(1.0, std::fabs(fd))) << i << ' ' << j;
+    }
+  }
+  std::remove(tmpl.c_str());
+}
+
+/// Three shape modes at once, as the estimator-variation modes use them: each
+/// d mu / d MuonTmplMode<j> = MuonNorm * d_j where the summed template is not
+/// clipped, under every likelihood, and the Gauss-Newton Hessian's mode block --
+/// including the mode-mode cross terms -- matches finite differences under Poisson
+/// at data = prediction.
+TEST(AnalyticGradientTest, MuonTemplateThreeShapeModes) {
+  const Binning          binning = gradient_binning();
+  const io::ic::ICSample sample  = gradient_sample(binning, 12, false);
+  const std::string      tmpl =
+    write_template_with_mode("ictests_grad_template_modes3.txt", binning.total_bins(), 15.0, 3);
+  const int modes[3] = {P::MuonTmplMode1, P::MuonTmplMode2, P::MuonTmplMode3};
+
+  auto config = [&] {
+    io::ic::SampleConfig cfg{.name = "modes3", .binning = binning, .mc_binning = binning};
+    cfg.components          = {"astro", "conventional", "prompt", "muontemplate"};
+    cfg.template_file       = tmpl;
+    cfg.template_norm_index = P::MuonNorm;
+    return cfg;
+  };
+
+  for (const LikelihoodCase& lc : kLikelihoods) {
+    SCOPED_TRACE(lc.name);
+    SampleLikelihood likelihood(sample, config(), gradient_settings(AstroModel::Powerlaw), nullptr, lc.say,
+                                lc.alpha_offset);
+    ASSERT_EQ(likelihood.template_modes(), 3);
+    prepare_data(likelihood);
+    const std::vector<double> x = perturbed_values();
+    std::vector<int>          used = flux_parameters(AstroModel::Powerlaw, false);
+    used.push_back(P::MuonNorm);
+    used.insert(used.end(), std::begin(modes), std::end(modes));
+    expect_gradients_agree(analytic_gradient(likelihood, x), numerical_gradient(likelihood, x), used, 2.0e-5);
+  }
+
+  SampleLikelihood likelihood(sample, config(), gradient_settings(AstroModel::Powerlaw), nullptr, false);
+  const std::vector<double> x = perturbed_values();
+  ParameterWrapper          at_x(kNPar);
+  at_x.reset_parameter(x.data());
+  likelihood.generate_asimov(at_x);
+
+  std::vector<double>       hessian;
+  const std::vector<double> g = analytic_gradient(likelihood, x, &hessian);
+  for (const int i : modes) EXPECT_NEAR(g[i], 0.0, 1e-8) << i;  // stationary at the Asimov point
+  const int rows[4] = {P::MuonNorm, P::MuonTmplMode1, P::MuonTmplMode2, P::MuonTmplMode3};
+  for (const int i : rows) {
+    const double        h  = 1.0e-5 * std::max(1.0, std::fabs(x[i]));
+    std::vector<double> up = x, down = x;
+    up[i] += h;
+    down[i] -= h;
+    const std::vector<double> g_up   = analytic_gradient(likelihood, up);
+    const std::vector<double> g_down = analytic_gradient(likelihood, down);
+    for (const int j : {P::AstroNorm, P::ConvNorm, P::MuonNorm, P::MuonTmplMode1, P::MuonTmplMode2, P::MuonTmplMode3}) {
       const double fd = (g_up[j] - g_down[j]) / (2.0 * h);
       EXPECT_NEAR(hessian[i * kNPar + j], fd, 1e-5 * std::max(1.0, std::fabs(fd))) << i << ' ' << j;
     }

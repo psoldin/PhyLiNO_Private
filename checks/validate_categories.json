@@ -275,6 +275,28 @@
       "Constrained": true,
       "LowerBound": -5.0,
       "UpperBound": 5.0
+    },
+    {
+      "Name": "MuonTmplMode2",
+      "StartValue": 0.0,
+      "StepWidth": 0.3,
+      "PriorValue": 0.0,
+      "PriorWidth": 1.0,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -5.0,
+      "UpperBound": 5.0
+    },
+    {
+      "Name": "MuonTmplMode3",
+      "StartValue": 0.0,
+      "StepWidth": 0.3,
+      "PriorValue": 0.0,
+      "PriorWidth": 1.0,
+      "Fixed": true,
+      "Constrained": true,
+      "LowerBound": -5.0,
+      "UpperBound": 5.0
     }
   ]
 }
