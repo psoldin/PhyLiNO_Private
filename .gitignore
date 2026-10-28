@@ -31,3 +31,6 @@ scan_grid.json
 ictests_topology_*.parquet
 
 __pycache__/
+
+.vibe-wise/
+tools/daemonflux_explorer/
