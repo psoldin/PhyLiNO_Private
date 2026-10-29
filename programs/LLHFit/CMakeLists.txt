@@ -1,5 +1,9 @@
 set(files
        LLHFit.C
+       ScanCommon.cpp
+       Scan1D.cpp
+       Scan2D.cpp
+       ScanPairs.cpp
 )
 
 add_executable(LLHFit ${files})

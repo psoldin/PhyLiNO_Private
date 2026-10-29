@@ -136,7 +136,7 @@ namespace io {
      * (perform_2d_scan_regular), "2d-stencil" (perform_2d_stencil), "2d-pairs"
      * (perform_2d_pairs), "1d" or "1d-regular" (perform_1d_scan_all,
      * regular selecting its grid flavour), "1d-crossing" (perform_1d_crossing_all,
-     * the 1 sigma interval only). Validated in LLHFit.C, the only
+     * the 1 sigma interval only). Validated in LLHFit.C (main), the only
      * place that knows the scan functions.
      */
     [[nodiscard]] const std::string& scan_mode() const noexcept { return m_ScanMode; }

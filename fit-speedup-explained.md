@@ -189,7 +189,7 @@ values gives the *profile*. The 1σ interval is where the profile has risen by
 **Δχ² = 1** above its minimum. Unlike Hesse, this captures asymmetric and
 non-parabolic shapes.
 
-The scan code in `LLHFit.C` places points on an integer **lattice**: node 0 is the
+The scan code in `programs/LLHFit/` places points on an integer **lattice**: node 0 is the
 best-fit value, and neighbouring nodes are `unit = error/64` apart (so node ±64 is
 ±1 Hesse error). It does a **free fit** first (all parameters floating), saved as
 `BestFit_<parameter>.json`, which defines node 0, the lattice spacing, and the
@@ -252,11 +252,11 @@ looser tolerance.
 stores the tolerance on the `Fit` so that Migrad restarts (which rebuild the
 minimizer) keep it; `run_scan_batch()` sets it on every scan-point fit.
 
-**In the code.** Every scan point is fitted inside `run_scan_batch()` (`LLHFit.C`).
+**In the code.** Every scan point is fitted inside `run_scan_batch()` (`ScanCommon.h`).
 Before minimising, the fit gets the scan tolerance:
 
 ```cpp
-// programs/LLHFit/LLHFit.C, run_scan_batch()
+// programs/LLHFit/ScanCommon.h, run_scan_batch()
 ana::Fit fit(options, module, worker_index);
 // A scan point only has to resolve the profile to well within the delta
 // chi2 the scan works at, not to the free fit's --tolerance.
@@ -300,7 +300,7 @@ was measured to be honest.
 **Idea.** Every 1D scan without extra fixed parameters starts from the *same* free
 fit. It was fitted again (24 s) for each parameter, only under a different file name.
 
-**Implementation.** `reuse_sibling_free_fit()` in `LLHFit.C`: before scanning
+**Implementation.** `reuse_sibling_free_fit()` in `ScanCommon.cpp`: before scanning
 parameter P, if `BestFit_P.json` doesn't exist but `BestFit_Q.json` does for another
 scanned parameter Q, it is copied to `BestFit_P.json`. The scan then reads it back
 exactly as a *resumed* run would. Works for `1d`, `1d-crossing`, `1d-regular`, and for
@@ -309,7 +309,7 @@ share it. N-1 scans (`nm1`) are not affected (their free fits differ).
 **In the code.** Before each parameter's scan, the loop over parameters calls:
 
 ```cpp
-// programs/LLHFit/LLHFit.C
+// programs/LLHFit/ScanCommon.cpp
 void reuse_sibling_free_fit(const std::string& prefix, const std::string& label,
                             const std::vector<std::string>& siblings,
                             const io::InputParameter& input_parameters, const std::string& format) {
@@ -346,7 +346,7 @@ protobuf) now also read the `error` fields, so a reused free fit produces exactl
 same lattice.
 
 ```cpp
-// programs/LLHFit/LLHFit.C, stored_fit(): read the errors next to the values
+// programs/LLHFit/ScanCommon.cpp, stored_fit(): read the errors next to the values
 if (parameter.contains("error") && parameter["error"].is_number())
   errors[key] = parameter["error"].get<double>();
 ...
@@ -369,7 +369,7 @@ neighbouring points as before.
 fitted. Node 0 is now removed from the batch and filled from the free fit:
 
 ```cpp
-// programs/LLHFit/LLHFit.C
+// programs/LLHFit/ScanCommon.h
 bool node_zero_from_free_fit(std::vector<int>& nodes, std::map<int, double>& profile,
                              const SeedFit& seed, const std::string& best_fit_name,
                              const std::string& node_file, const std::string& format,
@@ -460,7 +460,7 @@ void Fit::set_step_sizes(const std::span<const double> steps) {
 const double step = i < m_StepSizes.size() && m_StepSizes[i] > 0.0 ? m_StepSizes[i]
                                                                    : parameters[i].uncertainty();
 
-// programs/LLHFit/LLHFit.C, run_scan_batch():
+// programs/LLHFit/ScanCommon.h, run_scan_batch():
 if (!step_sizes.empty())
   fit.set_step_sizes(step_sizes);     // the callers pass seed.errors (the free fit's errors)
 ```
@@ -1305,7 +1305,7 @@ If Metal fails, the CPU path (no GPU) also has the gradient.
 | `libraries/likelihood/Likelihood.h` | Gradient/Hessian interface (default: not available) |
 | `libraries/likelihood/Fit.{h,cpp}` | GradFunctor, Hessian hookup, Minuit2 subclass, exact Hesse, step sizes, tolerance |
 | `libraries/likelihood/NewtonMinimizer.{h,cpp}` | The Newton minimizer |
-| `programs/LLHFit/LLHFit.C` | Free-fit reuse, node 0, scan tolerance, step sizes |
+| `programs/LLHFit/ScanCommon.h/.cpp` | Free-fit reuse, node 0, scan tolerance, step sizes |
 | `programs/LLHFit/CrossingScan1D.h` | `bracket_width` stop rule |
 | `programs/GradientCheck/` | Validation tool |
 | `programs/ictests/GradientTests.cpp`, `NewtonMinimizerTests.cpp` | Tests |
