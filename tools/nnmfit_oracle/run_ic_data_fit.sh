@@ -33,7 +33,7 @@ json.dump(c, open('$DATA_CONFIG', 'w'), indent=2)
 "
 
 echo "Fitting $DATA_CONFIG against real data..."
-(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --fitOnly --silent)
+(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --silent)
 cp "$ROOT/Output.json" "$OUT_DIR/Output.json"
 
 python3 - "$OUT_DIR/Output.json" "$REF_JSON" <<'EOF'

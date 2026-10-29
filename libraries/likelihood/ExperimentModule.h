@@ -36,7 +36,7 @@ namespace ana {
      * Create the likelihood. This is where experiment data is loaded.
      *
      * worker_index identifies the scan worker thread doing the building (0
-     * for --fitOnly and the first scan worker); GPU-backed modules that
+     * for the plain fit and the first scan worker); GPU-backed modules that
      * support --gpuDevices use it to pick which device this worker's Fit
      * runs on (see InputOptions::gpu_device_for_worker()). Modules that don't
      * support multiple devices simply ignore it.

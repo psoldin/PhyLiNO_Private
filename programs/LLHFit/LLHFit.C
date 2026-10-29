@@ -62,12 +62,14 @@ int main(int argc, char** argv) {
       return EXIT_SUCCESS;
     }
 
-    // --fitOnly runs the plain fit and writes "Output.json"; without it the scan
-    // picked by --scanMode (2d by default) is the entry point. The single fit
-    // is what the NNMFit parity harness drives
+    // By default (--scanMode none) LLHFit runs the plain fit and writes
+    // "Output"; a scan runs only when --scanMode names one. The single fit is
+    // also what the NNMFit parity harness drives
     // (tools/nnmfit_oracle/compare_llh_value.py, run_fit_parity.sh), which needs
     // one converged result rather than a surface.
-    if (options->inputOptions().fit_only()) {
+    const std::string& scan_mode = options->inputOptions().scan_mode();
+
+    if (scan_mode == "none") {
       ana::Fit fit(options, module);
       auto     min = fit.get_minimizer();
 
@@ -77,7 +79,6 @@ int main(int argc, char** argv) {
       fit.minimize();
       result::write_results(fit, "Output");
     } else {
-      const std::string& scan_mode      = options->inputOptions().scan_mode();
       const std::string& scan_parameter = options->inputOptions().scan_parameter();
       const int          scan_points    = options->inputOptions().scan_points();
 
@@ -117,7 +118,7 @@ int main(int argc, char** argv) {
         else
           perform_1d_scan_regular(options, module, scan_parameter, scan_points);
       } else {
-        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: 2d, 2d-regular, 2d-stencil, 2d-pairs, 1d, 1d-regular, 1d-crossing, nm1");
+        throw std::invalid_argument("Unknown --scanMode \"" + scan_mode + "\". Valid values: none, 2d, 2d-regular, 2d-stencil, 2d-pairs, 1d, 1d-regular, 1d-crossing, nm1");
       }
     }
   } catch (const std::exception& e) {

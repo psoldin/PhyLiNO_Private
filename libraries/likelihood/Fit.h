@@ -20,7 +20,7 @@ namespace ana {
   class Fit {
    public:
     // worker_index identifies the scan worker thread building this Fit (see
-    // ExperimentModule::create_likelihood); 0 for a lone --fitOnly fit.
+    // ExperimentModule::create_likelihood); 0 for the plain fit of --scanMode none.
     Fit(std::shared_ptr<io::Options> options, std::shared_ptr<ExperimentModule> module, int worker_index = 0);
 
     ~Fit() = default;

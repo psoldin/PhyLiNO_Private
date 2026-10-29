@@ -36,7 +36,7 @@ echo "=== Stage 1: Asimov prediction at the truth point (every parameter fixed) 
 # Called through an interpreter rather than relying on the executable bit: not
 # every script in this directory carries it.
 python3 "$HERE/make_probe_config.py" "$PHYLINO_CONFIG" "$OUT_DIR/truth.json"
-(cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/truth.json" --fitOnly --silent)
+(cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/truth.json" --silent)
 mv "$OUT_DIR/Output.json" "$OUT_DIR/truth_output.json"
 
 echo
@@ -67,7 +67,7 @@ EOF
 # unaffected -- the values written here are the same ones.
 "$PY" "$HERE/apply_nnmfit_bounds.py" \
     "$OUT_DIR/pseudo_fit_unbounded.json" "$NNMFIT_CONFIG" "$OUT_DIR/pseudo_fit_phylino.json"
-(cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/pseudo_fit_phylino.json" --fitOnly --silent)
+(cd "$OUT_DIR" && "$ROOT/build/programs/LLHFit/LLHFit" -c "$OUT_DIR/pseudo_fit_phylino.json" --silent)
 mv "$OUT_DIR/Output.json" "$OUT_DIR/phylino_fit.json"
 
 echo

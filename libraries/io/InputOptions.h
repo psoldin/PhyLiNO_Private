@@ -131,8 +131,8 @@ namespace io {
     [[nodiscard]] const std::string& evaluate_at() const noexcept { return m_EvaluateAt; }
 
     /**
-     * Which scan LLHFit runs when --fitOnly is not given (--scanMode, default
-     * "2d"): "2d" (adaptive, perform_2d_scan), "2d-regular"
+     * Which scan LLHFit runs (--scanMode): "none" (the default: one fit,
+     * written to "Output"), "2d" (adaptive, perform_2d_scan), "2d-regular"
      * (perform_2d_scan_regular), "2d-stencil" (perform_2d_stencil), "2d-pairs"
      * (perform_2d_pairs), "1d" or "1d-regular" (perform_1d_scan_all,
      * regular selecting its grid flavour), "1d-crossing" (perform_1d_crossing_all,
@@ -236,13 +236,6 @@ namespace io {
     [[nodiscard]] const std::string& output_format() const noexcept { return m_OutputFormat; }
 
     /**
-     * Run one fit and write its result ("Output.json") instead of the 2D scan.
-     * What LLHFit did before the scan became its default entry point; the
-     * NNMFit likelihood-parity harness needs it (tools/nnmfit_oracle).
-     */
-    [[nodiscard]] bool fit_only() const noexcept { return m_FitOnly; }
-
-    /**
      * Randomize the minimizer start values around the configured ones, the
      * counterpart of NNMFit's default `randomize_param_seeds` (see
      * ana::randomized_start_value). Only the start point moves -- the data,
@@ -274,13 +267,12 @@ namespace io {
     bool   m_ScanWarmStart{true};     /**< Seed each scan fit from the nearest point already fitted. */
     std::string m_SeedFrom;           /**< --seedFrom: result whose parameters are this run's start values. */
     std::string m_EvaluateAt;         /**< --evaluateAt: result whose parameters the model is evaluated at, unfitted. */
-    std::string m_ScanMode{"2d"};     /**< Which scan LLHFit runs when --fitOnly is not given. */
+    std::string m_ScanMode{"none"};   /**< Which scan LLHFit runs; "none" is a single fit. */
     std::string m_ScanParameter;      /**< Single parameter for --scanMode 1d/1d-regular; empty means every parameter. */
     int    m_ScanPoints{30};          /**< Grid points per axis for --scanMode 2d-regular/1d-regular. */
     double m_StencilStep{1.0};        /**< Step of --scanMode 2d-stencil in units of the free fit's error. */
     double m_ScanWindow{2.5};         /**< Half-width of a --scanMode 2d-pairs window in decorrelated Hesse units. */
     double m_CrossingLevel{1.0};      /**< Delta chi2 of the crossings --scanMode 1d-crossing searches for. */
-    bool   m_FitOnly{false};    /**< Run a single fit instead of the 2D scan. */
     bool   m_RandomizeSeeds{false}; /**< Randomize the minimizer start values. */
     double m_RandomizeWidth{0.08};  /**< Relative width of the randomized start values. */
     bool   m_Blind{false};          /**< Keep the signal out of the written results. */

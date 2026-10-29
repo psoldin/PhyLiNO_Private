@@ -420,8 +420,8 @@ tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined.json /t
     --set VetoThreshold=0.14108708515445395 --set MuonGunNorm=1.1362703633930007 \
     --set MuonNorm=1.827017996655897
 
-build/programs/LLHFit/LLHFit -c /tmp/probe_defaults.json --fitOnly --silent && cp Output.json /tmp/probe_defaults_output.json
-build/programs/LLHFit/LLHFit -c /tmp/probe_fitted_nosys.json --fitOnly --silent && cp Output.json /tmp/probe_fitted_nosys_output.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_defaults.json --silent && cp Output.json /tmp/probe_defaults_output.json
+build/programs/LLHFit/LLHFit -c /tmp/probe_fitted_nosys.json --silent && cp Output.json /tmp/probe_fitted_nosys_output.json
 
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_defaults_output.json /tmp/nnmfit_dumps --tolerance 1e-6
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_fitted_nosys_output.json /tmp/nnmfit_dumps_fitted_nosys --tolerance 1e-6
@@ -511,7 +511,7 @@ tools/nnmfit_oracle/dump_histograms.sh \
 
 # our side: evaluate at the same fixed point, then compare
 tools/nnmfit_oracle/make_probe_config.py configs/config_icecube_combined_3d.json /tmp/probe_3d_defaults.json
-build/programs/LLHFit/LLHFit -c /tmp/probe_3d_defaults.json --fitOnly --silent
+build/programs/LLHFit/LLHFit -c /tmp/probe_3d_defaults.json --silent
 cp Output.json /tmp/probe_3d_defaults_output.json
 tools/nnmfit_oracle/compare_to_nnmfit.py /tmp/probe_3d_defaults_output.json /tmp/nnmfit_dumps_3d --tolerance 1e-8
 ```

@@ -51,9 +51,8 @@ c['IceCube']['Likelihood'] = '$LIKELIHOOD'
 c['IceCube']['Backend'] = 'cpu'
 json.dump(c, open('$DATA_CONFIG', 'w'), indent=2)
 "
-# --fitOnly: LLHFit's default entry point is the 2D scan, which writes a surface
-# of Output_i_j files and no single result to compare against.
-(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --fitOnly --silent)
+# LLHFit's default is the single fit, which writes the one Output.json to compare against.
+(cd "$ROOT" && ./build/programs/LLHFit/LLHFit -c "$DATA_CONFIG" --silent)
 cp "$ROOT/Output.json" "$OUT_DIR/phylino_fit.json"
 
 python3 - "$OUT_DIR/phylino_fit.json" "$OUT_DIR/nnmfit_fit.json" <<'EOF'

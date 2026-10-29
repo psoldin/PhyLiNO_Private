@@ -120,9 +120,9 @@ def phylino_llh(probe_config, workdir):
     """LLHFit at a fully fixed point: Migrad has nothing to move, so its
     reported minimum is the likelihood evaluated at that point.
 
-    --fitOnly is required: without it LLHFit runs the 2D scan instead and never
-    writes Output.json."""
-    run([LLHFIT, "-c", probe_config, "--fitOnly", "--silent"], cwd=ROOT)
+    LLHFit's default (--scanMode none) is this single fit, which writes
+    Output.json."""
+    run([LLHFIT, "-c", probe_config, "--silent"], cwd=ROOT)
     output = os.path.join(workdir, "phylino_output.json")
     os.replace(os.path.join(ROOT, "Output.json"), output)
     with open(output) as f:
