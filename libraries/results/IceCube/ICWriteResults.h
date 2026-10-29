@@ -52,6 +52,30 @@ namespace result::ic {
       j["parameters"][names[i]] = {{"value", x[i]}, {"error", err[i]}};
     }
 
+    // Covariance of the free parameters from the final Hesse, V = 2 H^-1 of
+    // -2 ln L. Fixed parameters get no row: the minimizer holds nothing for
+    // them, and a zero row would read as a parameter known exactly. Rows and
+    // columns follow "parameters" of this block; status is the minimizer's
+    // CovMatrixStatus (Minuit2: 3 full accurate, 2 forced positive definite).
+    if (!fit.evaluated_only()) {
+      std::vector<std::size_t> free;
+      for (std::size_t i = 0; i < names.size(); ++i)
+        if (!min->IsFixedVariable(static_cast<unsigned int>(i)) && !(blind && is_blinded_parameter(names[i])))
+          free.push_back(i);
+
+      nlohmann::json free_names = nlohmann::json::array();
+      nlohmann::json matrix     = nlohmann::json::array();
+      for (const std::size_t a : free) {
+        free_names.push_back(names[a]);
+        std::vector<double> row;
+        row.reserve(free.size());
+        for (const std::size_t b : free)
+          row.push_back(min->CovMatrix(static_cast<unsigned int>(a), static_cast<unsigned int>(b)));
+        matrix.push_back(row);
+      }
+      j["covariance"] = {{"parameters", free_names}, {"matrix", matrix}, {"status", min->CovMatrixStatus()}};
+    }
+
     // One block per enabled sample: its own binning, its binned data and the
     // prediction at the minimum, so the output is self-contained. Bin arrays are
     // row-major over the sample's axes (first axis outer, last axis inner).
